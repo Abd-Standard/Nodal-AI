@@ -118,6 +118,11 @@ export class SorobanInvokeTool {
   private networkPassphrase: string;
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
+    if (SOROBAN_TX_TIMEOUT_SECONDS <= 0 || SOROBAN_TX_TIMEOUT_SECONDS > 300) {
+      throw new Error(
+        `SOROBAN_TX_TIMEOUT_SECONDS must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT_SECONDS}`
+      );
+    }
     this.keypair = Keypair.fromSecret(secretKey);
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }

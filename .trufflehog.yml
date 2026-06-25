@@ -1,0 +1,14 @@
+# Custom detector for Stellar S-keys (56-char base32 secrets starting with "S")
+custom_regexes:
+  StellarSecretKey:
+    reason: "Stellar S-keys are 56-char base32 secrets starting with S"
+    pattern:
+      - "S[A-Z2-7]{55}"
+    keywords:
+      - "S"
+
+# Allowlisted known test keys
+allowlist:
+  - description: "Test S-key used in unit tests (source: tests/soroban_invoke.test.ts, tests/agent.test.ts)"
+    regex:
+      pattern: "SBPTNBEQQVQD5NIPZTCXHKM5ZVONK2ENLP5DTZJBGSUPOPWQSIFWZKX"

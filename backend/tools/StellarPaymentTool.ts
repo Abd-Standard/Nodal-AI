@@ -19,6 +19,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
 import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { SOROBAN_TX_TIMEOUT_SECONDS } from "./SorobanInvokeTool";
 import { createLogger } from "../utils/logger";
 
 const log = createLogger("stellar-payment");
@@ -140,7 +141,7 @@ export class StellarPaymentTool {
         builder.addMemo(Memo.text(input.memo));
       }
 
-      return builder.setTimeout(30).build();
+      return builder.setTimeout(SOROBAN_TX_TIMEOUT_SECONDS).build();
     };
 
     let tx = buildTx();
