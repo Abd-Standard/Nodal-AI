@@ -13,6 +13,7 @@
 import { EventEmitter } from "events";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
+import { saveResult } from "./persistence";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
 import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
@@ -316,6 +317,7 @@ export class PayFiAgent extends EventEmitter {
       logger.info("Task completed", { taskType: task.type });
       const result: AgentResult = { success: true, taskType: task.type, data };
       this.emit("task:complete", result);
+      saveResult({ ...result, timestamp: new Date().toISOString() });
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -324,6 +326,7 @@ export class PayFiAgent extends EventEmitter {
       logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
       const result: AgentResult = { success: false, taskType: task.type, error: safe };
       this.emit("task:failed", result);
+      saveResult({ ...result, timestamp: new Date().toISOString() });
       return result;
     } finally {
       this.activeTasks--;

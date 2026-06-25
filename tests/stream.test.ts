@@ -60,6 +60,10 @@ vi.mock("../backend/config", () => ({
   MAINNET_SPENDING_CAP: 10_000,
 }));
 
+vi.mock("../backend/persistence", () => ({
+  saveResult: vi.fn(),
+}));
+
 import { PayFiAgent } from "../backend/agent";
 
 describe("PayFiAgent — stream (issue #107)", () => {

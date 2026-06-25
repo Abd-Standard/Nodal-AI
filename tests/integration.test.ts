@@ -71,6 +71,10 @@ vi.mock("../backend/config", () => ({
   MAINNET_SPENDING_CAP: 10000,
 }));
 
+vi.mock("../backend/persistence", () => ({
+  saveResult: vi.fn(),
+}));
+
 describe("PayFiAgent integration", () => {
   let agent: PayFiAgent;
   const DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
