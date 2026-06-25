@@ -31,7 +31,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
-import { SorobanInvokeTool, SorobanInvokeInputSchema } from "../backend/tools/SorobanInvokeTool";
+import { SorobanInvokeTool, SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT_SECONDS } from "../backend/tools/SorobanInvokeTool";
 import * as rpcClient from "../backend/rpc_client";
 
 // ─── Module mock ──────────────────────────────────────────────────────────────
@@ -136,6 +136,13 @@ describe("SorobanInvokeTool", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     tool = new SorobanInvokeTool();
+  });
+
+  // ── Timeout constant validation ────────────────────────────────────────────
+
+  it("SOROBAN_TX_TIMEOUT_SECONDS is within valid range [1, 300]", () => {
+    expect(SOROBAN_TX_TIMEOUT_SECONDS).toBeGreaterThan(0);
+    expect(SOROBAN_TX_TIMEOUT_SECONDS).toBeLessThanOrEqual(300);
   });
 
   // ── Input validation ────────────────────────────────────────────────────────

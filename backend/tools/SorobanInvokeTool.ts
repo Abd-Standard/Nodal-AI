@@ -19,6 +19,16 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase, sorobanServer } from "../rpc_client";
 
+// ─── Timeout guard ────────────────────────────────────────────────────────────
+
+/**
+ * Transaction timeout in seconds for Soroban invocations and Stellar payments.
+ *
+ * Must be in the range [1, 300]. Values ≤ 0 would produce transactions that are
+ * valid indefinitely (replay risk). Values > 300 are considered unsafe.
+ */
+export const SOROBAN_TX_TIMEOUT_SECONDS = 30;
+
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
 /**
@@ -82,6 +92,11 @@ export class SorobanInvokeTool {
   private networkPassphrase: string;
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
+    if (SOROBAN_TX_TIMEOUT_SECONDS <= 0 || SOROBAN_TX_TIMEOUT_SECONDS > 300) {
+      throw new Error(
+        `SOROBAN_TX_TIMEOUT_SECONDS must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT_SECONDS}`
+      );
+    }
     this.keypair = Keypair.fromSecret(secretKey);
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
@@ -155,7 +170,7 @@ export class SorobanInvokeTool {
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(input.method, ...input.args))
-      .setTimeout(30)
+      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
       .build();
 
     logger.info("Simulating Soroban transaction", {
