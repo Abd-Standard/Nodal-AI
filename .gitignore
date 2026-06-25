@@ -9,6 +9,12 @@ contracts/escrow/test_snapshots/
 .env.development.local
 .env.test.local
 .env.production.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.DS_Store
+Thumbs.db
 
-# Track TypeScript/Vitest snapshot files explicitly
-!tests/__snapshots__/
+# Vitest snapshot files — regenerated automatically on test runs
+tests/__snapshots__/

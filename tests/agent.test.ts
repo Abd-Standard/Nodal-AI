@@ -27,6 +27,18 @@ vi.mock("../backend/tools/X402PaymentTool", () => ({
   })),
 }));
 
+vi.mock("../backend/tools/PathPaymentTool", () => ({
+  PathPaymentTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+  })),
+}));
+
+vi.mock("../backend/tools/FeeBumpTool", () => ({
+  FeeBumpTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+  })),
+}));
+
 vi.mock("../backend/config", () => ({
   config: {
     STELLAR_NETWORK: "mainnet",
@@ -56,6 +68,9 @@ describe("PayFiAgent — runSequence", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 
@@ -190,8 +205,8 @@ describe("PayFiAgent — mainnet spending cap", () => {
 
     expect(result1.success).toBe(true);
     expect(result2.success).toBe(true);
-    expect(result1.data?.txHash).toBe("tx_hash_1");
-    expect(result2.data?.txHash).toBe("tx_hash_2");
+    expect((result1.data as { txHash: string })?.txHash).toBe("tx_hash_1");
+    expect((result2.data as { txHash: string })?.txHash).toBe("tx_hash_2");
     expect(agent1).not.toBe(agent2);
   });
 });
@@ -201,6 +216,9 @@ describe("AgentResult snapshot", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "success_tx_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 

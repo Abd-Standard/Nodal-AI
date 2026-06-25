@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "build": "tsc",
+    "pretest": "tsc --noEmit",
     "test": "vitest run",
     "test:ts": "vitest run",
     "test:ts:watch": "vitest",

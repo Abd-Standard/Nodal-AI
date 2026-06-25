@@ -17,7 +17,7 @@ import { config } from "../backend/config";
 vi.mock("../backend/tools/StellarPaymentTool");
 
 vi.mock("../backend/config", () => {
-  const { Keypair } = require("@stellar/stellar-sdk");
+  const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
   const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
   return {
     config: {
@@ -277,7 +277,10 @@ describe("X402PaymentTool", () => {
 
   describe("X402PaymentProof snapshot", () => {
     it("X402PaymentProof has expected shape and fields", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
       const proof = await tool.respond(VALID_CHALLENGE);
+      vi.useRealTimers();
 
       expect(proof).toMatchSnapshot();
       expect(proof).toHaveProperty("protocol", "x402");

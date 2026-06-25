@@ -133,13 +133,16 @@ describe("withRetry", () => {
     await vi.advanceTimersByTimeAsync(0); // Initial attempt
     expect(fn).toHaveBeenCalledTimes(1);
 
-    await vi.advanceTimersByTimeAsync(1500); // First retry after 1500ms delay
+    // Advance enough to cover base delay + max jitter (20%): 1500 * 1.2 = 1800
+    await vi.advanceTimersByTimeAsync(1800);
     expect(fn).toHaveBeenCalledTimes(2);
 
-    await vi.advanceTimersByTimeAsync(3000); // Second retry after 3000ms delay
+    // Second retry: 3000 * 1.2 = 3600
+    await vi.advanceTimersByTimeAsync(3600);
     expect(fn).toHaveBeenCalledTimes(3);
 
-    await vi.advanceTimersByTimeAsync(6000); // Third retry after 6000ms delay
+    // Third retry: 6000 * 1.2 = 7200
+    await vi.advanceTimersByTimeAsync(7200);
     expect(fn).toHaveBeenCalledTimes(4);
 
     await expect(promise).resolves.toBe("success");
@@ -180,7 +183,7 @@ describe("withRetry", () => {
   it("last error is re-thrown after exhaustion with StellarRPCError", async () => {
     const fn = vi.fn().mockRejectedValue(new Error("Service Unavailable"));
 
-    const err = await expect(withRetry(fn, 3, 0)).rejects.toThrow();
+    const err = await withRetry(fn, 3, 0).catch((e: Error) => e) as Error;
     expect(err.name).toBe("StellarRPCError");
     expect(err.message).toContain("RPC call failed after 3 attempts");
   });

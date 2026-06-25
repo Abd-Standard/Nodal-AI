@@ -94,6 +94,7 @@ export async function withRetry<T>(
 ): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= retries; attempt++) {
+    logger.debug(`[withRetry] Attempt ${attempt}/${retries}: calling...`);
     try {
       return await fn();
     } catch (err) {
@@ -101,7 +102,8 @@ export async function withRetry<T>(
         throw err;
       }
       lastErr = err;
-      logger.warn("Retry attempt failed", {
+      const outcome = attempt < retries ? "retrying..." : "giving up";
+      logger.warn(`Attempt ${attempt}/${retries} failed, ${outcome}`, {
         attempt,
         maxRetries: retries,
         error: (err as Error).message,

@@ -16,13 +16,15 @@ import { logger } from "./logger";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
 import { X402PaymentTool } from "./tools/X402PaymentTool";
+import { PathPaymentTool } from "./tools/PathPaymentTool";
+import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 
 const log = createLogger("orchestrator");
 
 // ─── Task types ───────────────────────────────────────────────────────────────
 
-export type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond";
+export type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump";
 
 export interface AgentTask {
   type: TaskType;
@@ -66,6 +68,8 @@ export class PayFiAgent extends EventEmitter {
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
   private x402Tool: X402PaymentTool;
+  private pathPaymentTool: PathPaymentTool;
+  private feeBumpTool: FeeBumpTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -83,6 +87,8 @@ export class PayFiAgent extends EventEmitter {
     this.paymentTool = new StellarPaymentTool(config.agentKeypair().secret());
     this.sorobanTool = new SorobanInvokeTool(config.agentKeypair().secret());
     this.x402Tool    = new X402PaymentTool(config.agentKeypair().secret());
+    this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
+    this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -210,6 +216,14 @@ export class PayFiAgent extends EventEmitter {
           data = await this.x402Tool.respond(task.payload);
           break;
         }
+
+        case "path_payment":
+          data = await this.pathPaymentTool.execute(task.payload);
+          break;
+
+        case "fee_bump":
+          data = await this.feeBumpTool.execute(task.payload);
+          break;
 
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
