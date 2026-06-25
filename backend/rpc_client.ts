@@ -71,6 +71,7 @@ export async function withRetry<T>(
 ): Promise<T> {
   let lastErr: unknown;
   for (let attempt = 1; attempt <= retries; attempt++) {
+    logger.debug(`[withRetry] Attempt ${attempt}/${retries}: calling...`);
     try {
       // Check backoff before each attempt
       if (isThrottled()) {

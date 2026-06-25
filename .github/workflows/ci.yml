@@ -50,8 +50,13 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
       - run: npm ci
-      - run: npm run test
+      - run: npm run test:all
 
   test-rust:
     runs-on: ubuntu-latest

@@ -83,6 +83,9 @@ describe("PayFiAgent — runSequence", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 
@@ -228,6 +231,9 @@ describe("AgentResult snapshot", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "success_tx_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 

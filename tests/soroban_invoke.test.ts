@@ -74,7 +74,7 @@ vi.mock("../backend/rpc_client", () => ({
  */
 
 vi.mock("../backend/config", () => {
-  const { Keypair } = require("@stellar/stellar-sdk");
+  const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
   const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
   return {
     config: {
@@ -570,7 +570,7 @@ describe("SorobanInvokeTool", () => {
 
     it("accepts multiple xdr.ScVal instances", () => {
       const arg1 = nativeToScVal(100n, { type: "i128" });
-      const arg2 = nativeToScVal("GABC", { type: "address" });
+      const arg2 = nativeToScVal("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", { type: "address" });
       const result = SorobanInvokeInputSchema.safeParse({
         contractId: VALID_CONTRACT,
         method: "test",
