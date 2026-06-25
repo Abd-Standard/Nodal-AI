@@ -195,3 +195,18 @@ describe("formatValidationErrors", () => {
     expect(result).not.toContain("SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT");
   });
 });
+
+describe("config.ts keypair caching", () => {
+  it("agentKeypair returns the same Keypair instance on every call", async () => {
+    vi.resetModules();
+    process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
+    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+    process.env.AGENT_SECRET_KEY = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+
+    const { config } = await import("../backend/config");
+    const first = config.agentKeypair();
+    const second = config.agentKeypair();
+    expect(first).toBe(second);
+  });
+});

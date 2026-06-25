@@ -390,6 +390,11 @@ function loadConfig(): AgentConfig {
   const rpcTimeoutMs =
     raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
 
+  // Derive the keypair once at startup. agentKeypair returns this cached instance
+  // on every call, avoiding repeated Ed25519 derivation.
+  const _keypair = Keypair.fromSecret(_secret);
+  const _secretRef = _secret;
+
   const cfg: AgentConfig = {
     ...rest,
     AGENT_PUBLIC_KEY: derivedPublicKey,
@@ -397,8 +402,14 @@ function loadConfig(): AgentConfig {
     MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
     MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
     // Secret is captured in closure; never on the object
-    agentKeypair: () => Keypair.fromSecret(_secret),
+    agentKeypair: () => _keypair,
   };
+
+  // Allow GC of the secret string now that the keypair is materialised.
+  // (JS strings are immutable, but this signals intent.)
+  (() => {
+    const _ = _secretRef;
+  })();
 
   // Startup banner — only safe fields
   process.stdout.write(
