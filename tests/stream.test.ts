@@ -33,6 +33,9 @@ vi.mock("../backend/tools/TrustlineTool", () => ({
 vi.mock("../backend/tools/MultiSigPaymentTool", () => ({
   MultiSigPaymentTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
 }));
+vi.mock("../backend/tools/BatchPaymentTool", () => ({
+  BatchPaymentTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
+}));
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),

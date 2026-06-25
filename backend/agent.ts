@@ -20,6 +20,7 @@ import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
 import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
+import { BatchPaymentTool } from "./tools/BatchPaymentTool";
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 
@@ -33,7 +34,8 @@ export type TaskType =
   | "x402_respond"
   | "account_info"
   | "change_trust"
-  | "multisig_payment";
+  | "multisig_payment"
+  | "batch_payment";
 
 export interface AgentTask {
   type: TaskType;
@@ -102,6 +104,7 @@ export class PayFiAgent extends EventEmitter {
   private accountInfoTool: AccountInfoTool;
   private trustlineTool: TrustlineTool;
   private multiSigTool: MultiSigPaymentTool;
+  private batchPaymentTool: BatchPaymentTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -124,6 +127,7 @@ export class PayFiAgent extends EventEmitter {
     this.accountInfoTool = new AccountInfoTool();
     this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
     this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
+    this.batchPaymentTool = new BatchPaymentTool(config.agentKeypair().secret());
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -308,6 +312,10 @@ export class PayFiAgent extends EventEmitter {
 
         case "multisig_payment":
           data = await this.multiSigTool.execute(task.payload);
+          break;
+
+        case "batch_payment":
+          data = await this.batchPaymentTool.execute(task.payload);
           break;
 
         default:

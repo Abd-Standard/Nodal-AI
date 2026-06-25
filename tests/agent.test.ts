@@ -46,6 +46,12 @@ vi.mock("../backend/tools/MultiSigPaymentTool", () => ({
   })),
 }));
 
+vi.mock("../backend/tools/BatchPaymentTool", () => ({
+  BatchPaymentTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
 vi.mock("../backend/persistence", () => ({
   saveResult: vi.fn(),
 }));
