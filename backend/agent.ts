@@ -15,6 +15,7 @@ import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
+import { SorobanQueryTool } from "./tools/SorobanQueryTool";
 import { X402PaymentTool } from "./tools/X402PaymentTool";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 
@@ -22,7 +23,7 @@ const log = createLogger("orchestrator");
 
 // ─── Task types ───────────────────────────────────────────────────────────────
 
-export type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond";
+export type TaskType = "stellar_payment" | "soroban_invoke" | "soroban_query" | "x402_respond";
 
 export interface AgentTask {
   type: TaskType;
@@ -65,6 +66,7 @@ function assertWithinSpendingLimit(amount: unknown): void {
 export class PayFiAgent extends EventEmitter {
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
+  private queryTool: SorobanQueryTool;
   private x402Tool: X402PaymentTool;
 
   private activeTasks = 0;
@@ -82,6 +84,7 @@ export class PayFiAgent extends EventEmitter {
     // type (Omit<RawEnv, "AGENT_SECRET_KEY">); using agentKeypair() makes the access explicit.
     this.paymentTool = new StellarPaymentTool(config.agentKeypair().secret());
     this.sorobanTool = new SorobanInvokeTool(config.agentKeypair().secret());
+    this.queryTool   = new SorobanQueryTool(config.agentKeypair().secret());
     this.x402Tool    = new X402PaymentTool(config.agentKeypair().secret());
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -202,6 +205,10 @@ export class PayFiAgent extends EventEmitter {
 
         case "soroban_invoke":
           data = await this.sorobanTool.execute(task.payload);
+          break;
+
+        case "soroban_query":
+          data = await this.queryTool.execute(task.payload);
           break;
 
         case "x402_respond": {
