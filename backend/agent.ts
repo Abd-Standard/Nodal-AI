@@ -20,6 +20,7 @@ import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
+import { dispatchWebhook } from "./webhook";
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 
@@ -327,6 +328,7 @@ export class PayFiAgent extends EventEmitter {
       logger.info("Task completed", { taskType: task.type });
       const result: AgentResult = { success: true, taskType: task.type, data };
       this.emit("task:complete", result);
+      void dispatchWebhook(result);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -335,6 +337,7 @@ export class PayFiAgent extends EventEmitter {
       logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
       const result: AgentResult = { success: false, taskType: task.type, error: safe };
       this.emit("task:failed", result);
+      void dispatchWebhook(result);
       return result;
     } finally {
       this.activeTasks--;

@@ -162,6 +162,10 @@ const EnvSchema = z.object({
     .int()
     .min(100)
     .default(1_000_000),
+
+  // Webhook notifications
+  WEBHOOK_URL: z.string().url().optional(),
+  WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -273,6 +277,8 @@ export interface AgentConfig {
    * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
    */
   readonly MAX_SOROBAN_FEE_STROOPS: number;
+  readonly WEBHOOK_URL?: string;
+  readonly WEBHOOK_SECRET?: string;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
