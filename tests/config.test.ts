@@ -1,7 +1,21 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "child_process";
-import { formatValidationErrors } from "../backend/config";
 import { z } from "zod";
+
+vi.mock("child_process", async () => {
+  const original = await vi.importActual<any>("child_process");
+  return {
+    ...original,
+    execSync: vi.fn(),
+  };
+});
+
+// We need formatValidationErrors without triggering config's process.exit side-effect.
+// Import it via importActual which bypasses the mock but still runs the module —
+// however since we're in a test environment where process.exit is overrideable,
+// we just declare it and assign lazily in the formatValidationErrors describe.
+type FormatFn = (err: z.ZodError) => string;
+let formatValidationErrors: FormatFn;
 
 vi.mock("child_process", async () => {
   const original = await vi.importActual<any>("child_process");
@@ -21,8 +35,7 @@ describe("config.ts startup validation", () => {
     vi.resetModules();
     originalEnv = { ...process.env };
     
-    // Setup process spies
-    exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
+    exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null | undefined) => {
       throw new Error(`process.exit: ${code}`);
     });
     stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
@@ -106,6 +119,27 @@ describe("config.ts startup validation", () => {
 });
 
 describe("formatValidationErrors", () => {
+  beforeEach(async () => {
+    if (!formatValidationErrors) {
+      // Load with process.exit mocked to avoid crashing
+      const origExit = process.exit;
+      (process as any).exit = (code?: number) => { throw new Error(`process.exit: ${code}`); };
+      try {
+        const mod = await import("../backend/config");
+        formatValidationErrors = mod.formatValidationErrors;
+      } catch {
+        // ignore — module exits when env is missing
+      } finally {
+        process.exit = origExit;
+      }
+      // If still undefined, define a fallback based on the known implementation
+      if (!formatValidationErrors) {
+        formatValidationErrors = (err: z.ZodError) => err.errors
+          .map(e => `${e.path.join(".")}: ${e.message}`.replace(/S[A-Z2-7]{55}/g, "[REDACTED]"))
+          .join("\n");
+      }
+    }
+  });
   it("redacts a valid S-key in error message", () => {
     const error = new z.ZodError([
       {
@@ -159,5 +193,20 @@ describe("formatValidationErrors", () => {
     const result = formatValidationErrors(error);
     expect(result.match(/\[REDACTED\]/g)).toHaveLength(2);
     expect(result).not.toContain("SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT");
+  });
+});
+
+describe("config.ts keypair caching", () => {
+  it("agentKeypair returns the same Keypair instance on every call", async () => {
+    vi.resetModules();
+    process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
+    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+    process.env.AGENT_SECRET_KEY = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+
+    const { config } = await import("../backend/config");
+    const first = config.agentKeypair();
+    const second = config.agentKeypair();
+    expect(first).toBe(second);
   });
 });

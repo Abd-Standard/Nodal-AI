@@ -7,6 +7,7 @@
 
 import {
   Keypair,
+  Transaction,
   TransactionBuilder,
   Operation,
   Contract,
@@ -19,15 +20,12 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase, sorobanServer } from "../rpc_client";
 
-// ─── Timeout guard ────────────────────────────────────────────────────────────
+// ─── Constants ─────────────────────────────────────────────────────────────────
 
-/**
- * Transaction timeout in seconds for Soroban invocations and Stellar payments.
- *
- * Must be in the range [1, 300]. Values ≤ 0 would produce transactions that are
- * valid indefinitely (replay risk). Values > 300 are considered unsafe.
- */
-export const SOROBAN_TX_TIMEOUT_SECONDS = 30;
+// SAFETY: Timeout in seconds for Soroban broadcast transactions.
+// Must ALWAYS be a positive integer. setTimeout(0) produces transactions
+// without time bounds that can be replayed indefinitely on the network.
+export const SOROBAN_TX_TIMEOUT = 30;
 
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
@@ -85,6 +83,34 @@ export const SorobanInvokeInputSchema = z.object({
 
 export type SorobanInvokeInput = z.infer<typeof SorobanInvokeInputSchema>;
 
+// ─── Return type ──────────────────────────────────────────────────────────────
+
+/**
+ * Discriminated union return type for {@link SorobanInvokeTool.execute}.
+ * - When `simulateOnly=false`: `{ txHash: string }`
+ * - When `simulateOnly=true`:  `{ simulationResult: Transaction }`
+ */
+export type SorobanInvokeResult =
+  | { txHash: string; simulationResult?: never }
+  | { txHash?: never; simulationResult: Transaction };
+
+/**
+ * Type guard: narrows a `SorobanInvokeResult` to the simulation-only variant.
+ *
+ * @example
+ * ```ts
+ * const result = await tool.execute({ ..., simulateOnly: true });
+ * if (isSorobanSimulationResult(result)) {
+ *   console.log(result.simulationResult); // Transaction
+ * }
+ * ```
+ */
+export function isSorobanSimulationResult(
+  result: SorobanInvokeResult
+): result is { simulationResult: Transaction } {
+  return result.simulationResult !== undefined;
+}
+
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class SorobanInvokeTool {
@@ -140,7 +166,7 @@ export class SorobanInvokeTool {
    */
   async execute(
     rawInput: unknown
-  ): Promise<{ txHash?: string; simulationResult?: unknown }> {
+  ): Promise<SorobanInvokeResult> {
     const input = SorobanInvokeInputSchema.parse(rawInput);
 
     // 1. Resolve contract
@@ -170,7 +196,7 @@ export class SorobanInvokeTool {
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(input.method, ...input.args))
-      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
+      .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
     logger.info("Simulating Soroban transaction", {
@@ -181,22 +207,37 @@ export class SorobanInvokeTool {
     // 4. MANDATORY simulate step — throws on simulation failure
     const preparedTx = await prepareSorobanTx(tx);
 
-    if (input.simulateOnly) {
-      logger.info("Simulation passed (dry-run, not broadcasting)");
-      return { simulationResult: preparedTx };
+    if (preparedTx.fee > config.MAX_SOROBAN_FEE_STROOPS) {
+      throw new Error(
+        `Soroban fee ${preparedTx.fee} exceeds MAX_SOROBAN_FEE_STROOPS ${config.MAX_SOROBAN_FEE_STROOPS}`
+      );
     }
 
-    // 5. Sign prepared transaction
+    if (input.simulateOnly) {
+      logger.info("Simulation passed (dry-run, not broadcasting)");
+      return { simulationResult: preparedTx as Transaction };
+    }
+
+    // 5. Timeout safety guard: reject transactions with no time bounds
+    //    setTimeout(0) produces transactions replayable indefinitely.
+    if (!preparedTx.timeBounds) {
+      throw new Error(
+        "Broadcast aborted: transaction has no time bounds (setTimeout(0)). " +
+        "Use a positive timeout to prevent indefinite replay."
+      );
+    }
+
+    // 6. Sign prepared transaction
     preparedTx.sign(this.keypair);
 
-    // 6. Submit
+    // 7. Submit
     const result = await sorobanServer.sendTransaction(preparedTx);
 
     if (result.status === "ERROR") {
       throw new Error(`Soroban submit failed: ${result.errorResult?.toXDR("base64")}`);
     }
 
-    // 7. Poll for confirmation
+    // 8. Poll for confirmation
     const confirmed = await this.pollForConfirmation(result.hash);
     return { txHash: confirmed.txHash };
   }

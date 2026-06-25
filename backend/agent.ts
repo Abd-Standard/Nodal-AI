@@ -15,15 +15,24 @@ import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
-import { SorobanQueryTool } from "./tools/SorobanQueryTool";
-import { X402PaymentTool } from "./tools/X402PaymentTool";
+import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
+import { AccountInfoTool } from "./tools/AccountInfoTool";
+import { TrustlineTool } from "./tools/TrustlineTool";
+import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
+import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 
 const log = createLogger("orchestrator");
 
 // ─── Task types ───────────────────────────────────────────────────────────────
 
-export type TaskType = "stellar_payment" | "soroban_invoke" | "soroban_query" | "x402_respond";
+export type TaskType =
+  | "stellar_payment"
+  | "soroban_invoke"
+  | "x402_respond"
+  | "account_info"
+  | "change_trust"
+  | "multisig_payment";
 
 export interface AgentTask {
   type: TaskType;
@@ -35,6 +44,27 @@ export interface AgentResult {
   taskType: TaskType;
   data?: unknown;
   error?: string;
+}
+
+// ─── Payload sanitisation ─────────────────────────────────────────────────────
+
+const SECRET_KEY_RE = /^(?<prefix>.*?["':\s]?)(?<secret>S[ A-Z2-7]{55})(?<suffix>["'\s]?.*)$/i;
+
+function redactSecretString(value: string): string {
+  return value.replace(SECRET_KEY_RE, "$<prefix>[REDACTED]$<suffix>");
+}
+
+function sanitizePayload(payload: unknown): unknown {
+  if (payload === null || typeof payload !== "object") return payload;
+  if (Array.isArray(payload)) return payload.map(sanitizePayload);
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (/secret|key|seed|mnemonic|private/i.test(key)) continue;
+    sanitized[key] = rawValue;
+  }
+  return sanitized;
 }
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
@@ -66,11 +96,15 @@ function assertWithinSpendingLimit(amount: unknown): void {
 export class PayFiAgent extends EventEmitter {
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
-  private queryTool: SorobanQueryTool;
+  private sorobanQueryTool: SorobanQueryTool;
   private x402Tool: X402PaymentTool;
+  private accountInfoTool: AccountInfoTool;
+  private trustlineTool: TrustlineTool;
+  private multiSigTool: MultiSigPaymentTool;
 
   private activeTasks = 0;
   private isDraining = false;
+  private _streamStop: (() => void) | null = null;
 
   // Bound handler references kept so destroy() can call .off() with the exact same function
   // reference — EventEmitter requires identity equality for removal.
@@ -84,8 +118,11 @@ export class PayFiAgent extends EventEmitter {
     // type (Omit<RawEnv, "AGENT_SECRET_KEY">); using agentKeypair() makes the access explicit.
     this.paymentTool = new StellarPaymentTool(config.agentKeypair().secret());
     this.sorobanTool = new SorobanInvokeTool(config.agentKeypair().secret());
-    this.queryTool   = new SorobanQueryTool(config.agentKeypair().secret());
+    this.sorobanQueryTool = new SorobanQueryTool(config.agentKeypair().secret());
     this.x402Tool    = new X402PaymentTool(config.agentKeypair().secret());
+    this.accountInfoTool = new AccountInfoTool();
+    this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
+    this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -119,6 +156,47 @@ export class PayFiAgent extends EventEmitter {
   }
 
   /**
+   * Start polling the Horizon payment stream for incoming x402 challenges.
+   * Calls onChallenge for each payment whose memo starts with "x402:".
+   */
+  startListening(resourceUrl: string, onChallenge: (challenge: X402Challenge) => void): void {
+    if (this._streamStop) return; // already listening
+
+    const closeStream = horizonServer
+      .payments()
+      .forAccount(config.AGENT_PUBLIC_KEY)
+      .stream({
+        onmessage: (payment: any) => {
+          const memo: string = payment.memo ?? "";
+          if (!memo.startsWith("x402:")) return;
+          try {
+            const challenge: X402Challenge = JSON.parse(
+              Buffer.from(memo.slice(5), "base64").toString("utf8")
+            );
+            onChallenge(challenge);
+          } catch {
+            // Malformed memo — ignore
+          }
+        },
+        onerror: (event: MessageEvent) => {
+          logger.warn("Payment stream error", { error: String(event) });
+        },
+      });
+
+    this._streamStop = closeStream as unknown as () => void;
+    logger.info("Payment stream started", { resourceUrl });
+  }
+
+  /** Stop the active Horizon payment stream subscription. */
+  stopListening(): void {
+    if (this._streamStop) {
+      this._streamStop();
+      this._streamStop = null;
+      logger.info("Payment stream stopped");
+    }
+  }
+
+  /**
    * Detach all registered event listeners and release internal resources.
    *
    * Must be called by the lifecycle manager when an agent instance is
@@ -132,6 +210,7 @@ export class PayFiAgent extends EventEmitter {
    *   agent.destroy(); // call when decommissioning
    */
   destroy(): void {
+    this.stopListening();
     for (const [event, handler] of this._boundHandlers) {
       this.off(event, handler);
     }
@@ -208,7 +287,7 @@ export class PayFiAgent extends EventEmitter {
           break;
 
         case "soroban_query":
-          data = await this.queryTool.execute(task.payload);
+          data = await this.sorobanQueryTool.query(task.payload);
           break;
 
         case "x402_respond": {
@@ -217,6 +296,18 @@ export class PayFiAgent extends EventEmitter {
           data = await this.x402Tool.respond(task.payload);
           break;
         }
+
+        case "account_info":
+          data = await this.accountInfoTool.fetch();
+          break;
+
+        case "change_trust":
+          data = await this.trustlineTool.execute(task.payload);
+          break;
+
+        case "multisig_payment":
+          data = await this.multiSigTool.execute(task.payload);
+          break;
 
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
@@ -228,9 +319,9 @@ export class PayFiAgent extends EventEmitter {
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // Redact anything that looks like a secret key before logging
-      const safe = message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
-      logger.error("Task failed", { taskType: task.type, error: safe });
+      const safe = redactSecretString(message);
+      const sanitized = sanitizePayload(task.payload);
+      logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
       const result: AgentResult = { success: false, taskType: task.type, error: safe };
       this.emit("task:failed", result);
       return result;

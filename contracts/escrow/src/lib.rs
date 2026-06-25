@@ -190,6 +190,9 @@ impl EscrowContract {
 
         env.storage().instance().set(&DataKey::Released, &true);
 
+        // Transfer to stored_recipient (read from storage), not the caller parameter.
+        // This is the intentional pattern: destination always comes from storage,
+        // never from a caller-supplied argument, to prevent TOCTOU-style substitution.
         TokenClient::new(&env, &token).transfer(
             &env.current_contract_address(),
             &recipient,
@@ -249,14 +252,17 @@ impl EscrowContract {
 
         env.storage().instance().set(&DataKey::Released, &true);
 
+        // Transfer to stored_depositor (read from storage), not the caller parameter.
+        // This mirrors the pattern used in `release`, which transfers to stored_recipient,
+        // ensuring the destination is always the address recorded at initialization.
         TokenClient::new(&env, &token).transfer(
             &env.current_contract_address(),
-            &depositor,
+            &stored_depositor,
             &amount,
         );
 
         env.events()
-            .publish((Symbol::new(&env, "refunded"),), (depositor, amount));
+            .publish((Symbol::new(&env, "refunded"),), (stored_depositor, amount));
     }
 
     /// Return a snapshot of all escrow fields. Panics if not yet initialized.

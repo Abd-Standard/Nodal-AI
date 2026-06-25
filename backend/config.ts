@@ -99,7 +99,24 @@ const EnvSchema = z.object({
   X402_ASSET_CODE: z.string().min(1).max(12).default("USDC"),
   X402_ASSET_ISSUER: z
     .string({ required_error: "X402_ASSET_ISSUER is required" })
-    .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address"),
+    .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address")
+    .refine((val) => val.startsWith("G"), {
+      message: "X402_ASSET_ISSUER must start with G",
+    })
+    .refine(
+      (val) => {
+        try {
+          Keypair.fromPublicKey(val);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          "X402_ASSET_ISSUER is not a valid Ed25519 public key",
+      }
+    ),
   ALLOWED_X402_ORIGINS: z.string().optional(),
 
   // Spending cap
@@ -132,6 +149,19 @@ const EnvSchema = z.object({
     .int()
     .min(100)
     .optional(),
+
+  // Rate limiting
+  MAX_X402_PAYMENTS_PER_MINUTE: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(10),
+
+  MAX_SOROBAN_FEE_STROOPS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .default(1_000_000),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -231,6 +261,18 @@ export interface AgentConfig {
    * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.
    */
   readonly RPC_TIMEOUT_MS: number;
+
+  /**
+   * Maximum number of x402 payments allowed per 60-second sliding window.
+   * Defaults to 10. Prevents rapid-fire calls from exhausting the agent balance.
+   */
+  readonly MAX_X402_PAYMENTS_PER_MINUTE: number;
+
+  /**
+   * Maximum Soroban transaction fee in stroops (1 stroop = 0.0000001 XLM).
+   * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
+   */
+  readonly MAX_SOROBAN_FEE_STROOPS: number;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -348,13 +390,26 @@ function loadConfig(): AgentConfig {
   const rpcTimeoutMs =
     raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
 
+  // Derive the keypair once at startup. agentKeypair returns this cached instance
+  // on every call, avoiding repeated Ed25519 derivation.
+  const _keypair = Keypair.fromSecret(_secret);
+  const _secretRef = _secret;
+
   const cfg: AgentConfig = {
     ...rest,
     AGENT_PUBLIC_KEY: derivedPublicKey,
     RPC_TIMEOUT_MS: rpcTimeoutMs,
+    MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
+    MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
     // Secret is captured in closure; never on the object
-    agentKeypair: () => Keypair.fromSecret(_secret),
+    agentKeypair: () => _keypair,
   };
+
+  // Allow GC of the secret string now that the keypair is materialised.
+  // (JS strings are immutable, but this signals intent.)
+  (() => {
+    const _ = _secretRef;
+  })();
 
   // Startup banner — only safe fields
   process.stdout.write(

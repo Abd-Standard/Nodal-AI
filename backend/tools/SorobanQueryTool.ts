@@ -1,3 +1,15 @@
+/**
+ * backend/tools/SorobanQueryTool.ts
+ * Dedicated read-only tool for Soroban contract state inspection.
+ *
+ * Unlike SorobanInvokeTool, this tool always runs in simulate-only mode
+ * and never broadcasts transactions. The return type is non-polymorphic —
+ * callers always receive a `simulationResult` without needing to check
+ * which key is present.
+ *
+ * Architecture: validate input → simulate → return result (no signing, no broadcast)
+ */
+
 import {
   Keypair,
   TransactionBuilder,
@@ -5,16 +17,29 @@ import {
   Contract,
   BASE_FEE,
   xdr,
-  rpc,
 } from "@stellar/stellar-sdk";
+import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
-import { loadAccount, simulateSorobanTx, resolveNetworkPassphrase } from "../rpc_client";
-import { SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT_SECONDS } from "./SorobanInvokeTool";
+import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase } from "../rpc_client";
 
-export const SorobanQueryInputSchema = SorobanInvokeInputSchema.omit({ simulateOnly: true });
+// ─── Input schema ─────────────────────────────────────────────────────────────
 
-export type SorobanQueryInput = import("zod").z.infer<typeof SorobanQueryInputSchema>;
+export const SorobanQueryInputSchema = z.object({
+  contractId: z.string().length(56, "Invalid Stellar contract ID"),
+  method: z.string().min(1),
+  args: z.array(z.instanceof(xdr.ScVal)).default([]),
+});
+
+export type SorobanQueryInput = z.infer<typeof SorobanQueryInputSchema>;
+
+// ─── Output shape ─────────────────────────────────────────────────────────────
+
+export interface SorobanQueryResult {
+  simulationResult: unknown;
+}
+
+// ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class SorobanQueryTool {
   private keypair: Keypair;
@@ -25,13 +50,13 @@ export class SorobanQueryTool {
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
-  async execute(rawInput: unknown): Promise<{ result: xdr.ScVal }> {
+  async query(rawInput: unknown): Promise<SorobanQueryResult> {
     const input = SorobanQueryInputSchema.parse(rawInput);
 
     let contract: any;
     try {
       contract = new Contract(input.contractId);
-    } catch (err) {
+    } catch {
       contract = {
         call: (method: string, ...args: any[]) =>
           Operation.manageData({ name: `invoke:${method}`, value: "mock" }),
@@ -45,21 +70,17 @@ export class SorobanQueryTool {
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(input.method, ...input.args))
-      .setTimeout(SOROBAN_TX_TIMEOUT_SECONDS)
+      .setTimeout(0)
       .build();
 
-    logger.info("Executing Soroban query", {
+    logger.info("Simulating Soroban query", {
       method: input.method,
       contractId: input.contractId,
     });
 
-    const simResult = await simulateSorobanTx(tx);
+    const preparedTx = await prepareSorobanTx(tx);
 
-    if (rpc.Api.isSimulationError(simResult)) {
-      throw new Error(`Soroban query failed: ${(simResult as any).error}`);
-    }
-
-    const retval: xdr.ScVal = (simResult as any).results[0].retval;
-    return { result: retval };
+    logger.info("Soroban query simulation passed (read-only, not broadcasting)");
+    return { simulationResult: preparedTx };
   }
 }

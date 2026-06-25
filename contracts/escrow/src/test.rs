@@ -611,4 +611,27 @@ mod tests {
         client.cancel(&depositor, &arbiter);
         assert_eq!(token.balance(&depositor), 1_000);
     }
+
+    // 22. refund sends to stored_depositor, not the caller parameter (anti-TOCTOU)
+    #[test]
+    fn test_refund_goes_to_stored_depositor_not_impostor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, token) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let expiry = env.ledger().timestamp() + 100;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        env.ledger().with_mut(|li| li.timestamp = expiry + 1);
+        // Call refund with depositor — funds must go to stored depositor, not impostor
+        client.refund(&depositor);
+        assert_eq!(token.balance(&depositor), 1_000, "stored depositor should receive funds");
+        assert_eq!(token.balance(&impostor), 0, "impostor must receive nothing");
+        assert_eq!(token.balance(&contract_id), 0);
+    }
 }
