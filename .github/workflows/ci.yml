@@ -62,7 +62,7 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.79.0
 
       - name: Run Rust tests
         run: cargo test --manifest-path contracts/escrow/Cargo.toml
@@ -76,7 +76,7 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.79.0
           components: clippy, rustfmt
 
       - name: Run Clippy
@@ -94,7 +94,7 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.79.0
 
       - name: Run cargo-tarpaulin
         uses: actions-rs/tarpaulin@v0.1
@@ -124,7 +124,7 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.79.0
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
