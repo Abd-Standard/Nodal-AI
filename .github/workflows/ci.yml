@@ -101,6 +101,19 @@ jobs:
         with:
           args: '--manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust'
 
+  secret-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scanning with trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --config .trufflehog.yml --results=verified,unknown --no-verification
+
   audit-npm:
     runs-on: ubuntu-latest
 

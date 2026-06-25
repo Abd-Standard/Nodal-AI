@@ -1,3 +1,18 @@
 #!/usr/bin/env sh
+
+# Secret scan — abort if any Stellar S-key (56-char base32 starting with S) is
+# found in staged files, excluding the known test key.
+ALLOWED="SBPTNBEQQVQD5NIPZTCXHKM5ZVONK2ENLP5DTZJBGSUPOPWQSIFWZKX"
+MATCHES=$(git diff --cached --diff-filter=ACMR --name-only -z |
+  xargs -0 -r grep -rn --binary-files=without-match "S[A-Z2-7]\{55\}" 2>/dev/null |
+  grep -v "$ALLOWED" || true)
+
+if [ -n "$MATCHES" ]; then
+  echo "ERROR: Possible Stellar secret key detected in staged files:"
+  echo "$MATCHES"
+  echo "If this is intentional (e.g., a test key), add it to the allowlist in .husky/pre-commit."
+  exit 1
+fi
+
 npx tsc --noEmit
 npx lint-staged --config .lintstagedrc.json
