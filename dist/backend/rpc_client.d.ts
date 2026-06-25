@@ -42,11 +42,17 @@ export declare function DEFAULT_IS_RETRYABLE(err: unknown): boolean;
  */
 export declare function withRetry<T>(fn: () => Promise<T>, retries?: number, delayMs?: number, isRetryable?: (err: unknown) => boolean, maxDelayMs?: number): Promise<T>;
 /**
+ * Wraps a promise in a race against a timeout.
+ * Throws TimeoutError if the promise does not resolve within `ms` milliseconds.
+ */
+export declare function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T>;
+/**
  * Horizon server instance client.
  *
  * @remarks
- * The `allowHttp` configuration flag is set to true only when `config.STELLAR_NETWORK` is not `"mainnet"`.
+ * The `allowHttp` configuration flag uses an explicit allowlist: only testnet and futurenet permit HTTP.
  * On mainnet, this client strictly enforces secure HTTPS connections to protect transaction transmission.
+ * This prevents misconfiguration (e.g., "Mainnet" with capital M) from enabling plaintext connections.
  */
 export declare const horizonServer: Horizon.Server;
 /**
@@ -70,8 +76,8 @@ export declare function submitTransaction(tx: Transaction | FeeBumpTransaction):
  * Soroban RPC server instance client.
  *
  * @remarks
- * The `allowHttp` flag is configured dynamically: it allows HTTP for local development and testnets,
- * but enforces HTTPS on mainnet. Caution: sending mainnet transaction payloads or queries over plain HTTP
+ * The `allowHttp` flag uses an explicit allowlist: only testnet and futurenet permit HTTP.
+ * On mainnet, HTTPS is enforced. Caution: sending mainnet transaction payloads or queries over plain HTTP
  * exposes sensitive network calls to eavesdropping or tampering.
  */
 export declare const sorobanServer: rpc.Server;

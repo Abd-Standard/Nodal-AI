@@ -16,6 +16,7 @@
  *   config.AGENT_PUBLIC_KEY     // derived G-address, safe to log
  *   config.agentKeypair()       // call-site requests the Keypair explicitly
  */
+import { z } from "zod";
 import { Keypair } from "@stellar/stellar-sdk";
 export interface AgentConfig {
     /**
@@ -96,7 +97,13 @@ export interface AgentConfig {
     readonly agentKeypair: () => Keypair;
     readonly ALLOWED_X402_ORIGINS?: string;
     readonly AGENT_SECRET_KEY_ARN?: string;
+    /**
+     * Per-call RPC timeout in milliseconds.
+     * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.
+     */
+    readonly RPC_TIMEOUT_MS: number;
 }
+export declare function formatValidationErrors(errors: z.ZodError): string;
 export declare const config: AgentConfig;
 /**
  * Hardcoded spending limit (safety cap) for transactions on Stellar mainnet.

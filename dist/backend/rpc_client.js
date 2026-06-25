@@ -9,6 +9,7 @@ exports.sorobanServer = exports.horizonServer = exports.StellarRPCError = export
 exports.resolveNetworkPassphrase = resolveNetworkPassphrase;
 exports.DEFAULT_IS_RETRYABLE = DEFAULT_IS_RETRYABLE;
 exports.withRetry = withRetry;
+exports.withTimeout = withTimeout;
 exports.loadAccount = loadAccount;
 exports.submitTransaction = submitTransaction;
 exports.simulateSorobanTx = simulateSorobanTx;
@@ -112,16 +113,29 @@ async function withRetry(fn, retries = config_1.config.MAX_RETRIES, delayMs = co
     }
     throw new StellarRPCError(`RPC call failed after ${retries} attempt${retries !== 1 ? "s" : ""}: ${lastErr.message}`, lastErr);
 }
+// ─── Timeout wrapper ──────────────────────────────────────────────────────────
+/**
+ * Wraps a promise in a race against a timeout.
+ * Throws TimeoutError if the promise does not resolve within `ms` milliseconds.
+ */
+function withTimeout(promise, ms) {
+    let id;
+    const timeout = new Promise((_, reject) => {
+        id = setTimeout(() => reject(new TimeoutError(ms)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
+}
 // ─── Horizon client ──────────────────────────────────────────────────────────
 /**
  * Horizon server instance client.
  *
  * @remarks
- * The `allowHttp` configuration flag is set to true only when `config.STELLAR_NETWORK` is not `"mainnet"`.
+ * The `allowHttp` configuration flag uses an explicit allowlist: only testnet and futurenet permit HTTP.
  * On mainnet, this client strictly enforces secure HTTPS connections to protect transaction transmission.
+ * This prevents misconfiguration (e.g., "Mainnet" with capital M) from enabling plaintext connections.
  */
 exports.horizonServer = new stellar_sdk_1.Horizon.Server(config_1.config.HORIZON_URL, {
-    allowHttp: config_1.config.STELLAR_NETWORK !== "mainnet",
+    allowHttp: config_1.config.STELLAR_NETWORK === "testnet" || config_1.config.STELLAR_NETWORK === "futurenet",
 });
 /**
  * Loads account details from the Horizon network for a given public key.
@@ -131,7 +145,7 @@ exports.horizonServer = new stellar_sdk_1.Horizon.Server(config_1.config.HORIZON
  * @throws An error if the account cannot be loaded after retries.
  */
 async function loadAccount(publicKey) {
-    return withRetry(() => exports.horizonServer.loadAccount(publicKey), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE);
+    return withTimeout(withRetry(() => exports.horizonServer.loadAccount(publicKey), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE), config_1.config.RPC_TIMEOUT_MS);
 }
 /**
  * Submits a signed transaction to the Stellar network via Horizon.
@@ -164,12 +178,12 @@ async function submitTransaction(tx) {
  * Soroban RPC server instance client.
  *
  * @remarks
- * The `allowHttp` flag is configured dynamically: it allows HTTP for local development and testnets,
- * but enforces HTTPS on mainnet. Caution: sending mainnet transaction payloads or queries over plain HTTP
+ * The `allowHttp` flag uses an explicit allowlist: only testnet and futurenet permit HTTP.
+ * On mainnet, HTTPS is enforced. Caution: sending mainnet transaction payloads or queries over plain HTTP
  * exposes sensitive network calls to eavesdropping or tampering.
  */
 exports.sorobanServer = new stellar_sdk_1.rpc.Server(config_1.config.SOROBAN_RPC_URL, {
-    allowHttp: config_1.config.STELLAR_NETWORK !== "mainnet",
+    allowHttp: config_1.config.STELLAR_NETWORK === "testnet" || config_1.config.STELLAR_NETWORK === "futurenet",
 });
 /**
  * Simulate a Soroban transaction BEFORE broadcasting.
@@ -184,7 +198,7 @@ exports.sorobanServer = new stellar_sdk_1.rpc.Server(config_1.config.SOROBAN_RPC
  * @throws An error if simulation RPC call fails after retries.
  */
 async function simulateSorobanTx(tx) {
-    return withRetry(() => exports.sorobanServer.simulateTransaction(tx), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE);
+    return withTimeout(withRetry(() => exports.sorobanServer.simulateTransaction(tx), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE), config_1.config.RPC_TIMEOUT_MS);
 }
 /**
  * Prepare (simulate + assemble) a Soroban transaction.

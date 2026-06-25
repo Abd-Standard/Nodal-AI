@@ -4,10 +4,21 @@
  * Tests for withRetry and DEFAULT_IS_RETRYABLE in backend/rpc_client.ts.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "vitest";
 import { ZodError, z } from "zod";
-import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError } from "../backend/rpc_client";
-import { Networks } from "@stellar/stellar-sdk";
+import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, sorobanServer } from "../backend/rpc_client";
+import { Networks, rpc, xdr, StrKey, Keypair } from "@stellar/stellar-sdk";
+
+vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
+  const mod = await importOriginal();
+  return {
+    ...mod,
+    rpc: {
+      ...mod.rpc,
+      assembleTransaction: vi.fn(),
+    },
+  };
+});
 
 vi.mock("../backend/utils/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -15,19 +26,27 @@ vi.mock("../backend/utils/logger", () => ({
   generateCorrelationId: vi.fn(() => "mock-id"),
 }));
 
-vi.mock("../backend/config", () => ({
-  config: {
-    STELLAR_NETWORK: "testnet",
-    HORIZON_URL: "https://horizon-testnet.stellar.org",
-    SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
-    AGENT_SECRET_KEY: "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73",
-    X402_ASSET_CODE: "USDC",
-    X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-    MAX_RETRIES: 3,
-    RETRY_DELAY_MS: 100,
-    RPC_TIMEOUT_MS: 9000,
-  },
-}));
+vi.mock("../backend/config", () => {
+  const { Keypair } = require("@stellar/stellar-sdk");
+  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  return {
+    config: {
+      STELLAR_NETWORK: "testnet",
+      HORIZON_URL: "https://horizon-testnet.stellar.org",
+      SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
+      AGENT_SECRET_KEY: secret,
+      AGENT_PUBLIC_KEY: Keypair.fromSecret(secret).publicKey(),
+      agentKeypair: () => Keypair.fromSecret(secret),
+      X402_ASSET_CODE: "USDC",
+      X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      MAX_RETRIES: 3,
+      RETRY_DELAY_MS: 100,
+      RPC_TIMEOUT_MS: 9000,
+      MAX_X402_PAYMENTS_PER_MINUTE: 10,
+      MAX_SOROBAN_FEE_STROOPS: 1_000_000,
+    },
+  };
+});
 
 // ─── resolveNetworkPassphrase ─────────────────────────────────────────────────
 
@@ -205,5 +224,94 @@ describe("withTimeout", () => {
     expect(err).toBeInstanceOf(TimeoutError);
     expect(err.message).toMatch(/timeout/i);
     expect(err.name).toBe("TimeoutError");
+  });
+});
+
+// ─── prepareSorobanTx auth checks ──────────────────────────────────────────
+
+describe("prepareSorobanTx auth checks", () => {
+  beforeEach(() => {
+    vi.spyOn(sorobanServer, "simulateTransaction").mockResolvedValue({} as any);
+  });
+
+  it("throws when auth contains an unexpected signer (address credentials)", async () => {
+    const badKeypair = Keypair.random();
+    const badAddress = badKeypair.publicKey();
+    const rawKey = StrKey.decodeEd25519PublicKey(badAddress);
+
+    const mockAuthEntry = {
+      credentials: () => ({
+        switch: () => xdr.SorobanCredentialsType.sorobanCredentialsAddress(),
+        address: () => ({
+          address: () => ({
+            switch: () => xdr.ScAddressType.scAddressTypeAccount(),
+            accountId: () => ({
+              ed25519: () => rawKey,
+            }),
+          }),
+        }),
+      }),
+    };
+
+    const mockTx = {
+      operations: [{ auth: [mockAuthEntry] }],
+    };
+
+    vi.mocked(rpc.assembleTransaction).mockReturnValue({
+      build: vi.fn().mockReturnValue(mockTx as any),
+    });
+
+    const dummyTx = {} as any;
+    await expect(prepareSorobanTx(dummyTx)).rejects.toThrow(/unexpected/i);
+  });
+
+  it("does not throw when auth entries use source account credentials", async () => {
+    const mockAuthEntry = {
+      credentials: () => ({
+        switch: () => xdr.SorobanCredentialsType.sorobanCredentialsSourceAccount(),
+      }),
+    };
+
+    const mockTx = {
+      operations: [{ auth: [mockAuthEntry] }],
+    };
+
+    vi.mocked(rpc.assembleTransaction).mockReturnValue({
+      build: vi.fn().mockReturnValue(mockTx as any),
+    });
+
+    const dummyTx = {} as any;
+    await expect(prepareSorobanTx(dummyTx)).resolves.toBeDefined();
+  });
+
+  it("does not throw when address credentials match the agent's public key", async () => {
+    const agentSecret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    const agentPublicKey = Keypair.fromSecret(agentSecret).publicKey();
+    const rawKey = StrKey.decodeEd25519PublicKey(agentPublicKey);
+
+    const mockAuthEntry = {
+      credentials: () => ({
+        switch: () => xdr.SorobanCredentialsType.sorobanCredentialsAddress(),
+        address: () => ({
+          address: () => ({
+            switch: () => xdr.ScAddressType.scAddressTypeAccount(),
+            accountId: () => ({
+              ed25519: () => rawKey,
+            }),
+          }),
+        }),
+      }),
+    };
+
+    const mockTx = {
+      operations: [{ auth: [mockAuthEntry] }],
+    };
+
+    vi.mocked(rpc.assembleTransaction).mockReturnValue({
+      build: vi.fn().mockReturnValue(mockTx as any),
+    });
+
+    const dummyTx = {} as any;
+    await expect(prepareSorobanTx(dummyTx)).resolves.toBeDefined();
   });
 });

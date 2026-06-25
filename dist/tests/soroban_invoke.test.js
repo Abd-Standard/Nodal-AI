@@ -64,6 +64,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const vitest_1 = require("vitest");
+const stellar_sdk_1 = require("@stellar/stellar-sdk");
 const SorobanInvokeTool_1 = require("../backend/tools/SorobanInvokeTool");
 const rpcClient = __importStar(require("../backend/rpc_client"));
 // ─── Module mock ──────────────────────────────────────────────────────────────
@@ -320,11 +321,20 @@ function makeMockAccount(publicKey) {
             vitest_1.vi.mocked(rpcClient.sorobanServer.getTransaction).mockResolvedValue({
                 status: "FAILED",
             });
-            await (0, vitest_1.expect)(tool.execute({
-                contractId: VALID_CONTRACT,
-                method: "release",
-                args: [],
-            })).rejects.toThrow(/failed on-chain/);
+            let error;
+            try {
+                await tool.execute({
+                    contractId: VALID_CONTRACT,
+                    method: "release",
+                    args: [],
+                });
+            }
+            catch (e) {
+                error = e;
+            }
+            (0, vitest_1.expect)(error).toBeDefined();
+            (0, vitest_1.expect)(error.message).toMatch(/failed on-chain/);
+            (0, vitest_1.expect)(error.message).toContain("failed_on_chain_hash");
         });
         (0, vitest_1.it)("throws when sendTransaction returns ERROR status", async () => {
             vitest_1.vi.mocked(rpcClient.sorobanServer.sendTransaction).mockResolvedValue({
@@ -386,6 +396,54 @@ function makeMockAccount(publicKey) {
                 method: "release",
                 args: [],
             })).rejects.toThrow(/not found/);
+        });
+    });
+    // ── Args validation ────────────────────────────────────────────────────────
+    (0, vitest_1.describe)("args validation", () => {
+        (0, vitest_1.it)("rejects plain JavaScript object in args array", () => {
+            const result = SorobanInvokeTool_1.SorobanInvokeInputSchema.safeParse({
+                contractId: VALID_CONTRACT,
+                method: "test",
+                args: [{}],
+            });
+            (0, vitest_1.expect)(result.success).toBe(false);
+        });
+        (0, vitest_1.it)("accepts xdr.ScVal instance from nativeToScVal", () => {
+            const scVal = (0, stellar_sdk_1.nativeToScVal)(42, { type: "u32" });
+            const result = SorobanInvokeTool_1.SorobanInvokeInputSchema.safeParse({
+                contractId: VALID_CONTRACT,
+                method: "test",
+                args: [scVal],
+            });
+            (0, vitest_1.expect)(result.success).toBe(true);
+            (0, vitest_1.expect)(result.data?.args).toHaveLength(1);
+        });
+        (0, vitest_1.it)("rejects null args", () => {
+            const result = SorobanInvokeTool_1.SorobanInvokeInputSchema.safeParse({
+                contractId: VALID_CONTRACT,
+                method: "test",
+                args: null,
+            });
+            (0, vitest_1.expect)(result.success).toBe(false);
+        });
+        (0, vitest_1.it)("accepts empty args array as default", () => {
+            const result = SorobanInvokeTool_1.SorobanInvokeInputSchema.safeParse({
+                contractId: VALID_CONTRACT,
+                method: "test",
+            });
+            (0, vitest_1.expect)(result.success).toBe(true);
+            (0, vitest_1.expect)(result.data?.args).toEqual([]);
+        });
+        (0, vitest_1.it)("accepts multiple xdr.ScVal instances", () => {
+            const arg1 = (0, stellar_sdk_1.nativeToScVal)(100n, { type: "i128" });
+            const arg2 = (0, stellar_sdk_1.nativeToScVal)("GABC", { type: "address" });
+            const result = SorobanInvokeTool_1.SorobanInvokeInputSchema.safeParse({
+                contractId: VALID_CONTRACT,
+                method: "test",
+                args: [arg1, arg2],
+            });
+            (0, vitest_1.expect)(result.success).toBe(true);
+            (0, vitest_1.expect)(result.data?.args).toHaveLength(2);
         });
     });
 });

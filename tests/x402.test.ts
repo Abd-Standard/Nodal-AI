@@ -43,6 +43,8 @@ vi.mock("../backend/config", () => {
       X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
       MAX_RETRIES: 3,
       RETRY_DELAY_MS: 100,
+      MAX_X402_PAYMENTS_PER_MINUTE: 10,
+      MAX_SOROBAN_FEE_STROOPS: 1_000_000,
       ALLOWED_X402_ORIGINS: undefined,
     },
   };
@@ -176,6 +178,43 @@ describe("X402PaymentTool", () => {
         expiresAt: futureIso(1),
       });
       expect(proof.txHash).toBeTruthy();
+    });
+  });
+
+  // ── Rate limiting ────────────────────────────────────────────────────────────
+
+  describe("Rate limiting", () => {
+    it("allows up to MAX_X402_PAYMENTS_PER_MINUTE calls within the window", async () => {
+      for (let i = 0; i < 10; i++) {
+        const proof = await tool.respond(VALID_CHALLENGE);
+        expect(proof.txHash).toBe("x402_mock_tx_hash");
+      }
+      expect(mockPaymentTool.execute).toHaveBeenCalledTimes(10);
+    });
+
+    it("throws on the 11th call within the same 60s window", async () => {
+      for (let i = 0; i < 10; i++) {
+        await tool.respond(VALID_CHALLENGE);
+      }
+      await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow("x402: rate limit exceeded");
+    });
+
+    it("resets the counter after 60s window elapses", async () => {
+      vi.useFakeTimers();
+      const startTime = Date.now();
+      const farFutureExpiry = new Date(startTime + 180_000).toISOString();
+      const challenge = { ...VALID_CHALLENGE, expiresAt: farFutureExpiry };
+
+      for (let i = 0; i < 10; i++) {
+        await tool.respond(challenge);
+      }
+      await expect(tool.respond(challenge)).rejects.toThrow("rate limit exceeded");
+
+      vi.setSystemTime(startTime + 60_001);
+
+      const proof = await tool.respond(challenge);
+      expect(proof.txHash).toBe("x402_mock_tx_hash");
+      vi.useRealTimers();
     });
   });
 

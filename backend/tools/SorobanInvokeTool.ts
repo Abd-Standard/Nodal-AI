@@ -202,6 +202,12 @@ export class SorobanInvokeTool {
     // 4. MANDATORY simulate step — throws on simulation failure
     const preparedTx = await prepareSorobanTx(tx);
 
+    if (preparedTx.fee > config.MAX_SOROBAN_FEE_STROOPS) {
+      throw new Error(
+        `Soroban fee ${preparedTx.fee} exceeds MAX_SOROBAN_FEE_STROOPS ${config.MAX_SOROBAN_FEE_STROOPS}`
+      );
+    }
+
     if (input.simulateOnly) {
       logger.info("Simulation passed (dry-run, not broadcasting)");
       return { simulationResult: preparedTx as Transaction };
