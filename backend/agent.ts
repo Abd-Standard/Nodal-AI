@@ -36,6 +36,27 @@ export interface AgentResult {
   error?: string;
 }
 
+// ─── Payload sanitisation ─────────────────────────────────────────────────────
+
+const SECRET_KEY_RE = /^(?<prefix>.*?["':\s]?)(?<secret>S[ A-Z2-7]{55})(?<suffix>["'\s]?.*)$/i;
+
+function redactSecretString(value: string): string {
+  return value.replace(SECRET_KEY_RE, "$<prefix>[REDACTED]$<suffix>");
+}
+
+function sanitizePayload(payload: unknown): unknown {
+  if (payload === null || typeof payload !== "object") return payload;
+  if (Array.isArray(payload)) return payload.map(sanitizePayload);
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (/secret|key|seed|mnemonic|private/i.test(key)) continue;
+    sanitized[key] = rawValue;
+  }
+  return sanitized;
+}
+
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
 /**
@@ -221,9 +242,9 @@ export class PayFiAgent extends EventEmitter {
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // Redact anything that looks like a secret key before logging
-      const safe = message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
-      logger.error("Task failed", { taskType: task.type, error: safe });
+      const safe = redactSecretString(message);
+      const sanitized = sanitizePayload(task.payload);
+      logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
       const result: AgentResult = { success: false, taskType: task.type, error: safe };
       this.emit("task:failed", result);
       return result;
