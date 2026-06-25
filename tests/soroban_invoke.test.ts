@@ -50,7 +50,11 @@ vi.mock("../backend/rpc_client", () => ({
   submitTransaction: vi.fn(),
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
-  resolveNetworkPassphrase: vi.fn(() => "Test SDF Network ; September 2015"),
+  resolveNetworkPassphrase: vi.fn((network: string) =>
+    network === "mainnet"
+      ? "Public Global Stellar Network ; September 2015"
+      : "Test SDF Network ; September 2015"
+  ),
   horizonServer: {},
   sorobanServer: {
     sendTransaction: vi.fn(),
@@ -85,6 +89,8 @@ vi.mock("../backend/config", () => {
         "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
       MAX_RETRIES: 3,
       RETRY_DELAY_MS: 100,
+      MAX_X402_PAYMENTS_PER_MINUTE: 10,
+      MAX_SOROBAN_FEE_STROOPS: 1_000_000,
     },
   };
 });
@@ -261,10 +267,53 @@ describe("SorobanInvokeTool", () => {
       ).rejects.toThrow(/simulation failed/);
     });
 
-    it("does NOT call sendTransaction when simulateOnly=true", async () => {
+    it("throws when Soroban fee exceeds MAX_SOROBAN_FEE_STROOPS", async () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
         sign: vi.fn(),
+        fee: 2_000_000,
       } as any);
+
+      await expect(
+        tool.execute({
+          contractId: VALID_CONTRACT,
+          method: "release",
+          args: [],
+        }),
+      ).rejects.toThrow(/Soroban fee.*exceeds MAX_SOROBAN_FEE_STROOPS/);
+
+      expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+    });
+
+    it("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
+        sign: vi.fn(),
+        fee: 500_000,
+      } as any);
+      vi.mocked(
+        rpcClient.sorobanServer.sendTransaction as any,
+      ).mockResolvedValue({
+        status: "PENDING",
+        hash: "fee_within_cap_hash",
+      });
+      vi.mocked(
+        rpcClient.sorobanServer.getTransaction as any,
+      ).mockResolvedValue({
+        status: "SUCCESS",
+      });
+
+      const result = await tool.execute({
+        contractId: VALID_CONTRACT,
+        method: "release",
+        args: [],
+      });
+      expect(result.txHash).toBe("fee_within_cap_hash");
+    });
+
+    it("does NOT call sendTransaction when simulateOnly=true", async () => {
+      const mockPreparedTx = { sign: vi.fn() };
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(
+        mockPreparedTx as any,
+      );
 
       const result = await tool.execute({
         contractId: VALID_CONTRACT,
@@ -274,7 +323,10 @@ describe("SorobanInvokeTool", () => {
       });
 
       expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+      // Discriminated union: simulationResult must be present, txHash must be absent
       expect(result.simulationResult).toBeDefined();
+      expect(result.simulationResult).toBe(mockPreparedTx);
+      expect(result.txHash).toBeUndefined();
     });
   });
 

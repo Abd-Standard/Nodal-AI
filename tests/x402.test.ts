@@ -12,6 +12,18 @@ import { X402PaymentTool } from "../backend/tools/X402PaymentTool";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
 import { config } from "../backend/config";
 
+// ─── Mock rpc_client so horizonServer.ledgers() is interceptable ──────────────
+
+vi.mock("../backend/rpc_client", () => ({
+  horizonServer: {
+    ledgers: vi.fn().mockReturnValue({
+      ledger: vi.fn().mockReturnValue({
+        call: vi.fn().mockResolvedValue({ closed_at: "2024-01-01T00:00:00Z" }),
+      }),
+    }),
+  },
+}));
+
 // ─── Mock StellarPaymentTool so x402 tests don't hit Horizon ─────────────────
 
 vi.mock("../backend/tools/StellarPaymentTool");
@@ -31,6 +43,8 @@ vi.mock("../backend/config", () => {
       X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
       MAX_RETRIES: 3,
       RETRY_DELAY_MS: 100,
+      MAX_X402_PAYMENTS_PER_MINUTE: 10,
+      MAX_SOROBAN_FEE_STROOPS: 1_000_000,
       ALLOWED_X402_ORIGINS: undefined,
     },
   };
@@ -167,6 +181,43 @@ describe("X402PaymentTool", () => {
     });
   });
 
+  // ── Rate limiting ────────────────────────────────────────────────────────────
+
+  describe("Rate limiting", () => {
+    it("allows up to MAX_X402_PAYMENTS_PER_MINUTE calls within the window", async () => {
+      for (let i = 0; i < 10; i++) {
+        const proof = await tool.respond(VALID_CHALLENGE);
+        expect(proof.txHash).toBe("x402_mock_tx_hash");
+      }
+      expect(mockPaymentTool.execute).toHaveBeenCalledTimes(10);
+    });
+
+    it("throws on the 11th call within the same 60s window", async () => {
+      for (let i = 0; i < 10; i++) {
+        await tool.respond(VALID_CHALLENGE);
+      }
+      await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow("x402: rate limit exceeded");
+    });
+
+    it("resets the counter after 60s window elapses", async () => {
+      vi.useFakeTimers();
+      const startTime = Date.now();
+      const farFutureExpiry = new Date(startTime + 180_000).toISOString();
+      const challenge = { ...VALID_CHALLENGE, expiresAt: farFutureExpiry };
+
+      for (let i = 0; i < 10; i++) {
+        await tool.respond(challenge);
+      }
+      await expect(tool.respond(challenge)).rejects.toThrow("rate limit exceeded");
+
+      vi.setSystemTime(startTime + 60_001);
+
+      const proof = await tool.respond(challenge);
+      expect(proof.txHash).toBe("x402_mock_tx_hash");
+      vi.useRealTimers();
+    });
+  });
+
   describe("ALLOWED_X402_ORIGINS validation", () => {
     it("accepts a challenge from a trusted origin", async () => {
       (config as any).ALLOWED_X402_ORIGINS = "api.example.com, other.com";
@@ -200,8 +251,10 @@ describe("X402PaymentTool", () => {
       expect(proof.txHash).toBe("x402_mock_tx_hash");
       expect(proof.nonce).toBe(VALID_CHALLENGE.nonce);
       expect(proof.payer).toMatch(/^G[A-Z2-7]{55}$/);
+      // signedAt is either ledger close time or wall-clock fallback — both are valid ISO strings
       expect(proof.signedAt).toBeTruthy();
-      expect(new Date(proof.signedAt).getTime()).toBeLessThanOrEqual(Date.now());
+      expect(() => new Date(proof.signedAt)).not.toThrow();
+      expect(new Date(proof.signedAt).toISOString()).toBe(proof.signedAt);
     });
 
     it("embeds nonce in memo as SHA-256 fingerprint (28 hex chars)", async () => {
@@ -270,6 +323,25 @@ describe("X402PaymentTool", () => {
       );
 
       await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow(/no_trust/);
+    });
+  });
+
+  // ── Nonce replay protection ─────────────────────────────────────────────────
+
+  describe("Nonce replay protection", () => {
+    it("first use with a given nonce succeeds", async () => {
+      await expect(tool.respond(VALID_CHALLENGE)).resolves.toHaveProperty("nonce", VALID_CHALLENGE.nonce);
+    });
+
+    it("second use with the same nonce throws", async () => {
+      await tool.respond(VALID_CHALLENGE);
+      await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow("x402: nonce already used");
+    });
+
+    it("allows a different nonce after a previous one was consumed", async () => {
+      await tool.respond(VALID_CHALLENGE);
+      const second = { ...VALID_CHALLENGE, nonce: "660e8400-e29b-41d4-a716-446655440001" };
+      await expect(tool.respond(second)).resolves.toHaveProperty("nonce", second.nonce);
     });
   });
 
