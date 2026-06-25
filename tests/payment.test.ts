@@ -8,7 +8,9 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
+import { z } from "zod";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
+import { SubmitResultSchema } from "../backend/tools/StellarPaymentTool";
 import * as rpcClient from "../backend/rpc_client";
 
 // ─── Module mock ──────────────────────────────────────────────────────────────
@@ -476,5 +478,27 @@ describe("StellarPaymentTool", () => {
       expect(result.txHash).toBe("futurenet_tx");
       expect(rpcClient.submitTransaction).toHaveBeenCalled();
     });
+  });
+});
+
+describe("Horizon response validation", () => {
+  it("throws ZodError when submitTransaction returns malformed response", async () => {
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5") as any
+    );
+    vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+      hash: undefined,
+      ledger: 1,
+    } as any);
+
+    const tool = new StellarPaymentTool();
+
+    await expect(
+      tool.execute({
+        destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        amount: "1",
+        assetCode: "XLM",
+      })
+    ).rejects.toThrow(z.ZodError);
   });
 });

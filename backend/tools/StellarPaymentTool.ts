@@ -25,6 +25,14 @@ const log = createLogger("stellar-payment");
 
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
+const SubmitResultSchema = z.object({
+  hash: z.string(),
+  ledger: z.number(),
+});
+
+export { SubmitResultSchema };
+export type SubmitResult = z.infer<typeof SubmitResultSchema>;
+
 /**
  * Zod schema for payment input validation.
  *
@@ -152,10 +160,7 @@ export class StellarPaymentTool {
 
     // 7. Submit (with auto-retry on tx_bad_seq)
     try {
-      const result = (await submitTransaction(tx)) as {
-        hash: string;
-        ledger: number;
-      };
+      const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes("tx_bad_seq")) {
@@ -165,10 +170,7 @@ export class StellarPaymentTool {
         sourceAccount = await loadAccount(this.keypair.publicKey());
         tx = buildTx();
         tx.sign(this.keypair);
-        const result = (await submitTransaction(tx)) as {
-          hash: string;
-          ledger: number;
-        };
+        const result = SubmitResultSchema.parse(await submitTransaction(tx));
         return { txHash: result.hash, ledger: result.ledger };
       }
       throw err;
