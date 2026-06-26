@@ -19,6 +19,8 @@ import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
 import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
+import { DexOfferTool } from "./tools/DexOfferTool";
+import { dispatchWebhook } from "./webhook";
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 
@@ -32,7 +34,8 @@ export type TaskType =
   | "x402_respond"
   | "account_info"
   | "change_trust"
-  | "multisig_payment";
+  | "multisig_payment"
+  | "dex_offer";
 
 export interface AgentTask {
   type: TaskType;
@@ -101,6 +104,7 @@ export class PayFiAgent extends EventEmitter {
   private accountInfoTool: AccountInfoTool;
   private trustlineTool: TrustlineTool;
   private multiSigTool: MultiSigPaymentTool;
+  private dexOfferTool: DexOfferTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -123,6 +127,7 @@ export class PayFiAgent extends EventEmitter {
     this.accountInfoTool = new AccountInfoTool();
     this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
     this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
+    this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -309,6 +314,13 @@ export class PayFiAgent extends EventEmitter {
           data = await this.multiSigTool.execute(task.payload);
           break;
 
+        case "dex_offer": {
+          const p = task.payload as Record<string, unknown>;
+          assertWithinSpendingLimit(p?.amount);
+          data = await this.dexOfferTool.execute(task.payload);
+          break;
+        }
+
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
       }
@@ -316,6 +328,7 @@ export class PayFiAgent extends EventEmitter {
       logger.info("Task completed", { taskType: task.type });
       const result: AgentResult = { success: true, taskType: task.type, data };
       this.emit("task:complete", result);
+      void dispatchWebhook(result);
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -324,6 +337,7 @@ export class PayFiAgent extends EventEmitter {
       logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
       const result: AgentResult = { success: false, taskType: task.type, error: safe };
       this.emit("task:failed", result);
+      void dispatchWebhook(result);
       return result;
     } finally {
       this.activeTasks--;

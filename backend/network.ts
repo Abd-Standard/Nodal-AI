@@ -60,7 +60,7 @@ export function handleRateLimitResponse(retryAfterHeader?: string | null): void 
   globalBackoff.retryAfterSeconds = waitSeconds;
   globalBackoff.until = Date.now() + waitSeconds * 1000;
 
-  log.warn([Network] Rate limit reached. Throttling outbound traffic for  seconds.);
+  log.warn(`[Network] Rate limit reached. Throttling outbound traffic for ${waitSeconds} seconds.`);
 
   // Schedule auto-clear when the backoff expires
   const remaining = globalBackoff.until - Date.now();
