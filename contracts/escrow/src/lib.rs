@@ -113,7 +113,12 @@ impl EscrowContract {
 
         depositor.require_auth();
 
+        // Ensure amount is positive and within a safe range to avoid overflow in token transfers.
         if amount <= 0 {
+            panic_with_error!(&env, EscrowError::InvalidAmount);
+        }
+        // Guard against amounts that could overflow when added to existing balances.
+        if amount > i128::MAX / 2 {
             panic_with_error!(&env, EscrowError::InvalidAmount);
         }
         if expiry <= env.ledger().timestamp() {
