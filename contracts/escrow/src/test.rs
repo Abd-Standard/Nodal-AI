@@ -61,6 +61,22 @@ mod tests {
         assert_eq!(token.balance(&recipient), 500);
         assert_eq!(token.balance(&contract_id), 0);
     }
+    
+    // 3. initialize with max i128 amount should panic
+    #[test]
+    #[should_panic]
+    fn test_initialize_max_i128_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        // Use max i128 amount; should panic due to overflow guard
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, i128::MAX, &env.ledger().timestamp() + EXPIRY_OFFSET);
+    }
 
     // 2. initialize -> refund after expiry
     #[test]

@@ -10,6 +10,7 @@
  *   - The spending limit is enforced here before delegating to tools.
  */
 
+// Updated imports
 import { EventEmitter } from "events";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
@@ -20,9 +21,42 @@ import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
 import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
+
 import { BatchPaymentTool } from "./tools/BatchPaymentTool";
+
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
+import { SpendingTracker } from "./spending_tracker";
+
+// Instantiate a singleton tracker
+const spendingTracker = new SpendingTracker();
+
+// ─── Spending limit guard ─────────────────────────────────────────────────────
+
+/**
+ * Check that a payment amount does not exceed the configured spending limit.
+ * Also enforces cumulative spending within the sliding window.
+ */
+function assertWithinSpendingLimit(amount: unknown): void {
+  if (typeof amount !== "string") return; // let the tool's own schema catch this
+  // Record cumulative spending
+  spendingTracker.record(amount);
+
+  const parsed = parseFloat(amount);
+  const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
+  if (!isNaN(parsed) && parsed > limit) {
+    throw new Error(
+      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
+        `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
+    );
+  }
+  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
+    throw new Error(
+      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
+        `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
+    );
+  }
+}
 
 const log = createLogger("orchestrator");
 
@@ -35,7 +69,9 @@ export type TaskType =
   | "account_info"
   | "change_trust"
   | "multisig_payment"
+
   | "batch_payment";
+
 
 export interface AgentTask {
   type: TaskType;
@@ -104,7 +140,9 @@ export class PayFiAgent extends EventEmitter {
   private accountInfoTool: AccountInfoTool;
   private trustlineTool: TrustlineTool;
   private multiSigTool: MultiSigPaymentTool;
+
   private batchPaymentTool: BatchPaymentTool;
+
 
   private activeTasks = 0;
   private isDraining = false;
@@ -128,6 +166,7 @@ export class PayFiAgent extends EventEmitter {
     this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
     this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
     this.batchPaymentTool = new BatchPaymentTool(config.agentKeypair().secret());
+
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -314,9 +353,11 @@ export class PayFiAgent extends EventEmitter {
           data = await this.multiSigTool.execute(task.payload);
           break;
 
+
         case "batch_payment":
           data = await this.batchPaymentTool.execute(task.payload);
           break;
+
 
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
@@ -325,7 +366,10 @@ export class PayFiAgent extends EventEmitter {
       logger.info("Task completed", { taskType: task.type });
       const result: AgentResult = { success: true, taskType: task.type, data };
       this.emit("task:complete", result);
+      
       saveResult({ ...result, timestamp: new Date().toISOString() });
+bhook(result);
+
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -334,7 +378,7 @@ export class PayFiAgent extends EventEmitter {
       logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
       const result: AgentResult = { success: false, taskType: task.type, error: safe };
       this.emit("task:failed", result);
-      saveResult({ ...result, timestamp: new Date().toISOString() });
+      void dispatchWebhook(result);
       return result;
     } finally {
       this.activeTasks--;
