@@ -10,6 +10,7 @@
  *   - The spending limit is enforced here before delegating to tools.
  */
 
+// Updated imports
 import { EventEmitter } from "events";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
@@ -23,6 +24,37 @@ import { DexOfferTool } from "./tools/DexOfferTool";
 import { dispatchWebhook } from "./webhook";
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
+import { SpendingTracker } from "./spending_tracker";
+
+// Instantiate a singleton tracker
+const spendingTracker = new SpendingTracker();
+
+// ─── Spending limit guard ─────────────────────────────────────────────────────
+
+/**
+ * Check that a payment amount does not exceed the configured spending limit.
+ * Also enforces cumulative spending within the sliding window.
+ */
+function assertWithinSpendingLimit(amount: unknown): void {
+  if (typeof amount !== "string") return; // let the tool's own schema catch this
+  // Record cumulative spending
+  spendingTracker.record(amount);
+
+  const parsed = parseFloat(amount);
+  const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
+  if (!isNaN(parsed) && parsed > limit) {
+    throw new Error(
+      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
+        `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
+    );
+  }
+  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
+    throw new Error(
+      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
+        `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
+    );
+  }
+}
 
 const log = createLogger("orchestrator");
 
