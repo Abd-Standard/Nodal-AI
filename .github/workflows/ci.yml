@@ -50,8 +50,13 @@ jobs:
           node-version: 20
           cache: npm
 
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+
       - run: npm ci
-      - run: npm run test
+      - run: npm run test:all
 
   test-rust:
     runs-on: ubuntu-latest
@@ -62,7 +67,7 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.79.0
 
       - name: Run Rust tests
         run: cargo test --manifest-path contracts/escrow/Cargo.toml
@@ -76,7 +81,7 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.79.0
           components: clippy, rustfmt
 
       - name: Run Clippy
@@ -94,12 +99,25 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.79.0
 
       - name: Run cargo-tarpaulin
         uses: actions-rs/tarpaulin@v0.1
         with:
           args: '--manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust'
+
+  secret-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Secret scanning with trufflehog
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --config .trufflehog.yml --results=verified,unknown --no-verification
 
   audit-npm:
     runs-on: ubuntu-latest
@@ -124,7 +142,7 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: stable
+          toolchain: 1.79.0
 
       - name: Install cargo-audit
         run: cargo install cargo-audit

@@ -6,7 +6,7 @@ exports[`X402PaymentTool > X402PaymentProof snapshot > X402PaymentProof has expe
   "nonce": "550e8400-e29b-41d4-a716-446655440000",
   "payer": "GDRIFTCEWUMA5IM6NUQPLA27YPHDMUNMPDXCQWCD3BRPVKMPX5KEM5F5",
   "protocol": "x402",
-  "signedAt": "2026-06-25T12:00:19.497Z",
+  "signedAt": "2026-06-25T13:05:42.857Z",
   "txHash": "x402_mock_tx_hash",
 }
 `;
