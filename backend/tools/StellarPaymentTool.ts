@@ -126,7 +126,7 @@ export class StellarPaymentTool {
     // 4. Build transaction
     const buildTx = () => {
       const builder = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
+        fee: BASE_FEE, // BASE_FEE (100 stroops) is the actual fee for classic Stellar payments — not overwritten
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(
