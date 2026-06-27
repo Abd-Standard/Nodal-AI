@@ -122,6 +122,9 @@ const EnvSchema = z.object({
   // Spending cap
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
 
+  // Persistence
+  DB_PATH: z.string().default("./agent.db"),
+
   // Logging
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 
@@ -198,6 +201,12 @@ export interface AgentConfig {
    * Required.
    */
   readonly SOROBAN_RPC_URL: string;
+
+  /**
+   * Path to the SQLite database file used for audit persistence.
+   * Defaults to "./agent.db". Use ":memory:" for in-process tests.
+   */
+  readonly DB_PATH: string;
 
   /**
    * The asset code for the x402 / PayFi asset.

@@ -14,14 +14,16 @@
 import { EventEmitter } from "events";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
+import { saveResult } from "./persistence";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
 import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
 import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
-import { DexOfferTool } from "./tools/DexOfferTool";
-import { dispatchWebhook } from "./webhook";
+
+import { BatchPaymentTool } from "./tools/BatchPaymentTool";
+
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
@@ -67,7 +69,9 @@ export type TaskType =
   | "account_info"
   | "change_trust"
   | "multisig_payment"
-  | "dex_offer";
+
+  | "batch_payment";
+
 
 export interface AgentTask {
   type: TaskType;
@@ -136,7 +140,9 @@ export class PayFiAgent extends EventEmitter {
   private accountInfoTool: AccountInfoTool;
   private trustlineTool: TrustlineTool;
   private multiSigTool: MultiSigPaymentTool;
-  private dexOfferTool: DexOfferTool;
+
+  private batchPaymentTool: BatchPaymentTool;
+
 
   private activeTasks = 0;
   private isDraining = false;
@@ -159,7 +165,8 @@ export class PayFiAgent extends EventEmitter {
     this.accountInfoTool = new AccountInfoTool();
     this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
     this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
-    this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
+    this.batchPaymentTool = new BatchPaymentTool(config.agentKeypair().secret());
+
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -346,12 +353,11 @@ export class PayFiAgent extends EventEmitter {
           data = await this.multiSigTool.execute(task.payload);
           break;
 
-        case "dex_offer": {
-          const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
-          data = await this.dexOfferTool.execute(task.payload);
+
+        case "batch_payment":
+          data = await this.batchPaymentTool.execute(task.payload);
           break;
-        }
+
 
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
@@ -360,7 +366,10 @@ export class PayFiAgent extends EventEmitter {
       logger.info("Task completed", { taskType: task.type });
       const result: AgentResult = { success: true, taskType: task.type, data };
       this.emit("task:complete", result);
-      void dispatchWebhook(result);
+      
+      saveResult({ ...result, timestamp: new Date().toISOString() });
+bhook(result);
+
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);

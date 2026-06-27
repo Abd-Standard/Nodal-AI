@@ -33,6 +33,9 @@ vi.mock("../backend/tools/TrustlineTool", () => ({
 vi.mock("../backend/tools/MultiSigPaymentTool", () => ({
   MultiSigPaymentTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
 }));
+vi.mock("../backend/tools/BatchPaymentTool", () => ({
+  BatchPaymentTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
+}));
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
@@ -58,6 +61,10 @@ vi.mock("../backend/config", () => ({
     agentKeypair: () => ({ secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73" }),
   },
   MAINNET_SPENDING_CAP: 10_000,
+}));
+
+vi.mock("../backend/persistence", () => ({
+  saveResult: vi.fn(),
 }));
 
 import { PayFiAgent } from "../backend/agent";
