@@ -70,6 +70,8 @@ pub enum EscrowError {
     InvalidExpiry = 7,
     /// The escrow has not been initialized yet.
     NotInitialized = 8,
+    /// depositor, recipient, and arbiter must all be distinct addresses.
+    InvalidParties = 9,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -92,6 +94,7 @@ impl EscrowContract {
     ///
     /// # Panics
     /// * `AlreadyInitialized` - If the escrow has already been initialised.
+    /// * `InvalidParties` - If depositor, recipient, and arbiter are not all distinct.
     /// * `InvalidAmount` - If amount is not positive.
     /// * `InvalidExpiry` - If expiry is not in the future.
     ///
@@ -112,6 +115,18 @@ impl EscrowContract {
         }
 
         depositor.require_auth();
+
+        // Parties must all be distinct — a depositor who is also the arbiter
+        // could release funds to themselves, defeating the escrow purpose.
+        if depositor == arbiter {
+            panic_with_error!(&env, EscrowError::InvalidParties);
+        }
+        if depositor == recipient {
+            panic_with_error!(&env, EscrowError::InvalidParties);
+        }
+        if arbiter == recipient {
+            panic_with_error!(&env, EscrowError::InvalidParties);
+        }
 
         if amount <= 0 {
             panic_with_error!(&env, EscrowError::InvalidAmount);

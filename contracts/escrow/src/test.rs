@@ -611,4 +611,74 @@ mod tests {
         client.cancel(&depositor, &arbiter);
         assert_eq!(token.balance(&depositor), 1_000);
     }
+
+    // ── InvalidParties guard tests (issue #92) ───────────────────────────────
+
+    // 22. depositor == arbiter panics with InvalidParties
+    #[test]
+    #[should_panic]
+    fn test_initialize_same_depositor_arbiter_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        // arbiter is the same address as depositor — degenerate escrow
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &depositor, // arbiter == depositor
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+    }
+
+    // 23. depositor == recipient panics with InvalidParties
+    #[test]
+    #[should_panic]
+    fn test_initialize_same_depositor_recipient_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &depositor, // recipient == depositor
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+    }
+
+    // 24. arbiter == recipient panics with InvalidParties
+    #[test]
+    #[should_panic]
+    fn test_initialize_same_arbiter_recipient_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        // recipient is the same as arbiter
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &arbiter, // recipient == arbiter
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+    }
 }
