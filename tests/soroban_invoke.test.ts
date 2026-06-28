@@ -474,7 +474,73 @@ describe("SorobanInvokeTool", () => {
     });
   });
 
-  // ── Args validation ────────────────────────────────────────────────────────
+  // ── Signature assertion (issue #99) ────────────────────────────────────────
+  /**
+   * Post-sign guard: verifies that the transaction has at least one signature
+   * before submission. A no-op sign() call (e.g., mutated Keypair behaviour
+   * in a future SDK version) would cause an empty signatures array, which the
+   * Stellar network rejects immediately. The guard catches this early.
+   */
+
+  describe("Post-sign signature assertion", () => {
+    beforeEach(() => {
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount(
+          "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        ) as any,
+      );
+    });
+
+    it("throws 'Transaction signing produced no signatures' when sign() is a no-op", async () => {
+      // Mock prepareSorobanTx to return a transaction whose sign() does nothing,
+      // leaving the signatures array empty.
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
+        sign: vi.fn(), // no-op — does NOT push to signatures
+        signatures: [], // empty signatures list
+      } as any);
+
+      await expect(
+        tool.execute({
+          contractId: VALID_CONTRACT,
+          method: "release",
+          args: [],
+        }),
+      ).rejects.toThrow("Transaction signing produced no signatures");
+
+      // sendTransaction must NOT have been called when signing failed
+      expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+    });
+
+    it("submits successfully when sign() populates signatures", async () => {
+      // Mock a prepared transaction with a sign() that appends a fake signature,
+      // matching the real Stellar SDK behaviour.
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
+        sign: vi.fn().mockImplementation(function (this: any) {
+          // Simulate the SDK mutating signatures in-place
+          if (!this.signatures) this.signatures = [];
+          this.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
+        }),
+        signatures: [],
+      } as any);
+
+      vi.mocked(rpcClient.sorobanServer.sendTransaction as any).mockResolvedValue({
+        status: "PENDING",
+        hash: "signed_ok_hash",
+      });
+      vi.mocked(rpcClient.sorobanServer.getTransaction as any).mockResolvedValue({
+        status: "SUCCESS",
+      });
+
+      const result = await tool.execute({
+        contractId: VALID_CONTRACT,
+        method: "release",
+        args: [],
+      });
+
+      expect(result.txHash).toBe("signed_ok_hash");
+    });
+  });
+
 
   describe("args validation", () => {
     it("rejects plain JavaScript object in args array", () => {

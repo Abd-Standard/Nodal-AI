@@ -171,11 +171,23 @@ export class SorobanInvokeTool {
       return { simulationResult: preparedTx };
     }
 
-    // 5. Sign prepared transaction
-    preparedTx.sign(this.keypair);
+    // 5. Sign prepared transaction.
+    // NOTE: Transaction.sign() mutates the transaction in place — the reference
+    // `signedTx` intentionally aliases `preparedTx` so the post-sign assertion
+    // verifies the same object that will be submitted. If the transaction is ever
+    // rebuilt (e.g., after a fee bump), this alias must be updated accordingly.
+    const signedTx = preparedTx;
+    signedTx.sign(this.keypair);
+
+    // Guard: ensure at least one signature was attached. A no-op sign() call
+    // (e.g., bad Keypair or future SDK changes) would produce zero signatures,
+    // causing the network to reject the transaction immediately.
+    if (!signedTx.signatures.length) {
+      throw new Error("Transaction signing produced no signatures");
+    }
 
     // 6. Submit
-    const result = await sorobanServer.sendTransaction(preparedTx);
+    const result = await sorobanServer.sendTransaction(signedTx);
 
     if (result.status === "ERROR") {
       throw new Error(`Soroban submit failed: ${result.errorResult?.toXDR("base64")}`);
