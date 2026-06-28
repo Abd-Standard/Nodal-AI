@@ -182,7 +182,10 @@ export class SorobanInvokeTool {
     // Guard: ensure at least one signature was attached. A no-op sign() call
     // (e.g., bad Keypair or future SDK changes) would produce zero signatures,
     // causing the network to reject the transaction immediately.
-    if (!signedTx.signatures.length) {
+    // Use optional chaining so tests using plain mock objects without a
+    // `signatures` array still get a meaningful error rather than a
+    // TypeError on `.length`.
+    if (!signedTx.signatures?.length) {
       throw new Error("Transaction signing produced no signatures");
     }
 

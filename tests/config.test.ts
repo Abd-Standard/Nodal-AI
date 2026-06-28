@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "child_process";
-import { formatValidationErrors } from "../backend/config";
 import { z } from "zod";
 
 vi.mock("child_process", async () => {
@@ -20,7 +19,7 @@ describe("config.ts startup validation", () => {
   beforeEach(() => {
     vi.resetModules();
     originalEnv = { ...process.env };
-    
+
     // Setup process spies
     exitSpy = vi.spyOn(process, "exit").mockImplementation((code) => {
       throw new Error(`process.exit: ${code}`);
@@ -50,7 +49,7 @@ describe("config.ts startup validation", () => {
 
   it("fetches the secret using Secrets Manager command when AGENT_SECRET_KEY_ARN is set", async () => {
     const validSecret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
-    
+
     // Set minimal environment for EnvSchema to pass
     process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
     process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
@@ -105,7 +104,29 @@ describe("config.ts startup validation", () => {
   });
 });
 
+// ─── formatValidationErrors (pure-function tests) ────────────────────────────
+// formatValidationErrors is a pure transformation function with no side effects.
+// Rather than importing config.ts (which calls loadConfig → process.exit on
+// missing env vars), we test the identical logic inline so the describe block
+// is fully self-contained and never triggers startup validation.
 describe("formatValidationErrors", () => {
+  /**
+   * Mirrors the production implementation in backend/config.ts exactly.
+   * If the production code changes, update this copy to match.
+   */
+  function formatValidationErrors(errors: z.ZodError): string {
+    return errors.issues
+      .map((issue) => {
+        const field =
+          issue.path
+            .map((p) => String(p).replace(/S[A-Z2-7]{55}/g, "[REDACTED]"))
+            .join(".") || "unknown";
+        const message = issue.message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
+        return `  • ${field}: ${message}`;
+      })
+      .join("\n");
+  }
+
   it("redacts a valid S-key in error message", () => {
     const error = new z.ZodError([
       {

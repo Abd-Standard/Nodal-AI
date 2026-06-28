@@ -279,7 +279,15 @@ describe("X402PaymentTool", () => {
     it("X402PaymentProof has expected shape and fields", async () => {
       const proof = await tool.respond(VALID_CHALLENGE);
 
-      expect(proof).toMatchSnapshot();
+      // signedAt changes every run so we verify structure rather than snapshot
+      expect(proof).toMatchObject({
+        protocol: "x402",
+        network: expect.any(String),
+        txHash: expect.any(String),
+        nonce: expect.any(String),
+        payer: expect.any(String),
+        signedAt: expect.any(String),
+      });
       expect(proof).toHaveProperty("protocol", "x402");
       expect(proof).toHaveProperty("network");
       expect(proof).toHaveProperty("txHash");
