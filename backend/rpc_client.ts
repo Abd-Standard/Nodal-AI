@@ -1,6 +1,6 @@
 /**
  * backend/rpc_client.ts
- * Thin wrapper around Horizon + Soroban RPC with retry logic.
+ * Thin wrapper around Horizon + Soroban RPC with retry and circuit-breaker logic.
  * All network calls route through here — centralised observability point.
  */
 
@@ -11,6 +11,7 @@ import {
   Transaction,
   FeeBumpTransaction,
 } from "@stellar/stellar-sdk";
+import CircuitBreaker from "opossum";
 import { ZodError } from "zod";
 import { config } from "./config";
 import { logger } from "./logger";
@@ -18,6 +19,71 @@ import { validateXDR } from "./types/xdr";
 import { createLogger } from "./utils/logger";
 
 const log = createLogger("rpc-client");
+const RPC_BREAKER_OPTIONS = {
+  errorThresholdPercentage: 50,
+  resetTimeout: 30_000,
+  timeout: 10_000,
+  volumeThreshold: 5,
+  rollingCountTimeout: 30_000,
+  rollingCountBuckets: 10,
+};
+
+class RpcServiceUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RpcServiceUnavailableError";
+  }
+}
+
+type HorizonAccount = Awaited<ReturnType<Horizon.Server["loadAccount"]>>;
+type HorizonSubmitResult = Awaited<ReturnType<Horizon.Server["submitTransaction"]>>;
+type SorobanSimulationResult = Awaited<ReturnType<rpc.Server["simulateTransaction"]>>;
+
+const accountCache = new Map<string, HorizonAccount>();
+
+function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
+  breaker: CircuitBreaker<TArgs, TResult>,
+  name: string
+): CircuitBreaker<TArgs, TResult> {
+  breaker.on("open", () => {
+    log.warn({
+      circuit: name,
+      failures: breaker.stats.failures,
+      successes: breaker.stats.successes,
+      timeout: RPC_BREAKER_OPTIONS.timeout,
+      resetTimeout: RPC_BREAKER_OPTIONS.resetTimeout,
+    }, "RPC circuit opened");
+  });
+
+  breaker.on("halfOpen", () => {
+    log.info({
+      circuit: name,
+    }, "RPC circuit half-open");
+  });
+
+  breaker.on("close", () => {
+    log.info({
+      circuit: name,
+      failures: breaker.stats.failures,
+      successes: breaker.stats.successes,
+    }, "RPC circuit closed");
+  });
+
+  return breaker;
+}
+
+function createRpcBreaker<TArgs extends unknown[], TResult>(
+  name: string,
+  action: (...args: TArgs) => Promise<TResult>
+): CircuitBreaker<TArgs, TResult> {
+  return attachBreakerTelemetry(
+    new CircuitBreaker(action, {
+      ...RPC_BREAKER_OPTIONS,
+      name,
+    }),
+    name
+  );
+}
 
 // ─── Network passphrase resolver ─────────────────────────────────────────────
 
@@ -54,7 +120,6 @@ export class StellarRPCError extends Error {
   }
 }
 
-const SUBMIT_TIMEOUT_MS = 30_000;
 
 // ─── Exponential back-off retry ─────────────────────────────────────────────
 
@@ -150,18 +215,40 @@ export const horizonServer = new Horizon.Server(config.HORIZON_URL, {
   allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
 });
 
+const loadAccountBreaker = createRpcBreaker<[string], HorizonAccount>(
+  "horizon.loadAccount",
+  async (publicKey: string) => {
+    const account = await horizonServer.loadAccount(publicKey);
+    accountCache.set(publicKey, account);
+    return account;
+  }
+);
+
+loadAccountBreaker.fallback((publicKey: string) => {
+  const cached = accountCache.get(publicKey);
+
+  if (cached) {
+    log.warn({
+      circuit: "horizon.loadAccount",
+      publicKey,
+    }, "RPC fallback returned cached account");
+    return cached;
+  }
+
+  throw new RpcServiceUnavailableError(
+    `Horizon loadAccount unavailable for ${publicKey} and no cached value is available`
+  );
+});
+
 /**
  * Loads account details from the Horizon network for a given public key.
  *
  * @param publicKey - The 56-character Stellar public key (G-address) of the account.
- * @returns A promise resolving to the Horizon account details.
- * @throws An error if the account cannot be loaded after retries.
+ * @returns A promise resolving to the Horizon account details or a cached fallback.
+ * @throws An error if the account cannot be loaded and no cached value is available.
  */
 export async function loadAccount(publicKey: string) {
-  return withTimeout(
-    withRetry(() => horizonServer.loadAccount(publicKey), config.MAX_RETRIES, config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE),
-    config.RPC_TIMEOUT_MS
-  );
+  return loadAccountBreaker.fire(publicKey);
 }
 
 /**
@@ -169,29 +256,13 @@ export async function loadAccount(publicKey: string) {
  *
  * @param tx - The Transaction or FeeBumpTransaction to submit.
  * @returns A promise resolving to the Horizon transaction submission response.
- * @throws A TimeoutError if submission does not complete within 30 seconds.
- * @throws An error if the transaction payload is rejected or submission fails.
+ * @throws An error if validation fails or the upstream service is unavailable.
  */
 export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
   // Guard: validate XDR encoding before initiating any network call
   validateXDR(tx.toEnvelope().toXDR("base64"));
 
-  return withRetry(() => {
-    const controller = new AbortController();
-    let timeoutId: ReturnType<typeof setTimeout>;
-
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      timeoutId = setTimeout(() => {
-        controller.abort();
-        reject(new TimeoutError(SUBMIT_TIMEOUT_MS));
-      }, SUBMIT_TIMEOUT_MS);
-    });
-
-    return Promise.race([
-      horizonServer.submitTransaction(tx),
-      timeoutPromise,
-    ]).finally(() => clearTimeout(timeoutId));
-  });
+  return submitTransactionBreaker.fire(tx);
 }
 
 // ─── Soroban RPC client ───────────────────────────────────────────────────────
@@ -208,6 +279,32 @@ export const sorobanServer = new rpc.Server(config.SOROBAN_RPC_URL, {
   allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
 });
 
+const submitTransactionBreaker = createRpcBreaker<
+  [Transaction | FeeBumpTransaction],
+  HorizonSubmitResult
+>("horizon.submitTransaction", async (tx: Transaction | FeeBumpTransaction) => {
+  return horizonServer.submitTransaction(tx);
+});
+
+submitTransactionBreaker.fallback(() => {
+  throw new RpcServiceUnavailableError("Horizon submitTransaction temporarily unavailable");
+});
+
+const simulateSorobanBreaker = createRpcBreaker<[Transaction], SorobanSimulationResult>(
+  "soroban.simulateTransaction",
+  async (tx: Transaction) => sorobanServer.simulateTransaction(tx)
+);
+
+simulateSorobanBreaker.fallback(() => {
+  throw new RpcServiceUnavailableError("Soroban simulation temporarily unavailable");
+});
+
+export const rpcBreakers = {
+  loadAccount: loadAccountBreaker,
+  submitTransaction: submitTransactionBreaker,
+  simulateSorobanTx: simulateSorobanBreaker,
+} as const;
+
 /**
  * Simulate a Soroban transaction BEFORE broadcasting.
  * Returns the simulation result — callers MUST check for errors.
@@ -218,13 +315,10 @@ export const sorobanServer = new rpc.Server(config.SOROBAN_RPC_URL, {
  *
  * @param tx - The Transaction containing the Soroban invocations.
  * @returns A promise resolving to the Soroban RPC simulation result.
- * @throws An error if simulation RPC call fails after retries.
+ * @throws An error if the upstream service is unavailable.
  */
 export async function simulateSorobanTx(tx: Transaction) {
-  return withTimeout(
-    withRetry(() => sorobanServer.simulateTransaction(tx), config.MAX_RETRIES, config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE),
-    config.RPC_TIMEOUT_MS
-  );
+  return simulateSorobanBreaker.fire(tx);
 }
 
 /**

@@ -4,14 +4,30 @@
  * Tests for withRetry and DEFAULT_IS_RETRYABLE in backend/rpc_client.ts.
  */
 
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ZodError, z } from "zod";
-import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError } from "../backend/rpc_client";
+import {
+  withRetry,
+  DEFAULT_IS_RETRYABLE,
+  resolveNetworkPassphrase,
+  withTimeout,
+  TimeoutError,
+  loadAccount,
+  horizonServer,
+  rpcBreakers,
+} from "../backend/rpc_client";
 import { Networks } from "@stellar/stellar-sdk";
+
+const rpcClientLog = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+};
 
 vi.mock("../backend/utils/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-  createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
+  createLogger: vi.fn(() => rpcClientLog),
   generateCorrelationId: vi.fn(() => "mock-id"),
 }));
 
@@ -28,6 +44,17 @@ vi.mock("../backend/config", () => ({
     RPC_TIMEOUT_MS: 9000,
   },
 }));
+
+beforeEach(() => {
+  rpcClientLog.info.mockClear();
+  rpcClientLog.warn.mockClear();
+  rpcClientLog.error.mockClear();
+  rpcClientLog.debug.mockClear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
+});
 
 // ─── resolveNetworkPassphrase ─────────────────────────────────────────────────
 
@@ -180,7 +207,11 @@ describe("withRetry", () => {
   it("last error is re-thrown after exhaustion with StellarRPCError", async () => {
     const fn = vi.fn().mockRejectedValue(new Error("Service Unavailable"));
 
-    const err = await expect(withRetry(fn, 3, 0)).rejects.toThrow();
+    const err = await withRetry(fn, 3, 0).catch((error: unknown) => error);
+    expect(err).toBeInstanceOf(Error);
+    if (!(err instanceof Error)) {
+      throw new Error("Expected an Error instance");
+    }
     expect(err.name).toBe("StellarRPCError");
     expect(err.message).toContain("RPC call failed after 3 attempts");
   });
@@ -205,5 +236,62 @@ describe("withTimeout", () => {
     expect(err).toBeInstanceOf(TimeoutError);
     expect(err.message).toMatch(/timeout/i);
     expect(err.name).toBe("TimeoutError");
+  });
+});
+
+describe("circuit breaker", () => {
+  it("opens after five consecutive failures, fails fast while open, and closes after resetTimeout", async () => {
+    vi.useFakeTimers();
+
+    const loadAccountSpy = vi.spyOn(horizonServer, "loadAccount");
+    const recoveredAccount = {
+      id: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      balances: [{ asset_type: "native", balance: "42.0000000" }],
+    } as any;
+
+    loadAccountSpy.mockRejectedValue(new Error("500 Service Unavailable"));
+
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      await expect(loadAccount("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")).rejects.toThrow(
+        /unavailable/i
+      );
+      expect(loadAccountSpy).toHaveBeenCalledTimes(attempt);
+    }
+
+    expect(rpcBreakers.loadAccount.opened).toBe(true);
+    expect(rpcClientLog.warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        circuit: "horizon.loadAccount",
+        failures: 5,
+      }),
+      "RPC circuit opened"
+    );
+
+    await expect(loadAccount("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")).rejects.toThrow(
+      /unavailable/i
+    );
+    expect(loadAccountSpy).toHaveBeenCalledTimes(5);
+
+    loadAccountSpy.mockResolvedValueOnce(recoveredAccount);
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    await expect(loadAccount("GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF")).resolves.toEqual(
+      recoveredAccount
+    );
+    expect(rpcBreakers.loadAccount.closed).toBe(true);
+    expect(rpcClientLog.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        circuit: "horizon.loadAccount",
+      }),
+      "RPC circuit half-open"
+    );
+    expect(rpcClientLog.info).toHaveBeenCalledWith(
+      expect.objectContaining({
+        circuit: "horizon.loadAccount",
+      }),
+      "RPC circuit closed"
+    );
+
+    loadAccountSpy.mockRestore();
   });
 });
