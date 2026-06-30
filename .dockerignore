@@ -15,12 +15,19 @@ target
 .env
 .env.*
 !.env.example
+*.key
+*.pem
+*.p12
 
 # ─── Editor / OS ──────────────────────────────────────────────────────────────
 .vscode
 .idea
 .DS_Store
 Thumbs.db
+
+# ─── Keys / certificates ──────────────────────────────────────────────────────
+*.key
+*.pem
 
 # ─── Test artefacts ───────────────────────────────────────────────────────────
 tests

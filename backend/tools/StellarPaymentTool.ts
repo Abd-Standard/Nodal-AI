@@ -19,11 +19,20 @@ import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
 import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { SOROBAN_TX_TIMEOUT_SECONDS } from "./SorobanInvokeTool";
 import { createLogger } from "../utils/logger";
 
 const log = createLogger("stellar-payment");
 
 // ─── Input schema ─────────────────────────────────────────────────────────────
+
+const SubmitResultSchema = z.object({
+  hash: z.string(),
+  ledger: z.number(),
+});
+
+export { SubmitResultSchema };
+export type SubmitResult = z.infer<typeof SubmitResultSchema>;
 
 /**
  * Zod schema for payment input validation.
@@ -117,7 +126,7 @@ export class StellarPaymentTool {
     // 4. Build transaction
     const buildTx = () => {
       const builder = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE,
+        fee: BASE_FEE, // BASE_FEE (100 stroops) is the actual fee for classic Stellar payments — not overwritten
         networkPassphrase: this.networkPassphrase,
       })
         .addOperation(
@@ -132,7 +141,7 @@ export class StellarPaymentTool {
         builder.addMemo(Memo.text(input.memo));
       }
 
-      return builder.setTimeout(30).build();
+      return builder.setTimeout(SOROBAN_TX_TIMEOUT_SECONDS).build();
     };
 
     let tx = buildTx();
@@ -152,10 +161,7 @@ export class StellarPaymentTool {
 
     // 7. Submit (with auto-retry on tx_bad_seq)
     try {
-      const result = (await submitTransaction(tx)) as {
-        hash: string;
-        ledger: number;
-      };
+      const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes("tx_bad_seq")) {
@@ -165,10 +171,7 @@ export class StellarPaymentTool {
         sourceAccount = await loadAccount(this.keypair.publicKey());
         tx = buildTx();
         tx.sign(this.keypair);
-        const result = (await submitTransaction(tx)) as {
-          hash: string;
-          ledger: number;
-        };
+        const result = SubmitResultSchema.parse(await submitTransaction(tx));
         return { txHash: result.hash, ledger: result.ledger };
       }
       throw err;

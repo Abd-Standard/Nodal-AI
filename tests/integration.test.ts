@@ -11,8 +11,20 @@ import { PayFiAgent } from "../backend/agent";
 // Mock only the RPC layer to test the full tool chain
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn().mockResolvedValue({
-    accountId: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-    sequenceNumber: "1",
+    id: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    accountId: () => "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    sequenceNumber: () => "1",
+    incrementSequenceNumber: () => {},
+    sequence: "1",
+    incrementedSequenceNumber: () => "2",
+    thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+    flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
+    balances: [{ asset_type: "native", balance: "10000.0000000" }],
+    signers: [],
+    data_attr: {},
+    subentry_count: 0,
+    home_domain: "",
+    inflation_dest: null,
   }),
   resolveNetworkPassphrase: vi.fn((network) => {
     return network === "mainnet"
@@ -20,17 +32,22 @@ vi.mock("../backend/rpc_client", () => ({
       : "Test SDF Network ; September 2015";
   }),
   submitTransaction: vi.fn().mockResolvedValue({
-    txHash: "test_tx_hash_123456789",
+    hash: "test_tx_hash_123456789",
     ledger: 1000,
   }),
   prepareSorobanTx: vi.fn().mockResolvedValue({
-    // Minimal Soroban response
-    resultMetaXdr: "mock_result_meta_xdr",
+    sign: vi.fn(),
+    toEnvelope: () => ({ toXDR: () => Buffer.from("mock") }),
   }),
+  horizonServer: {},
   sorobanServer: {
     sendTransaction: vi.fn().mockResolvedValue({
       hash: "soroban_tx_hash_123456789",
       status: "PENDING",
+    }),
+    getTransaction: vi.fn().mockResolvedValue({
+      status: "SUCCESS",
+      returnValue: null,
     }),
   },
 }));
@@ -54,13 +71,54 @@ vi.mock("../backend/config", () => ({
   MAINNET_SPENDING_CAP: 10000,
 }));
 
+vi.mock("../backend/persistence", () => ({
+  saveResult: vi.fn(),
+}));
+
 describe("PayFiAgent integration", () => {
   let agent: PayFiAgent;
   const DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
   const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
-  beforeEach(() => {
+  const mockAccount = {
+    id: DEST,
+    accountId: () => DEST,
+    sequenceNumber: () => "1",
+    incrementSequenceNumber: () => {},
+    sequence: "1",
+    incrementedSequenceNumber: () => "2",
+    thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+    flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
+    balances: [{ asset_type: "native", balance: "10000.0000000" }],
+    signers: [],
+    data_attr: {},
+    subentry_count: 0,
+    home_domain: "",
+    inflation_dest: null,
+  };
+
+  beforeEach(async () => {
     vi.clearAllMocks();
+    const rpc = await import("../backend/rpc_client");
+    vi.mocked(rpc.loadAccount).mockResolvedValue(mockAccount as any);
+    vi.mocked(rpc.submitTransaction).mockResolvedValue({ hash: "test_tx_hash_123456789", ledger: 1000 } as any);
+    vi.mocked(rpc.prepareSorobanTx).mockResolvedValue({
+      sign: vi.fn(),
+      toEnvelope: () => ({ toXDR: () => Buffer.from("mock") }),
+    } as any);
+    // sorobanServer is a plain object mock — reassign its methods directly
+    if (rpc.sorobanServer && (rpc.sorobanServer as any).sendTransaction) {
+      vi.mocked((rpc.sorobanServer as any).sendTransaction).mockResolvedValue({
+        hash: "soroban_tx_hash_123456789",
+        status: "PENDING",
+      });
+    }
+    if (rpc.sorobanServer && (rpc.sorobanServer as any).getTransaction) {
+      vi.mocked((rpc.sorobanServer as any).getTransaction).mockResolvedValue({
+        status: "SUCCESS",
+        returnValue: null,
+      });
+    }
     agent = new PayFiAgent();
   });
 

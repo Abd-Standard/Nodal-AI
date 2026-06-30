@@ -337,9 +337,9 @@ function makeMockAccount(publicKey) {
                 },
             }));
             vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
-            vitest_1.vi.mocked(rpcClient.submitTransaction).mockImplementation((tx) => {
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockImplementation((xdr) => {
                 // Verify XDR contains mainnet network passphrase
-                (0, vitest_1.expect)(tx.toEnvelope().toXDR("base64")).toContain("Public Global Stellar Network");
+                (0, vitest_1.expect)(xdr).toContain("Public Global Stellar Network");
                 return Promise.resolve({ hash: "mainnet_tx", ledger: 100 });
             });
             const mainnetTool = new StellarPaymentTool_1.StellarPaymentTool(TEST_SECRET);
@@ -367,9 +367,9 @@ function makeMockAccount(publicKey) {
                 },
             }));
             vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
-            vitest_1.vi.mocked(rpcClient.submitTransaction).mockImplementation((tx) => {
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockImplementation((xdr) => {
                 // Verify XDR contains futurenet network passphrase
-                (0, vitest_1.expect)(tx.toEnvelope().toXDR("base64")).toContain("Future Network");
+                (0, vitest_1.expect)(xdr).toContain("Future Network");
                 return Promise.resolve({ hash: "futurenet_tx", ledger: 200 });
             });
             const futureNetTool = new StellarPaymentTool_1.StellarPaymentTool(TEST_SECRET);

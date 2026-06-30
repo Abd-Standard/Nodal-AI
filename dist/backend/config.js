@@ -255,9 +255,9 @@ function loadConfig() {
         }
     }
     // ── Build the config object — secret key stays in closure only ────────────
-    const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ALLOWED_X402_ORIGINS, AGENT_SECRET_KEY_ARN, ...rest } = raw;
+    const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ...rest } = raw;
     const rpcTimeoutMs = raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
-    const baseConfig = {
+    const cfg = {
         ...rest,
         AGENT_PUBLIC_KEY: derivedPublicKey,
         RPC_TIMEOUT_MS: rpcTimeoutMs,

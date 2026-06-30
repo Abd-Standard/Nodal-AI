@@ -27,6 +27,43 @@ vi.mock("../backend/tools/X402PaymentTool", () => ({
   })),
 }));
 
+vi.mock("../backend/tools/AccountInfoTool", () => ({
+  AccountInfoTool: vi.fn().mockImplementation(() => ({
+    fetch: vi.fn(),
+  })),
+}));
+
+vi.mock("../backend/tools/TrustlineTool", () => ({
+  TrustlineTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+    checkTrustline: vi.fn(),
+  })),
+}));
+
+vi.mock("../backend/tools/MultiSigPaymentTool", () => ({
+  MultiSigPaymentTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock("../backend/tools/BatchPaymentTool", () => ({
+  BatchPaymentTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock("../backend/persistence", () => ({
+  saveResult: vi.fn(),
+}));
+
+vi.mock("../backend/rpc_client", () => ({
+  loadAccount: vi.fn(),
+  submitTransaction: vi.fn(),
+  horizonServer: { payments: vi.fn(() => ({ forAccount: vi.fn(() => ({ stream: vi.fn() })) })) },
+  sorobanServer: {},
+  resolveNetworkPassphrase: vi.fn(() => "Public Global Stellar Network ; September 2015"),
+}));
+
 vi.mock("../backend/config", () => ({
   config: {
     STELLAR_NETWORK: "mainnet",
@@ -56,6 +93,9 @@ describe("PayFiAgent — runSequence", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 
@@ -190,8 +230,8 @@ describe("PayFiAgent — mainnet spending cap", () => {
 
     expect(result1.success).toBe(true);
     expect(result2.success).toBe(true);
-    expect(result1.data?.txHash).toBe("tx_hash_1");
-    expect(result2.data?.txHash).toBe("tx_hash_2");
+    expect((result1.data as any)?.txHash).toBe("tx_hash_1");
+    expect((result2.data as any)?.txHash).toBe("tx_hash_2");
     expect(agent1).not.toBe(agent2);
   });
 });
@@ -201,6 +241,9 @@ describe("AgentResult snapshot", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "success_tx_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 
@@ -239,5 +282,36 @@ describe("AgentResult snapshot", () => {
     expect(result).toHaveProperty("success", false);
     expect(result).toHaveProperty("taskType", "stellar_payment");
     expect(result).toHaveProperty("error");
+  });
+});
+
+describe("PayFiAgent — payload sanitisation", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    agent = new PayFiAgent();
+  });
+
+  it("scrubs secretKey from payload before logging on failure", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    mockInstance.execute.mockRejectedValueOnce(
+      new Error("simulated payment failure")
+    );
+
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: {
+        destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        amount: "100",
+        assetCode: "USDC",
+        assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+        secretKey: "SABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("simulated payment failure");
+    expect(result.error).not.toContain("SABCDEFGHIJKLMNOPQRSTUVWXYZ234567");
   });
 });
