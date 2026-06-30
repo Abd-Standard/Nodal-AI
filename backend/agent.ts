@@ -78,10 +78,21 @@ export interface AgentTask {
   payload: unknown;
 }
 
+export interface AgentResultData {
+  txHash?: string;
+  ledger?: number;
+  simulationResult?: unknown;
+  protocol?: string;
+  network?: string;
+  nonce?: string;
+  payer?: string;
+  signedAt?: string;
+}
+
 export interface AgentResult {
   success: boolean;
   taskType: TaskType;
-  data?: unknown;
+  data?: AgentResultData;
   error?: string;
 }
 
@@ -316,7 +327,7 @@ export class PayFiAgent extends EventEmitter {
     this.activeTasks++;
     logger.info("Running task", { taskType: task.type });
     try {
-      let data: unknown;
+      let data: AgentResultData;
 
       switch (task.type) {
         case "stellar_payment": {
@@ -326,9 +337,10 @@ export class PayFiAgent extends EventEmitter {
           break;
         }
 
-        case "soroban_invoke":
+        case "soroban_invoke": {
           data = await this.sorobanTool.execute(task.payload);
           break;
+        }
 
         case "soroban_query":
           data = await this.sorobanQueryTool.query(task.payload);

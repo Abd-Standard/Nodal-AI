@@ -323,7 +323,8 @@ function loadConfig(): AgentConfig {
   if (process.env.AGENT_SECRET_KEY_ARN) {
     try {
       const arn = process.env.AGENT_SECRET_KEY_ARN;
-      const region = arn.split(":")[3] || "us-east-1";
+      const arnParts = arn.split(":");
+      const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
       const command = `node -e "
         const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
         const client = new SecretsManagerClient({ region: '${region}' });
@@ -344,8 +345,16 @@ function loadConfig(): AgentConfig {
       let parsedSecret = secret;
       try {
         const json = JSON.parse(secret);
-        if (json && typeof json === "object") {
-          parsedSecret = json.AGENT_SECRET_KEY || Object.values(json)[0] as string;
+        if (json && typeof json === "object" && !Array.isArray(json)) {
+          const candidate = json.AGENT_SECRET_KEY;
+          if (typeof candidate === "string") {
+            parsedSecret = candidate;
+          } else {
+            const firstValue = Object.values(json).find((value): value is string => typeof value === "string");
+            if (firstValue) {
+              parsedSecret = firstValue;
+            }
+          }
         }
       } catch {
         // Not a JSON object, use raw string
@@ -405,7 +414,13 @@ function loadConfig(): AgentConfig {
   }
 
   // ── Build the config object — secret key stays in closure only ────────────
-  const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ...rest } = raw;
+  const {
+    AGENT_SECRET_KEY: _secret,
+    AGENT_PUBLIC_KEY: _rawPub,
+    ALLOWED_X402_ORIGINS,
+    AGENT_SECRET_KEY_ARN,
+    ...rest
+  } = raw;
 
   const rpcTimeoutMs =
     raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;

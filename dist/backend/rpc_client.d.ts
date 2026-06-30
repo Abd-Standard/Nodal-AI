@@ -1,9 +1,10 @@
 /**
  * backend/rpc_client.ts
- * Thin wrapper around Horizon + Soroban RPC with retry logic.
+ * Thin wrapper around Horizon + Soroban RPC with retry and circuit-breaker logic.
  * All network calls route through here — centralised observability point.
  */
 import { Horizon, rpc, Transaction, FeeBumpTransaction } from "@stellar/stellar-sdk";
+import CircuitBreaker from "opossum";
 /**
  * Map a STELLAR_NETWORK string to its canonical network passphrase.
  * Throws for any unrecognised network string so callers fail fast rather than
@@ -59,8 +60,8 @@ export declare const horizonServer: Horizon.Server;
  * Loads account details from the Horizon network for a given public key.
  *
  * @param publicKey - The 56-character Stellar public key (G-address) of the account.
- * @returns A promise resolving to the Horizon account details.
- * @throws An error if the account cannot be loaded after retries.
+ * @returns A promise resolving to the Horizon account details or a cached fallback.
+ * @throws An error if the account cannot be loaded and no cached value is available.
  */
 export declare function loadAccount(publicKey: string): Promise<Horizon.AccountResponse>;
 /**
@@ -68,8 +69,7 @@ export declare function loadAccount(publicKey: string): Promise<Horizon.AccountR
  *
  * @param tx - The Transaction or FeeBumpTransaction to submit.
  * @returns A promise resolving to the Horizon transaction submission response.
- * @throws A TimeoutError if submission does not complete within 30 seconds.
- * @throws An error if the transaction payload is rejected or submission fails.
+ * @throws An error if validation fails or the upstream service is unavailable.
  */
 export declare function submitTransaction(tx: Transaction | FeeBumpTransaction): Promise<Horizon.HorizonApi.SubmitTransactionResponse>;
 /**
@@ -81,6 +81,11 @@ export declare function submitTransaction(tx: Transaction | FeeBumpTransaction):
  * exposes sensitive network calls to eavesdropping or tampering.
  */
 export declare const sorobanServer: rpc.Server;
+export declare const rpcBreakers: {
+    readonly loadAccount: CircuitBreaker<[string], Horizon.AccountResponse>;
+    readonly submitTransaction: CircuitBreaker<[Transaction<import("@stellar/stellar-base").Memo<import("@stellar/stellar-base").MemoType>, import("@stellar/stellar-base").Operation[]> | FeeBumpTransaction], Horizon.HorizonApi.SubmitTransactionResponse>;
+    readonly simulateSorobanTx: CircuitBreaker<[Transaction<import("@stellar/stellar-base").Memo<import("@stellar/stellar-base").MemoType>, import("@stellar/stellar-base").Operation[]>], rpc.Api.SimulateTransactionResponse>;
+};
 /**
  * Simulate a Soroban transaction BEFORE broadcasting.
  * Returns the simulation result — callers MUST check for errors.
@@ -91,7 +96,7 @@ export declare const sorobanServer: rpc.Server;
  *
  * @param tx - The Transaction containing the Soroban invocations.
  * @returns A promise resolving to the Soroban RPC simulation result.
- * @throws An error if simulation RPC call fails after retries.
+ * @throws An error if the upstream service is unavailable.
  */
 export declare function simulateSorobanTx(tx: Transaction): Promise<rpc.Api.SimulateTransactionResponse>;
 /**

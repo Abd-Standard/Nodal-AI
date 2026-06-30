@@ -12,6 +12,7 @@ import {
   xdr,
   StrKey,
 } from "@stellar/stellar-sdk";
+import CircuitBreaker from "opossum";
 import { ZodError } from "zod";
 import { config } from "./config";
 import { logger } from "./logger";
@@ -20,6 +21,71 @@ import { createLogger } from "./utils/logger";
 import { isThrottled, handleRateLimitResponse, withBackoffGuard } from "./network";
 
 const log = createLogger("rpc-client");
+const RPC_BREAKER_OPTIONS = {
+  errorThresholdPercentage: 50,
+  resetTimeout: 30_000,
+  timeout: 10_000,
+  volumeThreshold: 5,
+  rollingCountTimeout: 30_000,
+  rollingCountBuckets: 10,
+};
+
+class RpcServiceUnavailableError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "RpcServiceUnavailableError";
+  }
+}
+
+type HorizonAccount = Awaited<ReturnType<Horizon.Server["loadAccount"]>>;
+type HorizonSubmitResult = Awaited<ReturnType<Horizon.Server["submitTransaction"]>>;
+type SorobanSimulationResult = Awaited<ReturnType<rpc.Server["simulateTransaction"]>>;
+
+const accountCache = new Map<string, HorizonAccount>();
+
+function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
+  breaker: CircuitBreaker<TArgs, TResult>,
+  name: string
+): CircuitBreaker<TArgs, TResult> {
+  breaker.on("open", () => {
+    log.warn({
+      circuit: name,
+      failures: breaker.stats.failures,
+      successes: breaker.stats.successes,
+      timeout: RPC_BREAKER_OPTIONS.timeout,
+      resetTimeout: RPC_BREAKER_OPTIONS.resetTimeout,
+    }, "RPC circuit opened");
+  });
+
+  breaker.on("halfOpen", () => {
+    log.info({
+      circuit: name,
+    }, "RPC circuit half-open");
+  });
+
+  breaker.on("close", () => {
+    log.info({
+      circuit: name,
+      failures: breaker.stats.failures,
+      successes: breaker.stats.successes,
+    }, "RPC circuit closed");
+  });
+
+  return breaker;
+}
+
+function createRpcBreaker<TArgs extends unknown[], TResult>(
+  name: string,
+  action: (...args: TArgs) => Promise<TResult>
+): CircuitBreaker<TArgs, TResult> {
+  return attachBreakerTelemetry(
+    new CircuitBreaker(action, {
+      ...RPC_BREAKER_OPTIONS,
+      name,
+    }),
+    name
+  );
+}
 
 export function resolveNetworkPassphrase(network: string): string {
   if (network === "mainnet") return Networks.PUBLIC;
@@ -105,6 +171,8 @@ export async function withRetry<T>(
       }
     }
   }
+  const lastErrorMessage =
+    lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
   throw new StellarRPCError(
     "RPC call failed after  attempt: ",
     lastErr

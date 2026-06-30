@@ -174,7 +174,8 @@ function loadConfig() {
     if (process.env.AGENT_SECRET_KEY_ARN) {
         try {
             const arn = process.env.AGENT_SECRET_KEY_ARN;
-            const region = arn.split(":")[3] || "us-east-1";
+            const arnParts = arn.split(":");
+            const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
             const command = `node -e "
         const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
         const client = new SecretsManagerClient({ region: '${region}' });
@@ -195,8 +196,17 @@ function loadConfig() {
             let parsedSecret = secret;
             try {
                 const json = JSON.parse(secret);
-                if (json && typeof json === "object") {
-                    parsedSecret = json.AGENT_SECRET_KEY || Object.values(json)[0];
+                if (json && typeof json === "object" && !Array.isArray(json)) {
+                    const candidate = json.AGENT_SECRET_KEY;
+                    if (typeof candidate === "string") {
+                        parsedSecret = candidate;
+                    }
+                    else {
+                        const firstValue = Object.values(json).find((value) => typeof value === "string");
+                        if (firstValue) {
+                            parsedSecret = firstValue;
+                        }
+                    }
                 }
             }
             catch {
@@ -254,6 +264,23 @@ function loadConfig() {
         // Secret is captured in closure; never on the object
         agentKeypair: () => stellar_sdk_1.Keypair.fromSecret(_secret),
     };
+    const cfg = ALLOWED_X402_ORIGINS !== undefined && AGENT_SECRET_KEY_ARN !== undefined
+        ? {
+            ...baseConfig,
+            ALLOWED_X402_ORIGINS,
+            AGENT_SECRET_KEY_ARN,
+        }
+        : ALLOWED_X402_ORIGINS !== undefined
+            ? {
+                ...baseConfig,
+                ALLOWED_X402_ORIGINS,
+            }
+            : AGENT_SECRET_KEY_ARN !== undefined
+                ? {
+                    ...baseConfig,
+                    AGENT_SECRET_KEY_ARN,
+                }
+                : baseConfig;
     // Startup banner — only safe fields
     process.stdout.write(`✅ [Config] Environment validated\n` +
         `   Network        : ${cfg.STELLAR_NETWORK}\n` +

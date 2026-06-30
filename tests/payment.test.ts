@@ -439,7 +439,7 @@ describe("StellarPaymentTool", () => {
       );
       vi.mocked(rpcClient.submitTransaction).mockImplementation((xdr: any) => {
         // Verify XDR contains mainnet network passphrase
-        expect(xdr).toContain("Public Global Stellar Network");
+        expect(tx.toEnvelope().toXDR("base64")).toContain("Public Global Stellar Network");
         return Promise.resolve({ hash: "mainnet_tx", ledger: 100 } as any);
       });
 
@@ -464,7 +464,7 @@ describe("StellarPaymentTool", () => {
       );
       vi.mocked(rpcClient.submitTransaction).mockImplementation((xdr: any) => {
         // Verify XDR contains futurenet network passphrase
-        expect(xdr).toContain("Future Network");
+        expect(tx.toEnvelope().toXDR("base64")).toContain("Future Network");
         return Promise.resolve({ hash: "futurenet_tx", ledger: 200 } as any);
       });
 

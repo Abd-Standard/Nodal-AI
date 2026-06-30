@@ -20,9 +20,16 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
   };
 });
 
+const rpcClientLog = {
+  info: vi.fn(),
+  warn: vi.fn(),
+  error: vi.fn(),
+  debug: vi.fn(),
+};
+
 vi.mock("../backend/utils/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-  createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
+  createLogger: vi.fn(() => rpcClientLog),
   generateCorrelationId: vi.fn(() => "mock-id"),
 }));
 
@@ -46,6 +53,17 @@ vi.mock("../backend/config", () => {
       MAX_SOROBAN_FEE_STROOPS: 1_000_000,
     },
   };
+});
+
+beforeEach(() => {
+  rpcClientLog.info.mockClear();
+  rpcClientLog.warn.mockClear();
+  rpcClientLog.error.mockClear();
+  rpcClientLog.debug.mockClear();
+});
+
+afterEach(() => {
+  vi.useRealTimers();
 });
 
 // ─── resolveNetworkPassphrase ─────────────────────────────────────────────────
