@@ -29,10 +29,21 @@ export interface AgentTask {
   payload: unknown;
 }
 
+export interface AgentResultData {
+  txHash?: string;
+  ledger?: number;
+  simulationResult?: unknown;
+  protocol?: string;
+  network?: string;
+  nonce?: string;
+  payer?: string;
+  signedAt?: string;
+}
+
 export interface AgentResult {
   success: boolean;
   taskType: TaskType;
-  data?: unknown;
+  data?: AgentResultData;
   error?: string;
 }
 
@@ -190,7 +201,7 @@ export class PayFiAgent extends EventEmitter {
     this.activeTasks++;
     logger.info("Running task", { taskType: task.type });
     try {
-      let data: unknown;
+      let data: AgentResultData;
 
       switch (task.type) {
         case "stellar_payment": {
@@ -200,9 +211,10 @@ export class PayFiAgent extends EventEmitter {
           break;
         }
 
-        case "soroban_invoke":
+        case "soroban_invoke": {
           data = await this.sorobanTool.execute(task.payload);
           break;
+        }
 
         case "x402_respond": {
           const p = task.payload as Record<string, unknown>;
@@ -211,8 +223,10 @@ export class PayFiAgent extends EventEmitter {
           break;
         }
 
-        default:
-          throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
+        default: {
+          const exhaustiveCheck: never = task.type;
+          throw new Error(`Unknown task type: ${exhaustiveCheck}`);
+        }
       }
 
       logger.info("Task completed", { taskType: task.type });

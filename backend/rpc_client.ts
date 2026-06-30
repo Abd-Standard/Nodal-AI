@@ -181,8 +181,10 @@ export async function withRetry<T>(
       }
     }
   }
+  const lastErrorMessage =
+    lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
   throw new StellarRPCError(
-    `RPC call failed after ${retries} attempt${retries !== 1 ? "s" : ""}: ${(lastErr as Error).message}`,
+    `RPC call failed after ${retries} attempt${retries !== 1 ? "s" : ""}: ${lastErrorMessage}`,
     lastErr
   );
 }
@@ -335,7 +337,8 @@ export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
   const simResult = await simulateSorobanTx(tx);
 
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error(`Soroban simulation failed: ${(simResult as any).error}`);
+    const errorValue = "error" in simResult ? simResult.error : simResult;
+    throw new Error(`Soroban simulation failed: ${String(errorValue)}`);
   }
 
   return rpc.assembleTransaction(tx, simResult).build();

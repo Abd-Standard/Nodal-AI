@@ -70,7 +70,7 @@ describe("PayFiAgent — runSequence", () => {
   });
 
   it("stops at task 2 when it fails and does not execute task 3", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
     mockInstance.execute
       .mockResolvedValueOnce({ txHash: "hash1", ledger: 1 })
       .mockRejectedValueOnce(new Error("Network failure"));
@@ -81,9 +81,9 @@ describe("PayFiAgent — runSequence", () => {
     };
     const results = await agent.runSequence([task, task, task]);
     expect(results).toHaveLength(2);
-    expect(results[0].success).toBe(true);
-    expect(results[1].success).toBe(false);
-    expect(results[1].error).toContain("Network failure");
+    expect(results[0]!.success).toBe(true);
+    expect(results[1]!.success).toBe(false);
+    expect(results[1]!.error).toContain("Network failure");
     expect(mockInstance.execute).toHaveBeenCalledTimes(2);
   });
 
@@ -98,9 +98,9 @@ describe("PayFiAgent — runSequence", () => {
     };
     const results = await agent.runSequence([okTask, overCapTask, okTask]);
     expect(results).toHaveLength(2);
-    expect(results[0].success).toBe(true);
-    expect(results[1].success).toBe(false);
-    expect(results[1].error).toMatch(/mainnet spending cap/);
+    expect(results[0]!.success).toBe(true);
+    expect(results[1]!.success).toBe(false);
+    expect(results[1]!.error).toMatch(/mainnet spending cap/);
   });
 });
 
@@ -167,8 +167,8 @@ describe("PayFiAgent — mainnet spending cap", () => {
     const agent1 = new PayFiAgent();
     const agent2 = new PayFiAgent();
 
-    const mockInstance1 = vi.mocked(StellarPaymentTool).mock.results[0].value;
-    const mockInstance2 = vi.mocked(StellarPaymentTool).mock.results[1].value;
+    const mockInstance1 = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    const mockInstance2 = vi.mocked(StellarPaymentTool).mock.results[1]!.value;
 
     mockInstance1.execute.mockResolvedValueOnce({ txHash: "tx_hash_1", ledger: 1 });
     mockInstance2.execute.mockResolvedValueOnce({ txHash: "tx_hash_2", ledger: 2 });
@@ -222,7 +222,7 @@ describe("AgentResult snapshot", () => {
   });
 
   it("AgentResult has expected shape on failure", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
     mockInstance.execute.mockRejectedValueOnce(new Error("Test error"));
 
     const result = await agent.run({

@@ -34,7 +34,8 @@ export type XDRPayload = z.infer<typeof XDRPayloadSchema>;
 export function validateXDR(raw: unknown): XDRPayload {
   const result = XDRPayloadSchema.safeParse(raw);
   if (!result.success) {
-    throw new InvalidXDRFormat(result.error.issues[0].message);
+    const firstIssue = result.error.issues[0];
+    throw new InvalidXDRFormat(firstIssue ? firstIssue.message : "Invalid XDR payload");
   }
   return result.data;
 }

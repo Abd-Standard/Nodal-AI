@@ -52,6 +52,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAINNET_SPENDING_CAP = exports.config = void 0;
+exports.formatValidationErrors = formatValidationErrors;
 const zod_1 = require("zod");
 const dotenv = __importStar(require("dotenv"));
 const stellar_sdk_1 = require("@stellar/stellar-sdk");
@@ -140,6 +141,13 @@ const EnvSchema = zod_1.z.object({
         .int()
         .min(100)
         .default(1500),
+    // Per-call RPC timeout in milliseconds.
+    // Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2, computed post-parse.
+    RPC_TIMEOUT_MS: zod_1.z.coerce
+        .number()
+        .int()
+        .min(100)
+        .optional(),
 });
 // ─── Loader ───────────────────────────────────────────────────────────────────
 function formatValidationErrors(errors) {
@@ -166,7 +174,8 @@ function loadConfig() {
     if (process.env.AGENT_SECRET_KEY_ARN) {
         try {
             const arn = process.env.AGENT_SECRET_KEY_ARN;
-            const region = arn.split(":")[3] || "us-east-1";
+            const arnParts = arn.split(":");
+            const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
             const command = `node -e "
         const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
         const client = new SecretsManagerClient({ region: '${region}' });
@@ -187,8 +196,17 @@ function loadConfig() {
             let parsedSecret = secret;
             try {
                 const json = JSON.parse(secret);
-                if (json && typeof json === "object") {
-                    parsedSecret = json.AGENT_SECRET_KEY || Object.values(json)[0];
+                if (json && typeof json === "object" && !Array.isArray(json)) {
+                    const candidate = json.AGENT_SECRET_KEY;
+                    if (typeof candidate === "string") {
+                        parsedSecret = candidate;
+                    }
+                    else {
+                        const firstValue = Object.values(json).find((value) => typeof value === "string");
+                        if (firstValue) {
+                            parsedSecret = firstValue;
+                        }
+                    }
                 }
             }
             catch {
@@ -237,13 +255,32 @@ function loadConfig() {
         }
     }
     // ── Build the config object — secret key stays in closure only ────────────
-    const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ...rest } = raw;
-    const cfg = {
+    const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ALLOWED_X402_ORIGINS, AGENT_SECRET_KEY_ARN, ...rest } = raw;
+    const rpcTimeoutMs = raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
+    const baseConfig = {
         ...rest,
         AGENT_PUBLIC_KEY: derivedPublicKey,
+        RPC_TIMEOUT_MS: rpcTimeoutMs,
         // Secret is captured in closure; never on the object
         agentKeypair: () => stellar_sdk_1.Keypair.fromSecret(_secret),
     };
+    const cfg = ALLOWED_X402_ORIGINS !== undefined && AGENT_SECRET_KEY_ARN !== undefined
+        ? {
+            ...baseConfig,
+            ALLOWED_X402_ORIGINS,
+            AGENT_SECRET_KEY_ARN,
+        }
+        : ALLOWED_X402_ORIGINS !== undefined
+            ? {
+                ...baseConfig,
+                ALLOWED_X402_ORIGINS,
+            }
+            : AGENT_SECRET_KEY_ARN !== undefined
+                ? {
+                    ...baseConfig,
+                    AGENT_SECRET_KEY_ARN,
+                }
+                : baseConfig;
     // Startup banner — only safe fields
     process.stdout.write(`✅ [Config] Environment validated\n` +
         `   Network        : ${cfg.STELLAR_NETWORK}\n` +
