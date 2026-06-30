@@ -2,13 +2,14 @@ node_modules/
 dist/
 coverage/
 **/target/
-contracts/escrow/Cargo.lock
+**/Cargo.lock
 contracts/escrow/test_snapshots/
 .env
-.env.local
-.env.development.local
-.env.test.local
-.env.production.local
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
 
-# Track TypeScript/Vitest snapshot files explicitly
-!tests/__snapshots__/
+# Vitest snapshot files — auto-generated, do not commit
+tests/__snapshots__/

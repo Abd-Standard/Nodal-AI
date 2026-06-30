@@ -70,8 +70,7 @@ LABEL org.opencontainers.image.title="Nodal AI Agent"
 LABEL org.opencontainers.image.description="Stellar PayFi Agent Kit"
 
 # Non-root user for security
-RUN groupadd --gid 1001 nodal && \
-    useradd  --uid 1001 --gid nodal --shell /bin/bash --create-home nodal
+RUN addgroup --system agent && adduser --system --ingroup agent agent
 
 WORKDIR /app
 
@@ -89,8 +88,11 @@ COPY --from=rust-builder \
     /build/contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm \
     ./contracts/escrow/stellar_payfi_escrow.wasm
 
+# Ensure compiled output is readable by the non-root user
+RUN chown -R agent:agent /app
+
 # Drop to non-root
-USER nodal
+USER agent
 
 # Expose default port (override via env)
 EXPOSE 3000

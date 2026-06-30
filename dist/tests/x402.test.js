@@ -71,6 +71,17 @@ const VALID_CHALLENGE = {
         (0, vitest_1.it)("rejects a non-UUID nonce", async () => {
             await (0, vitest_1.expect)(tool.respond({ ...VALID_CHALLENGE, nonce: "not-a-uuid" })).rejects.toThrow(/UUID/);
         });
+        (0, vitest_1.it)("rejects a challenge where payTo is the agent's own address", async () => {
+            const agentPublicKey = stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey();
+            await (0, vitest_1.expect)(tool.respond({ ...VALID_CHALLENGE, payTo: agentPublicKey })).rejects.toThrow("Payment destination cannot be the agent's own address");
+        });
+        (0, vitest_1.it)("rejects USDC payment when assetIssuer is empty", async () => {
+            await (0, vitest_1.expect)(tool.respond({ ...VALID_CHALLENGE, assetCode: "USDC", assetIssuer: "" })).rejects.toThrow("assetIssuer is required for non-XLM payments");
+        });
+        (0, vitest_1.it)("accepts XLM payment without assetIssuer", async () => {
+            const proof = await tool.respond({ ...VALID_CHALLENGE, assetCode: "XLM", assetIssuer: "" });
+            (0, vitest_1.expect)(proof.txHash).toBeTruthy();
+        });
         (0, vitest_1.it)("rejects a missing resource URL", async () => {
             const { resource: _omit, ...noResource } = VALID_CHALLENGE;
             await (0, vitest_1.expect)(tool.respond(noResource)).rejects.toThrow();
@@ -183,6 +194,19 @@ const VALID_CHALLENGE = {
         (0, vitest_1.it)("propagates trust line missing error", async () => {
             getMockExecute().mockRejectedValueOnce(new Error("Horizon: op_no_trust — recipient missing trust line for USDC"));
             await (0, vitest_1.expect)(tool.respond(VALID_CHALLENGE)).rejects.toThrow(/no_trust/);
+        });
+    });
+    // ── Snapshot tests for X402PaymentProof shape ──────────────────────────────
+    (0, vitest_1.describe)("X402PaymentProof snapshot", () => {
+        (0, vitest_1.it)("X402PaymentProof has expected shape and fields", async () => {
+            const proof = await tool.respond(VALID_CHALLENGE);
+            (0, vitest_1.expect)(proof).toMatchSnapshot();
+            (0, vitest_1.expect)(proof).toHaveProperty("protocol", "x402");
+            (0, vitest_1.expect)(proof).toHaveProperty("network");
+            (0, vitest_1.expect)(proof).toHaveProperty("txHash");
+            (0, vitest_1.expect)(proof).toHaveProperty("nonce");
+            (0, vitest_1.expect)(proof).toHaveProperty("payer");
+            (0, vitest_1.expect)(proof).toHaveProperty("signedAt");
         });
     });
 });

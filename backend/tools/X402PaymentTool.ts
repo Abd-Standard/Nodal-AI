@@ -39,10 +39,16 @@ export interface X402PaymentProof {
 
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
 export class X402PaymentTool {
+  // TODO: persist to Redis for multi-instance deployments
+  private usedNonces = new Set<string>();
   private paymentTool: StellarPaymentTool;
   private keypair: Keypair;
   private horizonServer: Horizon.Server;
+  private paymentCount = 0;
+  private windowStart = Date.now();
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
     this.keypair = Keypair.fromSecret(secretKey);
@@ -51,6 +57,17 @@ export class X402PaymentTool {
   }
 
   async respond(rawChallenge: unknown): Promise<X402PaymentProof> {
+    const now = Date.now();
+    if (now - this.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      this.paymentCount = 0;
+      this.windowStart = now;
+    }
+
+    if (this.paymentCount >= config.MAX_X402_PAYMENTS_PER_MINUTE) {
+      throw new Error("x402: rate limit exceeded");
+    }
+    this.paymentCount++;
+
     const challenge = X402ChallengeSchema.parse(rawChallenge);
 
     if (challenge.payTo === this.keypair.publicKey()) {
@@ -71,6 +88,10 @@ export class X402PaymentTool {
       throw new Error(`x402 challenge expired at ${challenge.expiresAt}`);
     }
 
+    if (this.usedNonces.has(challenge.nonce)) {
+      throw new Error("x402: nonce already used");
+    }
+
     const { txHash } = await this.paymentTool.execute({
       destination: challenge.payTo,
       amount: challenge.amount,
@@ -81,13 +102,15 @@ export class X402PaymentTool {
       memo: createHash("sha256").update(challenge.nonce).digest("hex").slice(0, 28),
     });
 
+    this.usedNonces.add(challenge.nonce);
+
     return {
       protocol: "x402",
       network: config.STELLAR_NETWORK,
       txHash,
       nonce: challenge.nonce,
       payer: this.keypair.publicKey(),
-      signedAt: new Date().toISOString(),
+      signedAt,
     };
   }
 

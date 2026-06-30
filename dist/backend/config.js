@@ -52,6 +52,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAINNET_SPENDING_CAP = exports.config = void 0;
+exports.formatValidationErrors = formatValidationErrors;
 const zod_1 = require("zod");
 const dotenv = __importStar(require("dotenv"));
 const stellar_sdk_1 = require("@stellar/stellar-sdk");
@@ -140,6 +141,13 @@ const EnvSchema = zod_1.z.object({
         .int()
         .min(100)
         .default(1500),
+    // Per-call RPC timeout in milliseconds.
+    // Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2, computed post-parse.
+    RPC_TIMEOUT_MS: zod_1.z.coerce
+        .number()
+        .int()
+        .min(100)
+        .optional(),
 });
 // ─── Loader ───────────────────────────────────────────────────────────────────
 function formatValidationErrors(errors) {
@@ -238,9 +246,11 @@ function loadConfig() {
     }
     // ── Build the config object — secret key stays in closure only ────────────
     const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ...rest } = raw;
+    const rpcTimeoutMs = raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
     const cfg = {
         ...rest,
         AGENT_PUBLIC_KEY: derivedPublicKey,
+        RPC_TIMEOUT_MS: rpcTimeoutMs,
         // Secret is captured in closure; never on the object
         agentKeypair: () => stellar_sdk_1.Keypair.fromSecret(_secret),
     };
