@@ -45,21 +45,31 @@ import * as rpcClient from "../backend/rpc_client";
  * critical for the polling mechanism that confirms transaction settlement.
  */
 
-vi.mock("../backend/rpc_client", () => ({
-  loadAccount: vi.fn(),
-  submitTransaction: vi.fn(),
-  simulateSorobanTx: vi.fn(),
-  prepareSorobanTx: vi.fn(),
-  resolveNetworkPassphrase: vi.fn((network: string) =>
-    network === "mainnet"
-      ? "Public Global Stellar Network ; September 2015"
-      : "Test SDF Network ; September 2015"
-  ),
-  horizonServer: {},
-  sorobanServer: {
-    sendTransaction: vi.fn(),
-    getTransaction: vi.fn(),
-  },
+vi.mock("../backend/rpc_client", async () => {
+  const { Networks } = await import("@stellar/stellar-sdk");
+  return {
+    loadAccount: vi.fn(),
+    submitTransaction: vi.fn(),
+    simulateSorobanTx: vi.fn(),
+    prepareSorobanTx: vi.fn(),
+    // Use a plain function (not vi.fn) to ensure the passphrase is always a string
+    resolveNetworkPassphrase: (_network: string) => Networks.TESTNET,
+    horizonServer: {},
+    sorobanServer: {
+      sendTransaction: vi.fn(),
+      getTransaction: vi.fn(),
+    },
+  };
+});
+
+vi.mock("../backend/logger", () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+}));
+
+vi.mock("../backend/utils/logger", () => ({
+  createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
+  generateCorrelationId: vi.fn(() => "mock-correlation-id"),
+}));
 }));
 
 /**
@@ -133,6 +143,18 @@ function makeMockAccount(publicKey: string) {
     data_attr: {},
     subentry_count: 0,
   };
+}
+
+/**
+ * Creates a mock prepared transaction that satisfies the post-sign signature guard.
+ * sign() mutates `signatures` in place (matching real Stellar SDK behaviour).
+ */
+function makeMockPreparedTx(): any {
+  const obj: any = { signatures: [] };
+  obj.sign = vi.fn().mockImplementation(() => {
+    obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
+  });
+  return obj;
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -220,9 +242,7 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("calls prepareSorobanTx before any submission", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-        sign: vi.fn(),
-      } as any);
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
       vi.mocked(
         rpcClient.sorobanServer.sendTransaction as any,
       ).mockResolvedValue({
@@ -363,9 +383,7 @@ describe("SorobanInvokeTool", () => {
           "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
         ) as any,
       );
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-        sign: vi.fn(),
-      } as any);
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
     });
 
     it("returns txHash after a successful confirmation on first poll", async () => {
@@ -534,7 +552,67 @@ describe("SorobanInvokeTool", () => {
     });
   });
 
-  // ── Args validation ────────────────────────────────────────────────────────
+  // ── Signature assertion (issue #99) ────────────────────────────────────────
+  /**
+   * Post-sign guard: verifies that the transaction has at least one signature
+   * before submission. A no-op sign() call (e.g., mutated Keypair behaviour
+   * in a future SDK version) would cause an empty signatures array, which the
+   * Stellar network rejects immediately. The guard catches this early.
+   */
+
+  describe("Post-sign signature assertion", () => {
+    beforeEach(() => {
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount(
+          "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        ) as any,
+      );
+    });
+
+    it("throws 'Transaction signing produced no signatures' when sign() is a no-op", async () => {
+      // Mock prepareSorobanTx to return a transaction whose sign() does nothing,
+      // leaving the signatures array empty.
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
+        sign: vi.fn(), // no-op — does NOT push to signatures
+        signatures: [], // empty signatures list — guard must catch this
+      } as any);
+
+      await expect(
+        tool.execute({
+          contractId: VALID_CONTRACT,
+          method: "release",
+          args: [],
+        }),
+      ).rejects.toThrow("Transaction signing produced no signatures");
+
+      // sendTransaction must NOT have been called when signing failed
+      expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+    });
+
+    it("submits successfully when sign() populates signatures", async () => {
+      // Use makeMockPreparedTx so sign() adds a signature entry
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(
+        makeMockPreparedTx()
+      );
+
+      vi.mocked(rpcClient.sorobanServer.sendTransaction as any).mockResolvedValue({
+        status: "PENDING",
+        hash: "signed_ok_hash",
+      });
+      vi.mocked(rpcClient.sorobanServer.getTransaction as any).mockResolvedValue({
+        status: "SUCCESS",
+      });
+
+      const result = await tool.execute({
+        contractId: VALID_CONTRACT,
+        method: "release",
+        args: [],
+      });
+
+      expect(result.txHash).toBe("signed_ok_hash");
+    });
+  });
+
 
   describe("args validation", () => {
     it("rejects plain JavaScript object in args array", () => {
@@ -577,7 +655,11 @@ describe("SorobanInvokeTool", () => {
 
     it("accepts multiple xdr.ScVal instances", () => {
       const arg1 = nativeToScVal(100n, { type: "i128" });
-      const arg2 = nativeToScVal("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", { type: "address" });
+      // Use a real 56-char G-address; "GABC" is not a valid Stellar address
+      const arg2 = nativeToScVal(
+        "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        { type: "address" }
+      );
       const result = SorobanInvokeInputSchema.safeParse({
         contractId: VALID_CONTRACT,
         method: "test",
@@ -588,3 +670,4 @@ describe("SorobanInvokeTool", () => {
     });
   });
 });
+

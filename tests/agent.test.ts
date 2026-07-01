@@ -93,6 +93,8 @@ describe("PayFiAgent — runSequence", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    // Re-apply default mock implementation after clearAllMocks (clearMocks resets call history
+    // but also clears mockReturnValue / mockResolvedValue set inside vi.mock factories).
     vi.mocked(StellarPaymentTool).mockImplementation(() => ({
       execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
     } as any));

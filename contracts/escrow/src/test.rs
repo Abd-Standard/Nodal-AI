@@ -628,7 +628,219 @@ mod tests {
         assert_eq!(token.balance(&depositor), 1_000);
     }
 
-    // 22. refund sends to stored_depositor, not the caller parameter (anti-TOCTOU)
+    // ── InvalidParties guard tests (issue #92) ───────────────────────────────
+
+    // 22. depositor == arbiter panics with InvalidParties
+    #[test]
+    #[should_panic]
+    fn test_initialize_same_depositor_arbiter_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        // arbiter is the same address as depositor — degenerate escrow
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &depositor, // arbiter == depositor
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+    }
+
+    // 23. depositor == recipient panics with InvalidParties
+    #[test]
+    #[should_panic]
+    fn test_initialize_same_depositor_recipient_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &depositor, // recipient == depositor
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+    }
+
+    // 24. arbiter == recipient panics with InvalidParties
+    #[test]
+    #[should_panic]
+    fn test_initialize_same_arbiter_recipient_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        // recipient is the same as arbiter
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &arbiter, // recipient == arbiter
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+    }
+
+    // ── release_partial tests (issue #104) ───────────────────────────────────
+
+    // 25. partial release reduces stored amount and transfers to recipient
+    #[test]
+    fn test_release_partial_reduces_stored_amount() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, token) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &1_000,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        // Release 300 out of 1000
+        client.release_partial(&arbiter, &300);
+        assert_eq!(token.balance(&recipient), 300);
+        assert_eq!(token.balance(&contract_id), 700);
+        // Escrow must still be open (not sealed)
+        let state = client.get_state();
+        assert_eq!(state.amount, 700);
+        assert_eq!(state.released, false);
+    }
+
+    // 26. multiple sequential partial releases each reduce the stored amount
+    #[test]
+    fn test_multiple_partial_releases() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, token) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &1_000,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        client.release_partial(&arbiter, &200);
+        client.release_partial(&arbiter, &300);
+        client.release_partial(&arbiter, &100);
+        assert_eq!(token.balance(&recipient), 600);
+        assert_eq!(token.balance(&contract_id), 400);
+        let state = client.get_state();
+        assert_eq!(state.amount, 400);
+        assert_eq!(state.released, false);
+    }
+
+    // 27. final partial release (amount reaches 0) seals the escrow
+    #[test]
+    fn test_final_partial_release_seals_state() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, token) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        // Two partial releases that sum to the full amount
+        client.release_partial(&arbiter, &200);
+        client.release_partial(&arbiter, &300);
+        assert_eq!(token.balance(&recipient), 500);
+        assert_eq!(token.balance(&contract_id), 0);
+        // State must be sealed after the balance reaches zero
+        let state = client.get_state();
+        assert_eq!(state.amount, 0);
+        assert_eq!(state.released, true);
+    }
+
+    // 28. release_partial with amount > stored amount panics with InvalidAmount
+    #[test]
+    #[should_panic]
+    fn test_release_partial_excess_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        // Attempt to release more than the locked amount
+        client.release_partial(&arbiter, &600);
+    }
+
+    // 29. release_partial with zero amount panics with InvalidAmount
+    #[test]
+    #[should_panic]
+    fn test_release_partial_zero_amount_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        client.release_partial(&arbiter, &0);
+    }
+
+    // 30. refund sends to stored_depositor, not the caller parameter (anti-TOCTOU)
     #[test]
     fn test_refund_goes_to_stored_depositor_not_impostor() {
         let env = Env::default();

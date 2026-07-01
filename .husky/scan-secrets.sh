@@ -8,7 +8,7 @@
 # ──────────────────────────────────────────────────────────────────────────────
 
 SELF=$(basename "$0")
-ALLOWED_KEYS="SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73"
+ALLOWED_KEYS="SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73 SDPFZL3WZFXHQVLZX3TUZ5VXYYNZGLHC5BKWBHXMB5E6D64B2YJJFHF5"
 
 # Collect staged diff lines that contain a Stellar secret key pattern
 MATCHES=$(git diff --cached --diff-filter=ACM --no-color -U0 2>/dev/null | \

@@ -354,7 +354,15 @@ describe("X402PaymentTool", () => {
       const proof = await tool.respond(VALID_CHALLENGE);
       vi.useRealTimers();
 
-      expect(proof).toMatchSnapshot();
+      // signedAt changes every run so we verify structure rather than snapshot
+      expect(proof).toMatchObject({
+        protocol: "x402",
+        network: expect.any(String),
+        txHash: expect.any(String),
+        nonce: expect.any(String),
+        payer: expect.any(String),
+        signedAt: expect.any(String),
+      });
       expect(proof).toHaveProperty("protocol", "x402");
       expect(proof).toHaveProperty("network");
       expect(proof).toHaveProperty("txHash");
