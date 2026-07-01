@@ -23,6 +23,8 @@ vi.mock("../backend/rpc_client", () => ({
     signers: [],
     data_attr: {},
     subentry_count: 0,
+    home_domain: "",
+    inflation_dest: null,
   }),
   resolveNetworkPassphrase: (_network: string) => {
     const { Networks } = require("@stellar/stellar-sdk");
@@ -41,6 +43,7 @@ vi.mock("../backend/rpc_client", () => ({
     };
     return Promise.resolve(obj);
   }),
+  horizonServer: {},
   sorobanServer: {
     sendTransaction: vi.fn().mockResolvedValue({
       hash: "soroban_tx_hash_123456789",
@@ -48,11 +51,8 @@ vi.mock("../backend/rpc_client", () => ({
     }),
     getTransaction: vi.fn().mockResolvedValue({
       status: "SUCCESS",
+      returnValue: null,
     }),
-  },
-  horizonServer: {
-    transactions: vi.fn(() => ({ transaction: vi.fn(() => ({ call: vi.fn() })) })),
-    operations: vi.fn(() => ({ forTransaction: vi.fn(() => ({ call: vi.fn() })) })),
   },
 }));
 
@@ -75,12 +75,16 @@ vi.mock("../backend/config", () => ({
   MAINNET_SPENDING_CAP: 10000,
 }));
 
+vi.mock("../backend/persistence", () => ({
+  saveResult: vi.fn(),
+}));
+
 describe("PayFiAgent integration", () => {
   let agent: PayFiAgent;
   const DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
   const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
-  const MOCK_ACCOUNT = {
+const MOCK_ACCOUNT = {
     id: DEST,
     accountId: () => DEST,
     sequenceNumber: () => "100",
@@ -93,6 +97,8 @@ describe("PayFiAgent integration", () => {
     signers: [],
     data_attr: {},
     subentry_count: 0,
+    home_domain: "",
+    inflation_dest: null,
   };
 
   function makeMockPreparedTx() {
@@ -111,7 +117,7 @@ describe("PayFiAgent integration", () => {
     vi.mocked(rpc.submitTransaction).mockResolvedValue({ hash: "test_tx_hash_123456789", ledger: 1000 } as any);
     vi.mocked(rpc.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
     vi.mocked(rpc.sorobanServer.sendTransaction as any).mockResolvedValue({ hash: "soroban_tx_hash_123456789", status: "PENDING" });
-    vi.mocked(rpc.sorobanServer.getTransaction as any).mockResolvedValue({ status: "SUCCESS" });
+    vi.mocked(rpc.sorobanServer.getTransaction as any).mockResolvedValue({ status: "SUCCESS", returnValue: null });
     agent = new PayFiAgent();
   });
 

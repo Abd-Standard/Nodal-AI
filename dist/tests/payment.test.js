@@ -41,6 +41,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const vitest_1 = require("vitest");
+const stellar_sdk_1 = require("@stellar/stellar-sdk");
 const StellarPaymentTool_1 = require("../backend/tools/StellarPaymentTool");
 const rpcClient = __importStar(require("../backend/rpc_client"));
 // ─── Module mock ──────────────────────────────────────────────────────────────
@@ -121,6 +122,9 @@ function makeMockAccount(publicKey) {
         });
         (0, vitest_1.it)("rejects amount with more than 7 decimal places", async () => {
             await (0, vitest_1.expect)(tool.execute({ destination: VALID_DEST, amount: "1.12345678", assetCode: "XLM" })).rejects.toThrow(/Amount must be/);
+        });
+        (0, vitest_1.it)("rejects self-payment (destination === agent public key)", async () => {
+            await (0, vitest_1.expect)(tool.execute({ destination: tool.publicKey, amount: "1", assetCode: "XLM" })).rejects.toThrow("Payment destination cannot be the agent's own address");
         });
         (0, vitest_1.it)("rejects a non-XLM asset when issuer is missing", async () => {
             await (0, vitest_1.expect)(tool.execute({
@@ -266,6 +270,19 @@ function makeMockAccount(publicKey) {
             vitest_1.vi.mocked(rpcClient.submitTransaction).mockRejectedValue(new Error("Horizon: tx_bad_seq — sequence number is not valid"));
             await (0, vitest_1.expect)(tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" })).rejects.toThrow(/tx_bad_seq/);
         });
+        (0, vitest_1.it)("recovers from tx_bad_seq on first retry", async () => {
+            vitest_1.vi.mocked(rpcClient.submitTransaction)
+                .mockRejectedValueOnce(new Error("Horizon: tx_bad_seq — sequence number is not valid"))
+                .mockResolvedValueOnce({ hash: "retry_success_hash", ledger: 42 });
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("retry_success_hash");
+            (0, vitest_1.expect)(result.ledger).toBe(42);
+            (0, vitest_1.expect)(rpcClient.submitTransaction).toHaveBeenCalledTimes(2);
+        });
         (0, vitest_1.it)("surfaces destination account non-existent (op_no_destination)", async () => {
             vitest_1.vi.mocked(rpcClient.submitTransaction).mockRejectedValue(new Error("Horizon: op_no_destination — destination account does not exist"));
             await (0, vitest_1.expect)(tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" })).rejects.toThrow(/op_no_destination/);
@@ -299,6 +316,70 @@ function makeMockAccount(publicKey) {
         });
         (0, vitest_1.it)("exposes the agent public key", () => {
             (0, vitest_1.expect)(tool.publicKey).toMatch(/^G[A-Z2-7]{55}$/);
+        });
+    });
+    // ── Network passphrase selection ────────────────────────────────────────────
+    (0, vitest_1.describe)("Network passphrase selection", () => {
+        (0, vitest_1.it)("uses Networks.PUBLIC (mainnet) when STELLAR_NETWORK is mainnet", async () => {
+            // Create a tool instance and inspect the signed transaction
+            vitest_1.vi.resetModules();
+            vitest_1.vi.mock("../backend/config", () => ({
+                config: {
+                    STELLAR_NETWORK: "mainnet",
+                    HORIZON_URL: "https://horizon.stellar.org",
+                    SOROBAN_RPC_URL: "https://soroban-mainnet.stellar.org",
+                    X402_ASSET_CODE: "USDC",
+                    X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+                    MAX_RETRIES: 3,
+                    RETRY_DELAY_MS: 100,
+                    AGENT_PUBLIC_KEY: stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey(),
+                    agentKeypair: () => stellar_sdk_1.Keypair.fromSecret(TEST_SECRET),
+                },
+            }));
+            vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockImplementation((xdr) => {
+                // Verify XDR contains mainnet network passphrase
+                (0, vitest_1.expect)(xdr).toContain("Public Global Stellar Network");
+                return Promise.resolve({ hash: "mainnet_tx", ledger: 100 });
+            });
+            const mainnetTool = new StellarPaymentTool_1.StellarPaymentTool(TEST_SECRET);
+            const result = await mainnetTool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("mainnet_tx");
+            (0, vitest_1.expect)(rpcClient.submitTransaction).toHaveBeenCalled();
+        });
+        (0, vitest_1.it)("uses Networks.FUTURENET when STELLAR_NETWORK is futurenet", async () => {
+            vitest_1.vi.resetModules();
+            vitest_1.vi.mock("../backend/config", () => ({
+                config: {
+                    STELLAR_NETWORK: "futurenet",
+                    HORIZON_URL: "https://horizon-futurenet.stellar.org",
+                    SOROBAN_RPC_URL: "https://soroban-futurenet.stellar.org",
+                    X402_ASSET_CODE: "USDC",
+                    X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+                    MAX_RETRIES: 3,
+                    RETRY_DELAY_MS: 100,
+                    AGENT_PUBLIC_KEY: stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey(),
+                    agentKeypair: () => stellar_sdk_1.Keypair.fromSecret(TEST_SECRET),
+                },
+            }));
+            vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockImplementation((xdr) => {
+                // Verify XDR contains futurenet network passphrase
+                (0, vitest_1.expect)(xdr).toContain("Future Network");
+                return Promise.resolve({ hash: "futurenet_tx", ledger: 200 });
+            });
+            const futureNetTool = new StellarPaymentTool_1.StellarPaymentTool(TEST_SECRET);
+            const result = await futureNetTool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("futurenet_tx");
+            (0, vitest_1.expect)(rpcClient.submitTransaction).toHaveBeenCalled();
         });
     });
 });

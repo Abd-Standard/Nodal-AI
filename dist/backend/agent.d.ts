@@ -15,10 +15,20 @@ export interface AgentTask {
     type: TaskType;
     payload: unknown;
 }
+export interface AgentResultData {
+    txHash?: string;
+    ledger?: number;
+    simulationResult?: unknown;
+    protocol?: string;
+    network?: string;
+    nonce?: string;
+    payer?: string;
+    signedAt?: string;
+}
 export interface AgentResult {
     success: boolean;
     taskType: TaskType;
-    data?: unknown;
+    data?: AgentResultData;
     error?: string;
 }
 export declare class PayFiAgent extends EventEmitter {

@@ -191,7 +191,7 @@ class SorobanInvokeTool {
                 return { txHash: hash };
             }
             if (status.status === "FAILED") {
-                throw new Error(`Soroban transaction failed on-chain: ${hash}`);
+                throw new Error(`Soroban transaction failed on-chain: ${hash} — ${status.resultXdr ?? "no XDR"}`);
             }
             logger_1.logger.debug("Polling for Soroban transaction confirmation", {
                 txHash: hash,

@@ -76,6 +76,10 @@ class StellarPaymentTool {
     async execute(rawInput) {
         // 1. Validate input
         const input = exports.PaymentInputSchema.parse(rawInput);
+        // Self-payment guard
+        if (input.destination === this.keypair.publicKey()) {
+            throw new Error("Payment destination cannot be the agent's own address");
+        }
         // 2. Resolve asset
         if (input.assetCode !== "XLM" && !input.assetIssuer) {
             throw new Error(`Asset issuer is required for non-native asset ${input.assetCode}`);
@@ -84,21 +88,24 @@ class StellarPaymentTool {
             ? stellar_sdk_1.Asset.native()
             : new stellar_sdk_1.Asset(input.assetCode, input.assetIssuer);
         // 3. Load source account (latest sequence number)
-        const sourceAccount = await (0, rpc_client_1.loadAccount)(this.keypair.publicKey());
+        let sourceAccount = await (0, rpc_client_1.loadAccount)(this.keypair.publicKey());
         // 4. Build transaction
-        const txBuilder = new stellar_sdk_1.TransactionBuilder(sourceAccount, {
-            fee: stellar_sdk_1.BASE_FEE,
-            networkPassphrase: this.networkPassphrase,
-        })
-            .addOperation(stellar_sdk_1.Operation.payment({
-            destination: input.destination,
-            asset,
-            amount: input.amount,
-        }));
-        if (input.memo) {
-            txBuilder.addMemo(stellar_sdk_1.Memo.text(input.memo));
-        }
-        const tx = txBuilder.setTimeout(30).build();
+        const buildTx = () => {
+            const builder = new stellar_sdk_1.TransactionBuilder(sourceAccount, {
+                fee: stellar_sdk_1.BASE_FEE,
+                networkPassphrase: this.networkPassphrase,
+            })
+                .addOperation(stellar_sdk_1.Operation.payment({
+                destination: input.destination,
+                asset,
+                amount: input.amount,
+            }));
+            if (input.memo) {
+                builder.addMemo(stellar_sdk_1.Memo.text(input.memo));
+            }
+            return builder.setTimeout(30).build();
+        };
+        let tx = buildTx();
         // 5. Fee estimation / simulation via Horizon dry-run
         //    (Horizon doesn't expose simulation like Soroban, so we validate
         //     the transaction envelope locally before submission)
@@ -110,12 +117,24 @@ class StellarPaymentTool {
         });
         // 6. Sign
         tx.sign(this.keypair);
-        // 7. Submit
-        const result = (await (0, rpc_client_1.submitTransaction)(tx));
-        return {
-            txHash: result.hash,
-            ledger: result.ledger,
-        };
+        // 7. Submit (with auto-retry on tx_bad_seq)
+        try {
+            const result = (await (0, rpc_client_1.submitTransaction)(tx));
+            return { txHash: result.hash, ledger: result.ledger };
+        }
+        catch (err) {
+            if (err instanceof Error && err.message.includes("tx_bad_seq")) {
+                logger_1.logger.warn("tx_bad_seq detected, reloading account and retrying once", {
+                    source: this.keypair.publicKey(),
+                });
+                sourceAccount = await (0, rpc_client_1.loadAccount)(this.keypair.publicKey());
+                tx = buildTx();
+                tx.sign(this.keypair);
+                const result = (await (0, rpc_client_1.submitTransaction)(tx));
+                return { txHash: result.hash, ledger: result.ledger };
+            }
+            throw err;
+        }
     }
 }
 exports.StellarPaymentTool = StellarPaymentTool;

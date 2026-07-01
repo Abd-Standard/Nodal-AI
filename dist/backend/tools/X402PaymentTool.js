@@ -21,7 +21,7 @@ exports.X402ChallengeSchema = zod_1.z.object({
     payTo: zod_1.z.string().length(56, "Invalid payTo Stellar address"),
     nonce: zod_1.z.string().uuid("Nonce must be a UUID v4"),
     expiresAt: zod_1.z.string().datetime(),
-});
+}).refine((data) => data.assetCode === "XLM" || !!data.assetIssuer, { message: "assetIssuer is required for non-XLM payments", path: ["assetIssuer"] });
 // ─── Tool implementation ──────────────────────────────────────────────────────
 class X402PaymentTool {
     paymentTool;
@@ -34,6 +34,9 @@ class X402PaymentTool {
     }
     async respond(rawChallenge) {
         const challenge = exports.X402ChallengeSchema.parse(rawChallenge);
+        if (challenge.payTo === this.keypair.publicKey()) {
+            throw new Error("Payment destination cannot be the agent's own address");
+        }
         if (config_1.config.ALLOWED_X402_ORIGINS) {
             const allowedOrigins = config_1.config.ALLOWED_X402_ORIGINS.split(",").map(o => o.trim());
             const hostname = new URL(challenge.resource).hostname;
