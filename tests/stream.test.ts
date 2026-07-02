@@ -110,7 +110,7 @@ describe("PayFiAgent — stream (issue #107)", () => {
 
     agent.startListening("https://example.com/resource", onChallenge);
     expect(onChallenge).toHaveBeenCalledOnce();
-    expect(onChallenge.mock.calls[0][0]).toMatchObject({ resource: "https://example.com/resource" });
+    expect(onChallenge.mock.calls[0]![0]).toMatchObject({ resource: "https://example.com/resource" });
   });
 
   it("stopListening calls the stream close function", () => {

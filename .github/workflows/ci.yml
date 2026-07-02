@@ -51,9 +51,7 @@ jobs:
           cache: npm
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
-        with:
-          toolchain: stable
+        uses: dtolnay/rust-toolchain@stable
 
       - run: npm ci
       - run: npm run test:all
@@ -65,9 +63,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.79.0
+          toolchain: file
 
       - name: Run Rust tests
         run: cargo test --manifest-path contracts/escrow/Cargo.toml
@@ -79,9 +77,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.79.0
+          toolchain: file
           components: clippy, rustfmt
 
       - name: Run Clippy
@@ -97,14 +95,15 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.79.0
+          toolchain: file
+
+      - name: Install cargo-tarpaulin
+        run: cargo install cargo-tarpaulin --locked
 
       - name: Run cargo-tarpaulin
-        uses: actions-rs/tarpaulin@v0.1
-        with:
-          args: '--manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust'
+        run: cargo tarpaulin --manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust
 
   secret-scan:
     runs-on: ubuntu-latest
@@ -115,9 +114,9 @@ jobs:
           fetch-depth: 0
 
       - name: Secret scanning with trufflehog
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@v3.95.7
         with:
-          extra_args: --config .trufflehog.yml --results=verified,unknown --no-verification
+          extra_args: --config .trufflehog.yml --results=verified,unknown
 
   audit-npm:
     runs-on: ubuntu-latest
@@ -140,9 +139,9 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install Rust
-        uses: actions-rs/toolchain@v1
+        uses: dtolnay/rust-toolchain@master
         with:
-          toolchain: 1.79.0
+          toolchain: file
 
       - name: Install cargo-audit
         run: cargo install cargo-audit
