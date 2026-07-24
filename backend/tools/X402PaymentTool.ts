@@ -104,6 +104,8 @@ export class X402PaymentTool {
 
     this.usedNonces.add(challenge.nonce);
 
+    const signedAt = new Date().toISOString();
+
     return {
       protocol: "x402",
       network: config.STELLAR_NETWORK,
