@@ -16,7 +16,7 @@ import { z } from "zod";
 import { config } from "../config";
 import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
 import { PaymentInputSchema, SubmitResultSchema } from "./StellarPaymentTool";
-import { SOROBAN_TX_TIMEOUT_SECONDS } from "./SorobanInvokeTool";
+import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
 
 export const BatchPaymentInputSchema = z.object({
   payments: z.array(PaymentInputSchema).min(1).max(100),
@@ -62,7 +62,7 @@ export class BatchPaymentTool {
       );
     }
 
-    const tx = builder.setTimeout(SOROBAN_TX_TIMEOUT_SECONDS).build();
+    const tx = builder.setTimeout(SOROBAN_TX_TIMEOUT).build();
     tx.sign(this.keypair);
 
     const result = SubmitResultSchema.parse(await submitTransaction(tx));

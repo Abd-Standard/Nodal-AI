@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
+import { Keypair, xdr } from "@stellar/stellar-sdk";
 import { SorobanQueryTool, SorobanQueryInputSchema } from "../backend/tools/SorobanQueryTool";
 import * as rpcClient from "../backend/rpc_client";
 
@@ -8,6 +8,7 @@ vi.mock("../backend/rpc_client", () => ({
   submitTransaction: vi.fn(),
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
+  resolveNetworkPassphrase: (_network: string) => "Test SDF Network ; September 2015",
   horizonServer: {},
   sorobanServer: {
     sendTransaction: vi.fn(),
@@ -72,19 +73,17 @@ describe("SorobanQueryTool", () => {
         makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5") as any,
       );
 
-      const expectedScVal = nativeToScVal(42, { type: "u32" });
+      const mockPreparedTx = { fee: 100, sign: vi.fn() };
 
-      vi.mocked(rpcClient.simulateSorobanTx as any).mockResolvedValue({
-        results: [{ retval: expectedScVal }],
-      });
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(mockPreparedTx as any);
 
-      const result = await tool.execute({
+      const result = await tool.query({
         contractId: VALID_CONTRACT,
         method: "balance",
         args: [],
       });
 
-      expect(result.result).toBe(expectedScVal);
+      expect(result.simulationResult).toBe(mockPreparedTx);
     });
   });
 
@@ -94,12 +93,12 @@ describe("SorobanQueryTool", () => {
         makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5") as any,
       );
 
-      vi.mocked(rpcClient.simulateSorobanTx as any).mockResolvedValue({
-        error: "Contract error: insufficient balance",
-      });
+      vi.mocked(rpcClient.prepareSorobanTx).mockRejectedValue(
+        new Error("Soroban query failed: Contract error: insufficient balance"),
+      );
 
       await expect(
-        tool.execute({
+        tool.query({
           contractId: VALID_CONTRACT,
           method: "balance",
           args: [],

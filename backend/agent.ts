@@ -23,10 +23,12 @@ import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
 
 import { BatchPaymentTool } from "./tools/BatchPaymentTool";
+import { SorobanQueryTool } from "./tools/SorobanQueryTool";
 
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
+import { dispatchWebhook } from "./webhook";
 
 // Instantiate a singleton tracker
 const spendingTracker = new SpendingTracker();
@@ -65,11 +67,11 @@ const log = createLogger("orchestrator");
 export type TaskType =
   | "stellar_payment"
   | "soroban_invoke"
+  | "soroban_query"
   | "x402_respond"
   | "account_info"
   | "change_trust"
   | "multisig_payment"
-
   | "batch_payment";
 
 
@@ -115,30 +117,6 @@ function sanitizePayload(payload: unknown): unknown {
     sanitized[key] = rawValue;
   }
   return sanitized;
-}
-
-// ─── Spending limit guard ─────────────────────────────────────────────────────
-
-/**
- * Check that a payment amount does not exceed the configured spending limit.
- * Called before delegating to StellarPaymentTool or X402PaymentTool.
- */
-function assertWithinSpendingLimit(amount: unknown): void {
-  if (typeof amount !== "string") return; // let the tool's own schema catch this
-  const parsed = parseFloat(amount);
-  const limit  = parseFloat(config.AGENT_SPENDING_LIMIT);
-  if (!isNaN(parsed) && parsed > limit) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-      `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
-    );
-  }
-  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-      `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
-    );
-  }
 }
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
@@ -380,7 +358,7 @@ export class PayFiAgent extends EventEmitter {
       this.emit("task:complete", result);
       
       saveResult({ ...result, timestamp: new Date().toISOString() });
-bhook(result);
+      void dispatchWebhook(result);
 
       return result;
     } catch (err) {
