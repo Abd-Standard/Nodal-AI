@@ -158,6 +158,12 @@ describe("FeeBumpTool", () => {
     ).rejects.toThrow();
   });
 
+  it("rejects baseFeeMultiplier of 1 (must be >= 2)", async () => {
+    await expect(
+      tool.execute({ innerTxXdr: validInnerXdr, baseFeeMultiplier: 1 })
+    ).rejects.toThrow();
+  });
+
   // ── Fee calculation ─────────────────────────────────────────────────────────
 
   it("exposes the agent public key", () => {

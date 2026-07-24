@@ -18,6 +18,7 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
 import { createLogger } from "../utils/logger";
+import { SubmitResultSchema } from "./StellarPaymentTool";
 
 const log = createLogger("path-payment");
 
@@ -122,7 +123,7 @@ export class PathPaymentTool {
     tx.sign(this.keypair);
 
     try {
-      const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
+      const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes("tx_bad_seq")) {
@@ -132,7 +133,7 @@ export class PathPaymentTool {
         sourceAccount = await loadAccount(this.keypair.publicKey());
         tx = buildTx();
         tx.sign(this.keypair);
-        const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
+        const result = SubmitResultSchema.parse(await submitTransaction(tx));
         return { txHash: result.hash, ledger: result.ledger };
       }
       throw err;

@@ -10,12 +10,14 @@ import {
   FeeBumpTransaction,
   Transaction,
   Networks,
+  BASE_FEE,
 } from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
 import { resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
 import { createLogger } from "../utils/logger";
+import { SubmitResultSchema } from "./StellarPaymentTool";
 
 const log = createLogger("fee-bump");
 
@@ -24,7 +26,7 @@ const log = createLogger("fee-bump");
 export const FeeBumpInputSchema = z.object({
   innerTxXdr: z.string().min(1, "innerTxXdr must be a non-empty base64 XDR string"),
   feeAccount: z.string().length(56, "Invalid Stellar public key").optional(),
-  baseFeeMultiplier: z.number().int().min(1).default(2),
+  baseFeeMultiplier: z.number().int().min(2).default(2),
 });
 
 export type FeeBumpInput = z.infer<typeof FeeBumpInputSchema>;
@@ -67,7 +69,9 @@ export class FeeBumpTool {
     const baseFee = parseInt(innerTx.fee, 10);
     const operationCount = innerTx.operations.length || 1;
     const feePerOp = Math.ceil(baseFee / operationCount);
-    const newFeePerOp = feePerOp * input.baseFeeMultiplier;
+    // baseFeeMultiplier must be >= 2 to ensure the fee-bump fee is strictly greater than
+    // the inner transaction's fee, preventing fee_insufficient network rejections.
+    const newFeePerOp = Math.max(feePerOp * input.baseFeeMultiplier, BASE_FEE);
     // Fee-bump fee must be at least (inner ops + 1) * newFeePerOp per Stellar protocol
     const feeBumpFee = String((operationCount + 1) * newFeePerOp);
 
@@ -87,7 +91,7 @@ export class FeeBumpTool {
 
     feeBumpTx.sign(this.keypair);
 
-    const result = (await submitTransaction(feeBumpTx)) as { hash: string; ledger: number };
+    const result = SubmitResultSchema.parse(await submitTransaction(feeBumpTx));
     return { txHash: result.hash, ledger: result.ledger };
   }
 }

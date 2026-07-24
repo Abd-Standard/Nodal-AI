@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Keypair } from "@stellar/stellar-sdk";
+import { Keypair, xdr, Asset } from "@stellar/stellar-sdk";
 import { DexOfferTool, DexOfferInputSchema } from "../backend/tools/DexOfferTool";
 import * as rpcClient from "../backend/rpc_client";
 
@@ -66,6 +66,56 @@ function makeMockAccount(publicKey: string) {
   };
 }
 
+/**
+ * Create a mock transaction result XDR with a manageSellOffer result containing the given offer ID.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function makeMockTxResultXdr(offerId: string): string {
+  const kp = Keypair.fromSecret(TEST_SECRET);
+  const issuerKp = Keypair.random();
+  const issuer = issuerKp.publicKey();
+
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const OfferEntryExtCtor = (xdr as any).OfferEntryExt;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const TransactionResultExtCtor = (xdr as any).TransactionResultExt;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const Int64Ctor = (xdr as any).Int64;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const OfferEntryCtor = (xdr as any).OfferEntry;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const TransactionResultCtor = (xdr as any).TransactionResult;
+
+  const offer = new OfferEntryCtor({
+    sellerId: kp.xdrAccountId(),
+    offerId: BigInt(offerId),
+    selling: Asset.native().toXDRObject(),
+    buying: new Asset("USDC", issuer).toXDRObject(),
+    amount: BigInt(1000000000),
+    price: new xdr.Price({ n: 1, d: 1 }),
+    flags: 0,
+    ext: new OfferEntryExtCtor(0),
+  });
+
+  const offerUnion = xdr.ManageOfferSuccessResultOffer.manageOfferCreated(offer);
+  const successResult = new xdr.ManageOfferSuccessResult({
+    offersClaimed: [],
+    offer: offerUnion,
+  });
+
+  const msor = xdr.ManageSellOfferResult.manageSellOfferSuccess(successResult);
+  const tr = xdr.OperationResultTr.manageSellOffer(msor);
+  const opResult = xdr.OperationResult.opInner(tr);
+  const txResultResult = xdr.TransactionResultResult.txSuccess([opResult]);
+  const txResult = new TransactionResultCtor({
+    feeCharged: new Int64Ctor(BigInt(100)),
+    result: txResultResult,
+    ext: new TransactionResultExtCtor(0),
+  });
+
+  return txResult.toXDR("base64");
+}
+
 const BASE_OFFER = {
   selling: { code: "XLM" },
   buying: { code: "USDC", issuer: USDC_ISSUER },
@@ -98,6 +148,21 @@ describe("DexOfferTool", () => {
     expect(result.txHash).toBe("offer_tx_hash");
     expect(result.ledger).toBe(10);
     expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("creates an offer and returns the network-assigned offerId", async () => {
+    const networkAssignedOfferId = "12345678";
+    vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+      hash: "offer_tx_hash",
+      ledger: 10,
+      result_xdr: makeMockTxResultXdr(networkAssignedOfferId),
+    } as any);
+
+    const result = await tool.execute({ action: "create", ...BASE_OFFER });
+
+    expect(result.txHash).toBe("offer_tx_hash");
+    expect(result.ledger).toBe(10);
+    expect(result.offerId).toBe(networkAssignedOfferId);
   });
 
   // ── Delete offer ────────────────────────────────────────────────────────────
