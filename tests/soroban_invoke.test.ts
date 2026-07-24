@@ -31,7 +31,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
-import { SorobanInvokeTool, SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT_SECONDS } from "../backend/tools/SorobanInvokeTool";
+import { SorobanInvokeTool, SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT } from "../backend/tools/SorobanInvokeTool";
 import * as rpcClient from "../backend/rpc_client";
 
 // ─── Module mock ──────────────────────────────────────────────────────────────
@@ -69,7 +69,6 @@ vi.mock("../backend/logger", () => ({
 vi.mock("../backend/utils/logger", () => ({
   createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
   generateCorrelationId: vi.fn(() => "mock-correlation-id"),
-}));
 }));
 
 /**
@@ -169,9 +168,9 @@ describe("SorobanInvokeTool", () => {
 
   // ── Timeout constant validation ────────────────────────────────────────────
 
-  it("SOROBAN_TX_TIMEOUT_SECONDS is within valid range [1, 300]", () => {
-    expect(SOROBAN_TX_TIMEOUT_SECONDS).toBeGreaterThan(0);
-    expect(SOROBAN_TX_TIMEOUT_SECONDS).toBeLessThanOrEqual(300);
+  it("SOROBAN_TX_TIMEOUT is within valid range [1, 300]", () => {
+    expect(SOROBAN_TX_TIMEOUT).toBeGreaterThan(0);
+    expect(SOROBAN_TX_TIMEOUT).toBeLessThanOrEqual(300);
   });
 
   // ── Input validation ────────────────────────────────────────────────────────
