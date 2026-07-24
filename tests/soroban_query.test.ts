@@ -8,6 +8,7 @@ vi.mock("../backend/rpc_client", () => ({
   submitTransaction: vi.fn(),
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
+  resolveNetworkPassphrase: (_network: string) => "Test SDF Network ; September 2015",
   horizonServer: {},
   sorobanServer: {
     sendTransaction: vi.fn(),
