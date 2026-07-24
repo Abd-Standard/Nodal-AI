@@ -52,6 +52,16 @@ vi.mock("../backend/tools/BatchPaymentTool", () => ({
   })),
 }));
 
+vi.mock("../backend/tools/SorobanQueryTool", () => ({
+  SorobanQueryTool: vi.fn().mockImplementation(() => ({
+    query: vi.fn(),
+  })),
+}));
+
+vi.mock("../backend/webhook", () => ({
+  dispatchWebhook: vi.fn().mockResolvedValue(undefined),
+}));
+
 vi.mock("../backend/persistence", () => ({
   saveResult: vi.fn(),
 }));

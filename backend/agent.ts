@@ -23,10 +23,12 @@ import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
 
 import { BatchPaymentTool } from "./tools/BatchPaymentTool";
+import { SorobanQueryTool } from "./tools/SorobanQueryTool";
 
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
+import { dispatchWebhook } from "./webhook";
 
 // Instantiate a singleton tracker
 const spendingTracker = new SpendingTracker();
@@ -65,11 +67,11 @@ const log = createLogger("orchestrator");
 export type TaskType =
   | "stellar_payment"
   | "soroban_invoke"
+  | "soroban_query"
   | "x402_respond"
   | "account_info"
   | "change_trust"
   | "multisig_payment"
-
   | "batch_payment";
 
 
@@ -356,7 +358,7 @@ export class PayFiAgent extends EventEmitter {
       this.emit("task:complete", result);
       
       saveResult({ ...result, timestamp: new Date().toISOString() });
-bhook(result);
+      void dispatchWebhook(result);
 
       return result;
     } catch (err) {
