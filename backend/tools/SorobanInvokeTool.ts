@@ -117,9 +117,9 @@ export class SorobanInvokeTool {
   private networkPassphrase: string;
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
-    if (SOROBAN_TX_TIMEOUT_SECONDS <= 0 || SOROBAN_TX_TIMEOUT_SECONDS > 300) {
+    if (SOROBAN_TX_TIMEOUT <= 0 || SOROBAN_TX_TIMEOUT > 300) {
       throw new Error(
-        `SOROBAN_TX_TIMEOUT_SECONDS must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT_SECONDS}`
+        `SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT}`
       );
     }
     this.keypair = Keypair.fromSecret(secretKey);
