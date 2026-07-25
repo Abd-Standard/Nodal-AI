@@ -14,6 +14,7 @@ import {
 import { z } from "zod";
 import { config } from "../config";
 import { loadAccount, submitTransaction, resolveNetworkPassphrase } from "../rpc_client";
+import { SubmitResultSchema } from "./StellarPaymentTool";
 
 export const MultiSigInputSchema = z.object({
   destination: z.string().length(56, "Invalid Stellar public key"),
@@ -98,7 +99,7 @@ export class MultiSigPaymentTool {
           // Not a public key — skip (external signer format)
         }
       }
-      const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
+      const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     }
 
