@@ -96,7 +96,7 @@ export function resolveNetworkPassphrase(network: string): string {
 
 export class TimeoutError extends Error {
   constructor(ms: number) {
-    super("Transaction Timeout: request did not complete within ms");
+    super(`Transaction Timeout: request did not complete within ${ms}ms`);
     this.name = "TimeoutError";
   }
 }
@@ -113,7 +113,7 @@ export class StellarRPCError extends Error {
 export class RateLimitError extends Error {
   readonly retryAfterSeconds: number;
   constructor(retryAfterSeconds: number) {
-    super("Rate limited. Retry after  seconds");
+    super(`Rate limited. Retry after ${retryAfterSeconds} seconds`);
     this.name = "RateLimitError";
     this.retryAfterSeconds = retryAfterSeconds;
   }
