@@ -21,7 +21,10 @@ export const X402ChallengeSchema = z.object({
   payTo: z.string().length(56, "Invalid payTo Stellar address"),
   nonce: z.string().uuid("Nonce must be a UUID v4"),
   expiresAt: z.string().datetime(),
-});
+}).refine(
+  (data) => data.assetCode === "XLM" || !!data.assetIssuer,
+  { message: "assetIssuer is required for non-XLM payments", path: ["assetIssuer"] }
+);
 
 export type X402Challenge = z.infer<typeof X402ChallengeSchema>;
 
@@ -36,12 +39,16 @@ export interface X402PaymentProof {
 
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
+const RATE_LIMIT_WINDOW_MS = 60_000;
+
 export class X402PaymentTool {
   // TODO: persist to Redis for multi-instance deployments
   private usedNonces = new Set<string>();
   private paymentTool: StellarPaymentTool;
   private keypair: Keypair;
   private horizonServer: Horizon.Server;
+  private paymentCount = 0;
+  private windowStart = Date.now();
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
     this.keypair = Keypair.fromSecret(secretKey);
@@ -50,7 +57,22 @@ export class X402PaymentTool {
   }
 
   async respond(rawChallenge: unknown): Promise<X402PaymentProof> {
+    const now = Date.now();
+    if (now - this.windowStart >= RATE_LIMIT_WINDOW_MS) {
+      this.paymentCount = 0;
+      this.windowStart = now;
+    }
+
+    if (this.paymentCount >= config.MAX_X402_PAYMENTS_PER_MINUTE) {
+      throw new Error("x402: rate limit exceeded");
+    }
+    this.paymentCount++;
+
     const challenge = X402ChallengeSchema.parse(rawChallenge);
+
+    if (challenge.payTo === this.keypair.publicKey()) {
+      throw new Error("Payment destination cannot be the agent's own address");
+    }
 
     if (config.ALLOWED_X402_ORIGINS) {
       const allowedOrigins = config.ALLOWED_X402_ORIGINS.split(",").map(o => o.trim());
@@ -70,7 +92,7 @@ export class X402PaymentTool {
       throw new Error("x402: nonce already used");
     }
 
-    const { txHash } = await this.paymentTool.execute({
+    const { txHash, ledger } = await this.paymentTool.execute({
       destination: challenge.payTo,
       amount: challenge.amount,
       assetCode: challenge.assetCode,
@@ -82,13 +104,24 @@ export class X402PaymentTool {
 
     this.usedNonces.add(challenge.nonce);
 
+    let signedAt: string;
+    try {
+      const ledgerRecord: any = await this.horizonServer
+        .ledgers()
+        .ledger(ledger)
+        .call();
+      signedAt = ledgerRecord.closed_at;
+    } catch {
+      signedAt = new Date().toISOString();
+    }
+
     return {
       protocol: "x402",
       network: config.STELLAR_NETWORK,
       txHash,
       nonce: challenge.nonce,
       payer: this.keypair.publicKey(),
-      signedAt: new Date().toISOString(),
+      signedAt,
     };
   }
 
@@ -126,7 +159,7 @@ export class X402PaymentTool {
       throw new Error("x402 verification failed: asset mismatch");
     }
 
-    const expectedMemo = originalChallenge.nonce.slice(0, 28);
+    const expectedMemo = createHash("sha256").update(originalChallenge.nonce).digest("hex").slice(0, 28);
 
     if (tx.memo !== expectedMemo) {
       throw new Error("x402 verification failed: nonce mismatch");

@@ -11,26 +11,47 @@ import { PayFiAgent } from "../backend/agent";
 // Mock only the RPC layer to test the full tool chain
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn().mockResolvedValue({
-    accountId: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-    sequenceNumber: "1",
+    id: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    accountId: () => "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    sequenceNumber: () => "100",
+    incrementSequenceNumber: () => {},
+    sequence: "100",
+    incrementedSequenceNumber: () => "101",
+    thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+    flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
+    balances: [{ asset_type: "native", balance: "10000.0000000" }],
+    signers: [],
+    data_attr: {},
+    subentry_count: 0,
+    home_domain: "",
+    inflation_dest: null,
   }),
-  resolveNetworkPassphrase: vi.fn((network) => {
-    return network === "mainnet"
-      ? "Public Global Stellar Network ; September 2015"
-      : "Test SDF Network ; September 2015";
-  }),
+  resolveNetworkPassphrase: (_network: string) => {
+    const { Networks } = require("@stellar/stellar-sdk");
+    return Networks.TESTNET;
+  },
+  // StellarPaymentTool expects result.hash (Horizon SubmitTransactionResponse)
   submitTransaction: vi.fn().mockResolvedValue({
-    txHash: "test_tx_hash_123456789",
+    hash: "test_tx_hash_123456789",
     ledger: 1000,
   }),
-  prepareSorobanTx: vi.fn().mockResolvedValue({
-    // Minimal Soroban response
-    resultMetaXdr: "mock_result_meta_xdr",
+  // prepareSorobanTx must return a tx-like object with sign() + signatures[]
+  prepareSorobanTx: vi.fn().mockImplementation(() => {
+    const obj: any = { signatures: [] };
+    obj.sign = () => {
+      obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
+    };
+    return Promise.resolve(obj);
   }),
+  horizonServer: {},
   sorobanServer: {
     sendTransaction: vi.fn().mockResolvedValue({
       hash: "soroban_tx_hash_123456789",
       status: "PENDING",
+    }),
+    getTransaction: vi.fn().mockResolvedValue({
+      status: "SUCCESS",
+      returnValue: null,
     }),
   },
 }));
@@ -54,13 +75,49 @@ vi.mock("../backend/config", () => ({
   MAINNET_SPENDING_CAP: 10000,
 }));
 
+vi.mock("../backend/persistence", () => ({
+  saveResult: vi.fn(),
+}));
+
 describe("PayFiAgent integration", () => {
   let agent: PayFiAgent;
   const DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
   const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
-  beforeEach(() => {
+const MOCK_ACCOUNT = {
+    id: DEST,
+    accountId: () => DEST,
+    sequenceNumber: () => "100",
+    incrementSequenceNumber: () => {},
+    sequence: "100",
+    incrementedSequenceNumber: () => "101",
+    thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+    flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
+    balances: [{ asset_type: "native", balance: "10000.0000000" }],
+    signers: [],
+    data_attr: {},
+    subentry_count: 0,
+    home_domain: "",
+    inflation_dest: null,
+  };
+
+  function makeMockPreparedTx() {
+    const obj: any = { signatures: [] };
+    obj.sign = () => {
+      obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
+    };
+    return obj;
+  }
+
+  beforeEach(async () => {
     vi.clearAllMocks();
+    // Re-apply mock implementations after clearAllMocks
+    const rpc = await import("../backend/rpc_client");
+    vi.mocked(rpc.loadAccount).mockResolvedValue(MOCK_ACCOUNT as any);
+    vi.mocked(rpc.submitTransaction).mockResolvedValue({ hash: "test_tx_hash_123456789", ledger: 1000 } as any);
+    vi.mocked(rpc.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
+    vi.mocked(rpc.sorobanServer.sendTransaction as any).mockResolvedValue({ hash: "soroban_tx_hash_123456789", status: "PENDING" });
+    vi.mocked(rpc.sorobanServer.getTransaction as any).mockResolvedValue({ status: "SUCCESS", returnValue: null });
     agent = new PayFiAgent();
   });
 

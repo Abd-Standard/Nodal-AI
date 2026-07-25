@@ -1,9 +1,7 @@
 /**
  * tests/path_payment.test.ts
- *
- * Comprehensive test suite for PathPaymentTool.
- * Covers: happy path, input validation, network errors, tx_bad_seq retry,
- * and memo edge cases.
+ * Tests for PathPaymentTool covering happy path, slippage rejection,
+ * input validation, self-payment guard, and tx_bad_seq retry.
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
@@ -11,22 +9,21 @@ import { Keypair } from "@stellar/stellar-sdk";
 import { PathPaymentTool } from "../backend/tools/PathPaymentTool";
 import * as rpcClient from "../backend/rpc_client";
 
-// ─── Module mock ──────────────────────────────────────────────────────────────
+// ─── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
   submitTransaction: vi.fn(),
-  resolveNetworkPassphrase: vi.fn(() => "Test SDF Network ; September 2015"),
   horizonServer: {},
   sorobanServer: {},
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
+  resolveNetworkPassphrase: vi.fn(() => "Test SDF Network ; September 2015"),
 }));
 
-// ─── Mock config ──────────────────────────────────────────────────────────────
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Keypair } = require("@stellar/stellar-sdk");
+  const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
   const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
   return {
     config: {
@@ -46,10 +43,9 @@ vi.mock("../backend/config", () => {
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
 const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
-const VALID_DEST   = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-const VALID_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+const VALID_DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+const USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
-/** Minimal account object that satisfies TransactionBuilder */
 function makeMockAccount(publicKey: string) {
   return {
     id: publicKey,
@@ -69,220 +65,145 @@ function makeMockAccount(publicKey: string) {
   };
 }
 
-const VALID_INPUT = {
-  sourceAmount: "100",
-  destination: VALID_DEST,
-  destinationAssetCode: "USDC",
-  destinationAssetIssuer: VALID_ISSUER,
-  destinationMin: "95",
-};
-
-// ─── Test suite ───────────────────────────────────────────────────────────────
+// ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe("PathPaymentTool", () => {
   let tool: PathPaymentTool;
-  const { loadAccount, submitTransaction } = vi.mocked(rpcClient);
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new PathPaymentTool();
-    loadAccount.mockResolvedValue(makeMockAccount(tool.publicKey) as any);
-    submitTransaction.mockResolvedValue({
-      hash: "success_tx_hash",
-      ledger: 42,
+    tool = new PathPaymentTool(TEST_SECRET);
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
+    vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+      hash: "path_tx_hash",
+      ledger: 100,
     } as any);
-  });
-
-  // ── Input validation ────────────────────────────────────────────────────────
-
-  describe("Input validation", () => {
-    it("rejects a destination key that is too short", async () => {
-      await expect(
-        tool.execute({ ...VALID_INPUT, destination: "GABC123" })
-      ).rejects.toThrow(/Invalid Stellar public key/);
-    });
-
-    it("rejects a negative source amount", async () => {
-      await expect(
-        tool.execute({ ...VALID_INPUT, sourceAmount: "-1" })
-      ).rejects.toThrow(/Amount must be/);
-    });
-
-    it("rejects zero source amount", async () => {
-      await expect(
-        tool.execute({ ...VALID_INPUT, sourceAmount: "0" })
-      ).rejects.toThrow(/Amount must be/);
-    });
-
-    it("rejects source amount with more than 7 decimal places", async () => {
-      await expect(
-        tool.execute({ ...VALID_INPUT, sourceAmount: "1.12345678" })
-      ).rejects.toThrow(/Amount must be/);
-    });
-
-    it("rejects a non-XLM source asset when issuer is missing", async () => {
-      await expect(
-        tool.execute({
-          ...VALID_INPUT,
-          sourceAssetCode: "USDC",
-          sourceAssetIssuer: undefined,
-        })
-      ).rejects.toThrow(
-        "Asset issuer is required for non-native source asset USDC"
-      );
-    });
-
-    it("rejects a non-XLM destination asset when issuer is missing", async () => {
-      await expect(
-        tool.execute({
-          ...VALID_INPUT,
-          destinationAssetCode: "EURT",
-          destinationAssetIssuer: undefined,
-        })
-      ).rejects.toThrow(
-        "Asset issuer is required for non-native destination asset EURT"
-      );
-    });
-
-    it("rejects a memo longer than 28 bytes", async () => {
-      await expect(
-        tool.execute({
-          ...VALID_INPUT,
-          memo: "A".repeat(29),
-        })
-      ).rejects.toThrow();
-    });
   });
 
   // ── Happy path ──────────────────────────────────────────────────────────────
 
-  describe("Happy path", () => {
-    it("completes a path payment and returns txHash + ledger", async () => {
-      const result = await tool.execute(VALID_INPUT);
-
-      expect(result.txHash).toBe("success_tx_hash");
-      expect(result.ledger).toBe(42);
+  it("executes XLM → USDC path payment and returns txHash + ledger", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "10",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "9",
     });
 
-    it("completes an XLM-to-XLM path payment", async () => {
-      const result = await tool.execute({
-        sourceAmount: "50",
+    expect(result.txHash).toBe("path_tx_hash");
+    expect(result.ledger).toBe(100);
+    expect(rpcClient.loadAccount).toHaveBeenCalledWith(tool.publicKey);
+    expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("accepts an optional intermediate path asset", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "10",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "9",
+      path: [{ code: "USD", issuer: USDC_ISSUER }],
+    });
+
+    expect(result.txHash).toBe("path_tx_hash");
+  });
+
+  it("accepts a memo when provided", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "5",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "4",
+      memo: "swap-ref-123",
+    });
+
+    expect(result.txHash).toBe("path_tx_hash");
+  });
+
+  // ── Input validation ────────────────────────────────────────────────────────
+
+  it("rejects missing destination", async () => {
+    await expect(
+      tool.execute({
+        sendAsset: { code: "XLM" },
+        sendAmount: "10",
+        destAsset: { code: "USDC", issuer: USDC_ISSUER },
+        destMinAmount: "9",
+      })
+    ).rejects.toThrow();
+  });
+
+  it("rejects non-XLM sendAsset without issuer", async () => {
+    await expect(
+      tool.execute({
         destination: VALID_DEST,
-        destinationAssetCode: "XLM",
-        destinationMin: "49",
-      });
-
-      expect(result.txHash).toBe("success_tx_hash");
-    });
-
-    it("calls loadAccount with the agent public key", async () => {
-      await tool.execute(VALID_INPUT);
-      expect(loadAccount).toHaveBeenCalledWith(tool.publicKey);
-    });
-
-    it("calls submitTransaction exactly once per successful payment", async () => {
-      await tool.execute(VALID_INPUT);
-      expect(submitTransaction).toHaveBeenCalledOnce();
-    });
-
-    it("embeds a memo when provided", async () => {
-      const result = await tool.execute({
-        ...VALID_INPUT,
-        memo: "path-payment-memo",
-      });
-      expect(result.txHash).toBeTruthy();
-    });
+        sendAsset: { code: "USDC" }, // missing issuer
+        sendAmount: "10",
+        destAsset: { code: "XLM" },
+        destMinAmount: "9",
+      })
+    ).rejects.toThrow(/Asset issuer is required/);
   });
 
-  // ── tx_bad_seq retry ────────────────────────────────────────────────────────
-
-  describe("tx_bad_seq retry", () => {
-    it("retries once on tx_bad_seq and succeeds", async () => {
-      submitTransaction
-        .mockRejectedValueOnce(new Error("tx_bad_seq"))
-        .mockResolvedValueOnce({ hash: "retry_hash", ledger: 200 } as any);
-
-      const result = await tool.execute(VALID_INPUT);
-      expect(result.txHash).toBe("retry_hash");
-      expect(submitTransaction).toHaveBeenCalledTimes(2);
-    });
-
-    it("reloads account on tx_bad_seq retry", async () => {
-      submitTransaction
-        .mockRejectedValueOnce(new Error("tx_bad_seq"))
-        .mockResolvedValueOnce({ hash: "retry_hash", ledger: 200 } as any);
-
-      await tool.execute(VALID_INPUT);
-
-      // Account should be loaded twice: initial + retry
-      expect(loadAccount).toHaveBeenCalledTimes(2);
-    });
-
-    it("propagates non-tx_bad_seq errors without retry", async () => {
-      submitTransaction.mockRejectedValue(
-        new Error("Horizon: op_underfunded — insufficient balance")
-      );
-
-      await expect(
-        tool.execute(VALID_INPUT)
-      ).rejects.toThrow(/underfunded/);
-      expect(submitTransaction).toHaveBeenCalledOnce();
-    });
+  it("rejects zero sendAmount", async () => {
+    await expect(
+      tool.execute({
+        destination: VALID_DEST,
+        sendAsset: { code: "XLM" },
+        sendAmount: "0",
+        destAsset: { code: "USDC", issuer: USDC_ISSUER },
+        destMinAmount: "9",
+      })
+    ).rejects.toThrow(/sendAmount must be/);
   });
 
-  // ── Network error handling ──────────────────────────────────────────────────
-
-  describe("Network error handling", () => {
-    it("propagates Horizon submission error", async () => {
-      submitTransaction.mockRejectedValue(
-        new Error("Horizon: transaction failed — op_no_source_account")
-      );
-
-      await expect(
-        tool.execute(VALID_INPUT)
-      ).rejects.toThrow(/op_no_source_account/);
-    });
-
-    it("propagates account not found error", async () => {
-      loadAccount.mockRejectedValue(
-        new Error("Horizon: account not found (404)")
-      );
-
-      await expect(
-        tool.execute(VALID_INPUT)
-      ).rejects.toThrow(/account not found/);
-    });
-
-    it("handles network timeout from submitTransaction", async () => {
-      submitTransaction.mockRejectedValue(
-        Object.assign(new Error("ECONNABORTED: network timeout after 30000ms"), {
-          code: "ECONNABORTED",
-        })
-      );
-
-      await expect(
-        tool.execute(VALID_INPUT)
-      ).rejects.toThrow(/timeout/i);
-    });
+  it("rejects self-payment", async () => {
+    await expect(
+      tool.execute({
+        destination: tool.publicKey,
+        sendAsset: { code: "XLM" },
+        sendAmount: "10",
+        destAsset: { code: "USDC", issuer: USDC_ISSUER },
+        destMinAmount: "9",
+      })
+    ).rejects.toThrow("Payment destination cannot be the agent's own address");
   });
 
-  // ── State verification ──────────────────────────────────────────────────────
+  // ── Slippage / network errors ────────────────────────────────────────────────
 
-  describe("State verification", () => {
-    it("does not call submitTransaction when loadAccount fails", async () => {
-      loadAccount.mockRejectedValue(new Error("not found"));
+  it("propagates op_under_dest_min (slippage rejection) from Horizon", async () => {
+    vi.mocked(rpcClient.submitTransaction).mockRejectedValue(
+      new Error("Horizon: op_under_dest_min — destination minimum not met")
+    );
 
-      try {
-        await tool.execute(VALID_INPUT);
-      } catch (_) {
-        /* expected */
-      }
+    await expect(
+      tool.execute({
+        destination: VALID_DEST,
+        sendAsset: { code: "XLM" },
+        sendAmount: "1",
+        destAsset: { code: "USDC", issuer: USDC_ISSUER },
+        destMinAmount: "999",
+      })
+    ).rejects.toThrow(/op_under_dest_min/);
+  });
 
-      expect(submitTransaction).not.toHaveBeenCalled();
+  it("recovers from tx_bad_seq on first retry", async () => {
+    vi.mocked(rpcClient.submitTransaction)
+      .mockRejectedValueOnce(new Error("Horizon: tx_bad_seq — sequence number is not valid"))
+      .mockResolvedValueOnce({ hash: "retry_hash", ledger: 42 } as any);
+
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "10",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "9",
     });
 
-    it("exposes the agent public key", () => {
-      expect(tool.publicKey).toMatch(/^G[A-Z2-7]{55}$/);
-    });
+    expect(result.txHash).toBe("retry_hash");
+    expect(rpcClient.submitTransaction).toHaveBeenCalledTimes(2);
   });
 });

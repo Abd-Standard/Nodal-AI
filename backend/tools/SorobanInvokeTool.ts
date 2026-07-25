@@ -7,10 +7,10 @@
 
 import {
   Keypair,
+  Transaction,
   TransactionBuilder,
   Operation,
   Contract,
-  BASE_FEE,
   nativeToScVal,
   xdr,
 } from "@stellar/stellar-sdk";
@@ -18,6 +18,13 @@ import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
 import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase, sorobanServer } from "../rpc_client";
+
+// ─── Constants ─────────────────────────────────────────────────────────────────
+
+// SAFETY: Timeout in seconds for Soroban broadcast transactions.
+// Must ALWAYS be a positive integer. setTimeout(0) produces transactions
+// without time bounds that can be replayed indefinitely on the network.
+export const SOROBAN_TX_TIMEOUT = 30;
 
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
@@ -75,6 +82,34 @@ export const SorobanInvokeInputSchema = z.object({
 
 export type SorobanInvokeInput = z.infer<typeof SorobanInvokeInputSchema>;
 
+// ─── Return type ──────────────────────────────────────────────────────────────
+
+/**
+ * Discriminated union return type for {@link SorobanInvokeTool.execute}.
+ * - When `simulateOnly=false`: `{ txHash: string }`
+ * - When `simulateOnly=true`:  `{ simulationResult: Transaction }`
+ */
+export type SorobanInvokeResult =
+  | { txHash: string; simulationResult?: never }
+  | { txHash?: never; simulationResult: Transaction };
+
+/**
+ * Type guard: narrows a `SorobanInvokeResult` to the simulation-only variant.
+ *
+ * @example
+ * ```ts
+ * const result = await tool.execute({ ..., simulateOnly: true });
+ * if (isSorobanSimulationResult(result)) {
+ *   console.log(result.simulationResult); // Transaction
+ * }
+ * ```
+ */
+export function isSorobanSimulationResult(
+  result: SorobanInvokeResult
+): result is { simulationResult: Transaction } {
+  return result.simulationResult !== undefined;
+}
+
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class SorobanInvokeTool {
@@ -82,6 +117,11 @@ export class SorobanInvokeTool {
   private networkPassphrase: string;
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
+    if (SOROBAN_TX_TIMEOUT <= 0 || SOROBAN_TX_TIMEOUT > 300) {
+      throw new Error(
+        `SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT}`
+      );
+    }
     this.keypair = Keypair.fromSecret(secretKey);
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
@@ -125,7 +165,7 @@ export class SorobanInvokeTool {
    */
   async execute(
     rawInput: unknown
-  ): Promise<{ txHash?: string; simulationResult?: unknown }> {
+  ): Promise<SorobanInvokeResult> {
     const input = SorobanInvokeInputSchema.parse(rawInput);
 
     // 1. Resolve contract
@@ -151,11 +191,11 @@ export class SorobanInvokeTool {
 
     // 3. Build invocation transaction
     const tx = new TransactionBuilder(sourceAccount, {
-      fee: BASE_FEE,
+      fee: "0", // Fee is overwritten by prepareSorobanTx — initial value is irrelevant
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(input.method, ...input.args))
-      .setTimeout(30)
+      .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
     logger.info("Simulating Soroban transaction", {
@@ -166,22 +206,52 @@ export class SorobanInvokeTool {
     // 4. MANDATORY simulate step — throws on simulation failure
     const preparedTx = await prepareSorobanTx(tx);
 
-    if (input.simulateOnly) {
-      logger.info("Simulation passed (dry-run, not broadcasting)");
-      return { simulationResult: preparedTx };
+    if (preparedTx.fee > config.MAX_SOROBAN_FEE_STROOPS) {
+      throw new Error(
+        `Soroban fee ${preparedTx.fee} exceeds MAX_SOROBAN_FEE_STROOPS ${config.MAX_SOROBAN_FEE_STROOPS}`
+      );
     }
 
-    // 5. Sign prepared transaction
-    preparedTx.sign(this.keypair);
+    if (input.simulateOnly) {
+      logger.info("Simulation passed (dry-run, not broadcasting)");
+      return { simulationResult: preparedTx as Transaction };
+    }
 
-    // 6. Submit
-    const result = await sorobanServer.sendTransaction(preparedTx);
+    // 5. Timeout safety guard: reject transactions with no time bounds
+    //    setTimeout(0) produces transactions replayable indefinitely.
+    if (!preparedTx.timeBounds) {
+      throw new Error(
+        "Broadcast aborted: transaction has no time bounds (setTimeout(0)). " +
+        "Use a positive timeout to prevent indefinite replay."
+      );
+    }
+
+    // 6. Sign prepared transaction.
+    // NOTE: Transaction.sign() mutates the transaction in place — the reference
+    // `signedTx` intentionally aliases `preparedTx` so the post-sign assertion
+    // verifies the same object that will be submitted. If the transaction is ever
+    // rebuilt (e.g., after a fee bump), this alias must be updated accordingly.
+    const signedTx = preparedTx;
+    signedTx.sign(this.keypair);
+
+    // Guard: ensure at least one signature was attached. A no-op sign() call
+    // (e.g., bad Keypair or future SDK changes) would produce zero signatures,
+    // causing the network to reject the transaction immediately.
+    // Use optional chaining so tests using plain mock objects without a
+    // `signatures` array still get a meaningful error rather than a
+    // TypeError on `.length`.
+    if (!signedTx.signatures?.length) {
+      throw new Error("Transaction signing produced no signatures");
+    }
+
+    // 7. Submit
+    const result = await sorobanServer.sendTransaction(signedTx);
 
     if (result.status === "ERROR") {
       throw new Error(`Soroban submit failed: ${result.errorResult?.toXDR("base64")}`);
     }
 
-    // 7. Poll for confirmation
+    // 8. Poll for confirmation
     const confirmed = await this.pollForConfirmation(result.hash);
     return { txHash: confirmed.txHash };
   }
@@ -225,7 +295,7 @@ export class SorobanInvokeTool {
         return { txHash: hash };
       }
       if (status.status === "FAILED") {
-        throw new Error(`Soroban transaction failed on-chain: ${hash}`);
+        throw new Error(`Soroban transaction failed on-chain: ${hash} — ${status.resultXdr ?? "no XDR"}`);
       }
       logger.debug("Polling for Soroban transaction confirmation", {
         txHash: hash,

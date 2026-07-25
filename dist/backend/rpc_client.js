@@ -1,25 +1,75 @@
 "use strict";
 /**
  * backend/rpc_client.ts
- * Thin wrapper around Horizon + Soroban RPC with retry logic.
+ * Thin wrapper around Horizon + Soroban RPC with retry and circuit-breaker logic.
  * All network calls route through here — centralised observability point.
  */
+var __importDefault = (this && this.__importDefault) || function (mod) {
+    return (mod && mod.__esModule) ? mod : { "default": mod };
+};
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sorobanServer = exports.horizonServer = exports.StellarRPCError = exports.TimeoutError = void 0;
+exports.rpcBreakers = exports.sorobanServer = exports.horizonServer = exports.StellarRPCError = exports.TimeoutError = void 0;
 exports.resolveNetworkPassphrase = resolveNetworkPassphrase;
 exports.DEFAULT_IS_RETRYABLE = DEFAULT_IS_RETRYABLE;
 exports.withRetry = withRetry;
+exports.withTimeout = withTimeout;
 exports.loadAccount = loadAccount;
 exports.submitTransaction = submitTransaction;
 exports.simulateSorobanTx = simulateSorobanTx;
 exports.prepareSorobanTx = prepareSorobanTx;
 const stellar_sdk_1 = require("@stellar/stellar-sdk");
+const opossum_1 = __importDefault(require("opossum"));
 const zod_1 = require("zod");
 const config_1 = require("./config");
 const logger_1 = require("./logger");
 const xdr_1 = require("./types/xdr");
 const logger_2 = require("./utils/logger");
 const log = (0, logger_2.createLogger)("rpc-client");
+const RPC_BREAKER_OPTIONS = {
+    errorThresholdPercentage: 50,
+    resetTimeout: 30_000,
+    timeout: 10_000,
+    volumeThreshold: 5,
+    rollingCountTimeout: 30_000,
+    rollingCountBuckets: 10,
+};
+class RpcServiceUnavailableError extends Error {
+    constructor(message) {
+        super(message);
+        this.name = "RpcServiceUnavailableError";
+    }
+}
+const accountCache = new Map();
+function attachBreakerTelemetry(breaker, name) {
+    breaker.on("open", () => {
+        log.warn({
+            circuit: name,
+            failures: breaker.stats.failures,
+            successes: breaker.stats.successes,
+            timeout: RPC_BREAKER_OPTIONS.timeout,
+            resetTimeout: RPC_BREAKER_OPTIONS.resetTimeout,
+        }, "RPC circuit opened");
+    });
+    breaker.on("halfOpen", () => {
+        log.info({
+            circuit: name,
+        }, "RPC circuit half-open");
+    });
+    breaker.on("close", () => {
+        log.info({
+            circuit: name,
+            failures: breaker.stats.failures,
+            successes: breaker.stats.successes,
+        }, "RPC circuit closed");
+    });
+    return breaker;
+}
+function createRpcBreaker(name, action) {
+    return attachBreakerTelemetry(new opossum_1.default(action, {
+        ...RPC_BREAKER_OPTIONS,
+        name,
+    }), name);
+}
 // ─── Network passphrase resolver ─────────────────────────────────────────────
 /**
  * Map a STELLAR_NETWORK string to its canonical network passphrase.
@@ -54,7 +104,6 @@ class StellarRPCError extends Error {
     }
 }
 exports.StellarRPCError = StellarRPCError;
-const SUBMIT_TIMEOUT_MS = 30_000;
 // ─── Exponential back-off retry ─────────────────────────────────────────────
 /**
  * Returns false for deterministic failures (ZodError, TypeError) that will
@@ -110,67 +159,84 @@ async function withRetry(fn, retries = config_1.config.MAX_RETRIES, delayMs = co
             }
         }
     }
-    throw new StellarRPCError(`RPC call failed after ${retries} attempt${retries !== 1 ? "s" : ""}: ${lastErr.message}`, lastErr);
+    const lastErrorMessage = lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
+    throw new StellarRPCError(`RPC call failed after ${retries} attempt${retries !== 1 ? "s" : ""}: ${lastErrorMessage}`, lastErr);
+}
+// ─── Timeout wrapper ──────────────────────────────────────────────────────────
+/**
+ * Wraps a promise in a race against a timeout.
+ * Throws TimeoutError if the promise does not resolve within `ms` milliseconds.
+ */
+function withTimeout(promise, ms) {
+    let id;
+    const timeout = new Promise((_, reject) => {
+        id = setTimeout(() => reject(new TimeoutError(ms)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
+}
+// ─── Timeout wrapper ──────────────────────────────────────────────────────────
+/**
+ * Wraps a promise in a race against a timeout.
+ * Throws TimeoutError if the promise does not resolve within `ms` milliseconds.
+ */
+function withTimeout(promise, ms) {
+    let id;
+    const timeout = new Promise((_, reject) => {
+        id = setTimeout(() => reject(new TimeoutError(ms)), ms);
+    });
+    return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
 }
 // ─── Horizon client ──────────────────────────────────────────────────────────
 /**
  * Horizon server instance client.
  *
  * @remarks
- * The `allowHttp` configuration flag is set to true only when `config.STELLAR_NETWORK` is not `"mainnet"`.
+ * The `allowHttp` configuration flag uses an explicit allowlist: only testnet and futurenet permit HTTP.
  * On mainnet, this client strictly enforces secure HTTPS connections to protect transaction transmission.
+ * This prevents misconfiguration (e.g., "Mainnet" with capital M) from enabling plaintext connections.
  */
 exports.horizonServer = new stellar_sdk_1.Horizon.Server(config_1.config.HORIZON_URL, {
-    allowHttp: config_1.config.STELLAR_NETWORK !== "mainnet",
+    allowHttp: config_1.config.STELLAR_NETWORK === "testnet" || config_1.config.STELLAR_NETWORK === "futurenet",
 });
 /**
  * Loads account details from the Horizon network for a given public key.
  *
  * @param publicKey - The 56-character Stellar public key (G-address) of the account.
- * @returns A promise resolving to the Horizon account details.
- * @throws An error if the account cannot be loaded after retries.
+ * @returns A promise resolving to the Horizon account details or a cached fallback.
+ * @throws An error if the account cannot be loaded and no cached value is available.
  */
 async function loadAccount(publicKey) {
-    return withRetry(() => exports.horizonServer.loadAccount(publicKey), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE);
+    return withTimeout(withRetry(() => exports.horizonServer.loadAccount(publicKey), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE), config_1.config.RPC_TIMEOUT_MS);
 }
 /**
  * Submits a signed transaction to the Stellar network via Horizon.
  *
  * @param tx - The Transaction or FeeBumpTransaction to submit.
  * @returns A promise resolving to the Horizon transaction submission response.
- * @throws A TimeoutError if submission does not complete within 30 seconds.
- * @throws An error if the transaction payload is rejected or submission fails.
+ * @throws An error if validation fails or the upstream service is unavailable.
  */
 async function submitTransaction(tx) {
     // Guard: validate XDR encoding before initiating any network call
     (0, xdr_1.validateXDR)(tx.toEnvelope().toXDR("base64"));
-    return withRetry(() => {
-        const controller = new AbortController();
-        let timeoutId;
-        const timeoutPromise = new Promise((_, reject) => {
-            timeoutId = setTimeout(() => {
-                controller.abort();
-                reject(new TimeoutError(SUBMIT_TIMEOUT_MS));
-            }, SUBMIT_TIMEOUT_MS);
-        });
-        return Promise.race([
-            exports.horizonServer.submitTransaction(tx),
-            timeoutPromise,
-        ]).finally(() => clearTimeout(timeoutId));
-    });
+    return submitTransactionBreaker.fire(tx);
 }
 // ─── Soroban RPC client ───────────────────────────────────────────────────────
 /**
  * Soroban RPC server instance client.
  *
  * @remarks
- * The `allowHttp` flag is configured dynamically: it allows HTTP for local development and testnets,
- * but enforces HTTPS on mainnet. Caution: sending mainnet transaction payloads or queries over plain HTTP
+ * The `allowHttp` flag uses an explicit allowlist: only testnet and futurenet permit HTTP.
+ * On mainnet, HTTPS is enforced. Caution: sending mainnet transaction payloads or queries over plain HTTP
  * exposes sensitive network calls to eavesdropping or tampering.
  */
 exports.sorobanServer = new stellar_sdk_1.rpc.Server(config_1.config.SOROBAN_RPC_URL, {
-    allowHttp: config_1.config.STELLAR_NETWORK !== "mainnet",
+    allowHttp: config_1.config.STELLAR_NETWORK === "testnet" || config_1.config.STELLAR_NETWORK === "futurenet",
 });
+exports.rpcBreakers = {
+    loadAccount: loadAccountBreaker,
+    submitTransaction: submitTransactionBreaker,
+    simulateSorobanTx: simulateSorobanBreaker,
+};
 /**
  * Simulate a Soroban transaction BEFORE broadcasting.
  * Returns the simulation result — callers MUST check for errors.
@@ -181,10 +247,10 @@ exports.sorobanServer = new stellar_sdk_1.rpc.Server(config_1.config.SOROBAN_RPC
  *
  * @param tx - The Transaction containing the Soroban invocations.
  * @returns A promise resolving to the Soroban RPC simulation result.
- * @throws An error if simulation RPC call fails after retries.
+ * @throws An error if the upstream service is unavailable.
  */
 async function simulateSorobanTx(tx) {
-    return withRetry(() => exports.sorobanServer.simulateTransaction(tx), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE);
+    return withTimeout(withRetry(() => exports.sorobanServer.simulateTransaction(tx), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE), config_1.config.RPC_TIMEOUT_MS);
 }
 /**
  * Prepare (simulate + assemble) a Soroban transaction.
@@ -199,7 +265,8 @@ async function simulateSorobanTx(tx) {
 async function prepareSorobanTx(tx) {
     const simResult = await simulateSorobanTx(tx);
     if (stellar_sdk_1.rpc.Api.isSimulationError(simResult)) {
-        throw new Error(`Soroban simulation failed: ${simResult.error}`);
+        const errorValue = "error" in simResult ? simResult.error : simResult;
+        throw new Error(`Soroban simulation failed: ${String(errorValue)}`);
     }
     return stellar_sdk_1.rpc.assembleTransaction(tx, simResult).build();
 }
