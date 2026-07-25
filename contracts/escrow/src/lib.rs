@@ -161,8 +161,11 @@ impl EscrowContract {
         env.storage().instance().set(&DataKey::Released, &false);
 
         env.events().publish(
-            (Symbol::new(&env, "initialized"),),
-            (depositor, recipient, amount),
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "initialized"),
+            ),
+            (depositor.clone(), recipient.clone(), amount),
         );
     }
 
@@ -219,8 +222,13 @@ impl EscrowContract {
             &amount,
         );
 
-        env.events()
-            .publish((Symbol::new(&env, "released"),), (recipient, amount));
+        env.events().publish(
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "released"),
+            ),
+            (recipient, amount),
+        );
     }
 
     /// Refund depositor after expiry. Only callable by the stored depositor.
@@ -477,8 +485,13 @@ impl EscrowContract {
             &amount,
         );
 
-        env.events()
-            .publish((Symbol::new(&env, "cancelled"),), (stored_depositor, amount));
+        env.events().publish(
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "cancelled"),
+            ),
+            (stored_depositor, amount),
+        );
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────

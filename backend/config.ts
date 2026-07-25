@@ -128,6 +128,16 @@ const EnvSchema = z.object({
   // Logging
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
 
+  // OpenTelemetry
+  OTLP_ENDPOINT: z.string().url().optional(),
+
+  // Spending window for rate/cap computation
+  SPENDING_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .default(60_000),
+
   // Retry behaviour
   // Exponential back-off: delay = RETRY_DELAY_MS * 2^(attempt-1), capped at 30 000 ms,
   // plus ±20% random jitter. Example — MAX_RETRIES=3, RETRY_DELAY_MS=1500 →
@@ -277,6 +287,21 @@ export interface AgentConfig {
   readonly agentKeypair: () => Keypair;
   readonly ALLOWED_X402_ORIGINS?: string;
   readonly AGENT_SECRET_KEY_ARN?: string;
+
+  /**
+   * OpenTelemetry collector endpoint.
+   * Optional — when set, the agent exports traces/spans to this OTLP-compatible endpoint.
+   * Validated by EnvSchema to be a valid URL string.
+   */
+  readonly OTLP_ENDPOINT?: string;
+
+  /**
+   * Spending window in milliseconds for rate/cap computation.
+   * Defines the time window over which spending is tracked and enforced.
+   * Validated by EnvSchema to be a positive integer.
+   * Defaults to 60,000 (1 minute).
+   */
+  readonly SPENDING_WINDOW_MS: number;
   /**
    * Per-call RPC timeout in milliseconds.
    * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.
