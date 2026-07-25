@@ -15,6 +15,22 @@ import * as http from "http";
 import { config } from "./config";
 import { getResults } from "./persistence";
 
+// ─── Auth helper ──────────────────────────────────────────────────────────────
+
+const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
+
+/**
+ * Returns true if the request passes Bearer-token authentication.
+ * When WEBHOOK_SECRET is unset, all requests are allowed.
+ */
+function isAuthenticated(req: http.IncomingMessage): boolean {
+  if (!WEBHOOK_SECRET) return true;
+  const auth = req.headers["authorization"];
+  if (!auth) return false;
+  const [scheme, token] = auth.split(" ");
+  return scheme?.toLowerCase() === "bearer" && token === WEBHOOK_SECRET;
+}
+
 const HEALTH_PATH = "/health";
 const STATUS_PATH = "/status";
 
@@ -90,4 +106,76 @@ export function startHealthServer(): http.Server {
   });
 
   return server;
+}
+
+// ─── Route handlers ───────────────────────────────────────────────────────────
+
+async function handleHealth(
+  _req: http.IncomingMessage,
+  res: http.ServerResponse
+): Promise<void> {
+  try {
+    const [rpc, database] = await Promise.all([checkRpc(), checkDatabase()]);
+
+    const allUp = rpc === "up" && database === "up";
+    const statusCode = allUp ? 200 : 503;
+    const body: HealthResponse = {
+      status: allUp ? "ok" : "degraded",
+      components: { rpc, database },
+    };
+
+    const payload = JSON.stringify(body);
+    res.writeHead(statusCode, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  } catch (err) {
+    const errorResponse = handleError(err);
+    log.error({ msg: "Unhandled request error", status: errorResponse.status, type: errorResponse.type });
+    const payload = JSON.stringify(errorResponse);
+    res.writeHead(errorResponse.status, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  }
+}
+
+async function handleResults(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  parsedUrl: URL
+): Promise<void> {
+  // Auth guard — skipped when WEBHOOK_SECRET is not configured
+  if (!isAuthenticated(req)) {
+    res.writeHead(401, { "Content-Type": "application/json" });
+    res.end(JSON.stringify({ error: "Unauthorized" }));
+    return;
+  }
+
+  try {
+    const limitParam = parsedUrl.searchParams.get("limit");
+    const offsetParam = parsedUrl.searchParams.get("offset");
+
+    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 100)) : 100;
+    const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
+
+    const results = getResults(limit, offset);
+    const payload = JSON.stringify(results);
+    res.writeHead(200, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  } catch (err) {
+    const errorResponse = handleError(err);
+    log.error({ msg: "Results endpoint error", status: errorResponse.status, type: errorResponse.type });
+    const payload = JSON.stringify(errorResponse);
+    res.writeHead(errorResponse.status, {
+      "Content-Type": "application/json",
+      "Content-Length": Buffer.byteLength(payload),
+    });
+    res.end(payload);
+  }
 }
