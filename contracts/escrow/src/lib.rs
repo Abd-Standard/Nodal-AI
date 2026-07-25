@@ -141,8 +141,11 @@ impl EscrowContract {
         env.storage().instance().set(&DataKey::Released, &false);
 
         env.events().publish(
-            (Symbol::new(&env, "initialized"),),
-            (depositor, recipient, amount),
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "initialized"),
+            ),
+            (depositor.clone(), recipient.clone(), amount),
         );
     }
 
@@ -196,8 +199,13 @@ impl EscrowContract {
             &amount,
         );
 
-        env.events()
-            .publish((Symbol::new(&env, "released"),), (recipient, amount));
+        env.events().publish(
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "released"),
+            ),
+            (recipient, amount),
+        );
     }
 
     /// Refund depositor after expiry. Only callable by the stored depositor.
@@ -255,8 +263,13 @@ impl EscrowContract {
             &amount,
         );
 
-        env.events()
-            .publish((Symbol::new(&env, "refunded"),), (depositor, amount));
+        env.events().publish(
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "refunded"),
+            ),
+            (depositor, amount),
+        );
     }
 
     /// Return a snapshot of all escrow fields. Panics if not yet initialized.
@@ -310,6 +323,80 @@ impl EscrowContract {
                 .get(&DataKey::Released)
                 .unwrap_or(false),
         }
+    }
+
+    /// Release a partial amount to the recipient. Only callable by the stored arbiter.
+    ///
+    /// Multiple partial releases are allowed; the final one (where the full amount has
+    /// been disbursed) sets `released = true`.
+    ///
+    /// # Arguments
+    /// * `env`            - The execution environment.
+    /// * `arbiter`        - Must match the arbiter recorded at initialisation.
+    /// * `release_amount` - The amount to release in this partial call.
+    ///
+    /// # Panics
+    /// * `NotArbiter` - If caller is not the stored arbiter.
+    /// * `AlreadyReleased` - If funds have already been fully released.
+    /// * `InvalidAmount` - If `release_amount` is not positive or exceeds remaining.
+    ///
+    /// # Return Value
+    /// None.
+    pub fn release_partial(env: Env, arbiter: Address, release_amount: i128) {
+        let stored_arbiter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Arbiter)
+            .expect("escrow: state corrupted");
+        stored_arbiter.require_auth();
+        if arbiter != stored_arbiter {
+            panic_with_error!(&env, EscrowError::NotArbiter);
+        }
+
+        Self::assert_not_released(&env);
+
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("escrow: state corrupted");
+        let mut remaining: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Amount)
+            .expect("escrow: state corrupted");
+        let recipient: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Recipient)
+            .expect("escrow: state corrupted");
+
+        if release_amount <= 0 || release_amount > remaining {
+            panic_with_error!(&env, EscrowError::InvalidAmount);
+        }
+
+        // Decrement stored amount
+        remaining -= release_amount;
+        env.storage().instance().set(&DataKey::Amount, &remaining);
+
+        // Mark fully released when nothing remains
+        if remaining == 0 {
+            env.storage().instance().set(&DataKey::Released, &true);
+        }
+
+        TokenClient::new(&env, &token).transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &release_amount,
+        );
+
+        env.events().publish(
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "released_partial"),
+            ),
+            (recipient, release_amount, remaining),
+        );
     }
 
     /// Cancel the escrow cooperatively. Requires both depositor and arbiter to authorise.
@@ -370,8 +457,13 @@ impl EscrowContract {
             &amount,
         );
 
-        env.events()
-            .publish((Symbol::new(&env, "cancelled"),), (stored_depositor, amount));
+        env.events().publish(
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "cancelled"),
+            ),
+            (stored_depositor, amount),
+        );
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────
