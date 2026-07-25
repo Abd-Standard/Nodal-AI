@@ -1,21 +1,19 @@
 /**
  * backend/server.ts
- * HTTP server for container orchestration (Kubernetes, Docker Swarm).
+ *
+ * Health-check HTTP server for container orchestration (ECS, Kubernetes, etc.).
  *
  * Endpoints:
- *   GET /health            — 200 when all dependencies are up, 503 otherwise
- *   GET /results?limit=N&offset=M — paginated audit log (JSON); optional Bearer auth
+ *   GET /health  → 200 { status: "ok", network: string, publicKey: string }
+ *   GET /status  → 200 { results: PersistedResult[] }   (last 10 AgentResult records)
+ *
+ * Uses only the Node.js built-in `http` module — no additional dependencies.
+ * Port is read from config.HEALTH_PORT (env var HEALTH_PORT, default 3000).
  */
 
 import * as http from "http";
-import { URL } from "url";
-import { horizonServer } from "./rpc_client";
-import { db } from "./db/client";
+import { config } from "./config";
 import { getResults } from "./persistence";
-import { createLogger } from "./utils/logger";
-import { handleError } from "./middleware/error_handler";
-
-const log = createLogger("health-server");
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
@@ -34,63 +32,77 @@ function isAuthenticated(req: http.IncomingMessage): boolean {
 }
 
 const HEALTH_PATH = "/health";
-const RESULTS_PATH = "/results";
+const STATUS_PATH = "/status";
 
-type ComponentStatus = "up" | "down";
+/**
+ * Creates and returns the health-check HTTP server.
+ * Does NOT call `.listen()` — the caller (typically `index.ts`) is responsible
+ * for binding to `config.HEALTH_PORT`.
+ */
+export function createHealthServer(): http.Server {
+  const server = http.createServer((req, res) => {
+    // ── GET /health ────────────────────────────────────────────────────────
+    if (req.method === "GET" && req.url === HEALTH_PATH) {
+      const body = JSON.stringify({
+        status: "ok",
+        network: config.STELLAR_NETWORK,
+        publicKey: config.AGENT_PUBLIC_KEY,
+      });
 
-interface HealthResponse {
-  status: "ok" | "degraded";
-  components: {
-    rpc: ComponentStatus;
-    database: ComponentStatus;
-  };
-}
-
-async function checkRpc(): Promise<ComponentStatus> {
-  try {
-    await horizonServer.fetchBaseFee();
-    return "up";
-  } catch {
-    return "down";
-  }
-}
-
-async function checkDatabase(): Promise<ComponentStatus> {
-  try {
-    const ok = await db.healthCheck();
-    return ok ? "up" : "down";
-  } catch {
-    return "down";
-  }
-}
-
-export function createHealthServer(port = 3001): http.Server {
-  const server = http.createServer(async (req, res) => {
-    if (req.method !== "GET") {
-      res.writeHead(405, { "Content-Type": "application/json" });
-      res.end(JSON.stringify({ error: "Method not allowed" }));
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      });
+      res.end(body);
       return;
     }
 
-    // ── Routing ────────────────────────────────────────────────────────────
-    const parsedUrl = req.url ? new URL(req.url, `http://${req.headers.host ?? "localhost"}`) : null;
-    const pathname = parsedUrl?.pathname ?? "";
+    // ── GET /status ────────────────────────────────────────────────────────
+    if (req.method === "GET" && req.url === STATUS_PATH) {
+      try {
+        const results = getResults(10);
+        const body = JSON.stringify({ results });
 
-    if (pathname === HEALTH_PATH) {
-      return handleHealth(req, res);
+        res.writeHead(200, {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        });
+        res.end(body);
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const body = JSON.stringify({ error: message });
+
+        res.writeHead(500, {
+          "Content-Type": "application/json",
+          "Content-Length": Buffer.byteLength(body),
+        });
+        res.end(body);
+      }
+      return;
     }
 
-    if (pathname === RESULTS_PATH) {
-      return handleResults(req, res, parsedUrl!);
-    }
-
-    // Unknown route
+    // ── 404 for everything else ────────────────────────────────────────────
     res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Not found" }));
+    res.end(JSON.stringify({ error: "Not Found" }));
   });
 
+  return server;
+}
+
+/**
+ * Convenience: create the server and immediately start listening.
+ * Returns the bound server instance.
+ */
+export function startHealthServer(): http.Server {
+  const server = createHealthServer();
+  const port = config.HEALTH_PORT;
+
   server.listen(port, () => {
-    log.info({ msg: "HTTP server listening", port, paths: [HEALTH_PATH, RESULTS_PATH] });
+    process.stdout.write(`✅ [HealthServer] Listening on port ${port}\n`);
+    process.stdout.write(
+      `   GET /health → { status, network, publicKey }\n` +
+      `   GET /status → { results: AgentResult[] }\n`
+    );
   });
 
   return server;

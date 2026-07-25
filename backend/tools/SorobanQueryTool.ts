@@ -18,6 +18,7 @@ import {
   BASE_FEE,
   xdr,
 } from "@stellar/stellar-sdk";
+import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
 import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
@@ -70,7 +71,7 @@ export class SorobanQueryTool {
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(input.method, ...input.args))
-      .setTimeout(0)
+      .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
     logger.info("Simulating Soroban query", {

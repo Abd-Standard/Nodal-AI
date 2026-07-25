@@ -107,13 +107,15 @@ describe("BalanceCheckTool", () => {
     it("filters to XLM only when assetCode is XLM", async () => {
       const result = await tool.getBalance({ publicKey: VALID_KEY, assetCode: "XLM" });
       expect(result.balances).toHaveLength(1);
-      expect(result.balances[0].assetType).toBe("native");
+      expect(result.balances[0]!).toBeDefined();
+      expect(result.balances[0]!.assetType).toBe("native");
     });
 
     it("filters to a specific non-native asset by assetCode", async () => {
       const result = await tool.getBalance({ publicKey: VALID_KEY, assetCode: "USDC" });
       expect(result.balances).toHaveLength(1);
-      expect(result.balances[0].assetCode).toBe("USDC");
+      expect(result.balances[0]!).toBeDefined();
+      expect(result.balances[0]!.assetCode).toBe("USDC");
     });
 
     it("further filters by assetIssuer when provided", async () => {
@@ -123,7 +125,8 @@ describe("BalanceCheckTool", () => {
         assetIssuer: VALID_ISSUER,
       });
       expect(result.balances).toHaveLength(1);
-      expect(result.balances[0].assetIssuer).toBe(VALID_ISSUER);
+      expect(result.balances[0]!).toBeDefined();
+      expect(result.balances[0]!.assetIssuer).toBe(VALID_ISSUER);
     });
 
     it("returns an empty array when filtered asset is not held", async () => {
@@ -133,8 +136,9 @@ describe("BalanceCheckTool", () => {
 
     it("maps assetCode and assetIssuer as undefined for native balance", async () => {
       const result = await tool.getBalance({ publicKey: VALID_KEY, assetCode: "XLM" });
-      expect(result.balances[0].assetCode).toBeUndefined();
-      expect(result.balances[0].assetIssuer).toBeUndefined();
+      expect(result.balances[0]!).toBeDefined();
+      expect(result.balances[0]!.assetCode).toBeUndefined();
+      expect(result.balances[0]!.assetIssuer).toBeUndefined();
     });
 
     it("calls loadAccount with the provided public key", async () => {

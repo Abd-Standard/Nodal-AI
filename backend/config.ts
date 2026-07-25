@@ -99,11 +99,31 @@ const EnvSchema = z.object({
   X402_ASSET_CODE: z.string().min(1).max(12).default("USDC"),
   X402_ASSET_ISSUER: z
     .string({ required_error: "X402_ASSET_ISSUER is required" })
-    .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address"),
+    .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address")
+    .refine((val) => val.startsWith("G"), {
+      message: "X402_ASSET_ISSUER must start with G",
+    })
+    .refine(
+      (val) => {
+        try {
+          Keypair.fromPublicKey(val);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          "X402_ASSET_ISSUER is not a valid Ed25519 public key",
+      }
+    ),
   ALLOWED_X402_ORIGINS: z.string().optional(),
 
   // Spending cap
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
+
+  // Persistence
+  DB_PATH: z.string().default("./agent.db"),
 
   // Logging
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
@@ -132,6 +152,31 @@ const EnvSchema = z.object({
     .int()
     .min(100)
     .optional(),
+
+  // Rate limiting
+  MAX_X402_PAYMENTS_PER_MINUTE: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(10),
+
+  MAX_SOROBAN_FEE_STROOPS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .default(1_000_000),
+
+  // Health check HTTP server
+  HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+
+  // Webhook notifications
+  WEBHOOK_URL: z.string().url().optional(),
+  WEBHOOK_SECRET: z.string().min(1).optional(),
+  SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
+  OTLP_ENDPOINT: z.string().url().optional(),
+  SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
+  OTLP_ENDPOINT: z.string().url().optional(),
+  WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -159,6 +204,12 @@ export interface AgentConfig {
    * Required.
    */
   readonly SOROBAN_RPC_URL: string;
+
+  /**
+   * Path to the SQLite database file used for audit persistence.
+   * Defaults to "./agent.db". Use ":memory:" for in-process tests.
+   */
+  readonly DB_PATH: string;
 
   /**
    * The asset code for the x402 / PayFi asset.
@@ -231,6 +282,26 @@ export interface AgentConfig {
    * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.
    */
   readonly RPC_TIMEOUT_MS: number;
+
+  /**
+   * Maximum number of x402 payments allowed per 60-second sliding window.
+   * Defaults to 10. Prevents rapid-fire calls from exhausting the agent balance.
+   */
+  readonly MAX_X402_PAYMENTS_PER_MINUTE: number;
+
+  /**
+   * Maximum Soroban transaction fee in stroops (1 stroop = 0.0000001 XLM).
+   * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
+   */
+  readonly MAX_SOROBAN_FEE_STROOPS: number;
+  /**
+   * Port for the health-check HTTP server.
+   * Validated by EnvSchema to be an integer between 1 and 65535.
+   * Defaults to 3000.
+   */
+  readonly HEALTH_PORT: number;
+  readonly WEBHOOK_URL?: string;
+  readonly WEBHOOK_SECRET?: string;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -238,8 +309,13 @@ export interface AgentConfig {
 export function formatValidationErrors(errors: z.ZodError): string {
   return errors.issues
     .map((issue) => {
-      const field = issue.path.join(".") || "unknown";
-      // Redact any value that looks like a secret key
+      // Redact any path element that looks like a secret key — path may contain
+      // raw values (e.g., when a secret key is used as a Zod path segment).
+      const field =
+        issue.path
+          .map((p) => String(p).replace(/S[A-Z2-7]{55}/g, "[REDACTED]"))
+          .join(".") || "unknown";
+      // Redact any value that looks like a secret key in the human-readable message
       const message = issue.message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
       return `  • ${field}: ${message}`;
     })
@@ -261,7 +337,8 @@ function loadConfig(): AgentConfig {
   if (process.env.AGENT_SECRET_KEY_ARN) {
     try {
       const arn = process.env.AGENT_SECRET_KEY_ARN;
-      const region = arn.split(":")[3] || "us-east-1";
+      const arnParts = arn.split(":");
+      const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
       const command = `node -e "
         const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
         const client = new SecretsManagerClient({ region: '${region}' });
@@ -282,8 +359,16 @@ function loadConfig(): AgentConfig {
       let parsedSecret = secret;
       try {
         const json = JSON.parse(secret);
-        if (json && typeof json === "object") {
-          parsedSecret = json.AGENT_SECRET_KEY || Object.values(json)[0] as string;
+        if (json && typeof json === "object" && !Array.isArray(json)) {
+          const candidate = json.AGENT_SECRET_KEY;
+          if (typeof candidate === "string") {
+            parsedSecret = candidate;
+          } else {
+            const firstValue = Object.values(json).find((value): value is string => typeof value === "string");
+            if (firstValue) {
+              parsedSecret = firstValue;
+            }
+          }
         }
       } catch {
         // Not a JSON object, use raw string
@@ -343,18 +428,37 @@ function loadConfig(): AgentConfig {
   }
 
   // ── Build the config object — secret key stays in closure only ────────────
-  const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ...rest } = raw;
+  const {
+    AGENT_SECRET_KEY: _secret,
+    AGENT_PUBLIC_KEY: _rawPub,
+    ALLOWED_X402_ORIGINS,
+    AGENT_SECRET_KEY_ARN,
+    ...rest
+  } = raw;
 
   const rpcTimeoutMs =
     raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
+
+  // Derive the keypair once at startup. agentKeypair returns this cached instance
+  // on every call, avoiding repeated Ed25519 derivation.
+  const _keypair = Keypair.fromSecret(_secret);
+  const _secretRef = _secret;
 
   const cfg: AgentConfig = {
     ...rest,
     AGENT_PUBLIC_KEY: derivedPublicKey,
     RPC_TIMEOUT_MS: rpcTimeoutMs,
+    MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
+    MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
     // Secret is captured in closure; never on the object
-    agentKeypair: () => Keypair.fromSecret(_secret),
+    agentKeypair: () => _keypair,
   };
+
+  // Allow GC of the secret string now that the keypair is materialised.
+  // (JS strings are immutable, but this signals intent.)
+  (() => {
+    const _ = _secretRef;
+  })();
 
   // Startup banner — only safe fields
   process.stdout.write(

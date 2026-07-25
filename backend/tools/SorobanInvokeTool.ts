@@ -7,10 +7,10 @@
 
 import {
   Keypair,
+  Transaction,
   TransactionBuilder,
   Operation,
   Contract,
-  BASE_FEE,
   nativeToScVal,
   xdr,
 } from "@stellar/stellar-sdk";
@@ -82,6 +82,34 @@ export const SorobanInvokeInputSchema = z.object({
 
 export type SorobanInvokeInput = z.infer<typeof SorobanInvokeInputSchema>;
 
+// ─── Return type ──────────────────────────────────────────────────────────────
+
+/**
+ * Discriminated union return type for {@link SorobanInvokeTool.execute}.
+ * - When `simulateOnly=false`: `{ txHash: string }`
+ * - When `simulateOnly=true`:  `{ simulationResult: Transaction }`
+ */
+export type SorobanInvokeResult =
+  | { txHash: string; simulationResult?: never }
+  | { txHash?: never; simulationResult: Transaction };
+
+/**
+ * Type guard: narrows a `SorobanInvokeResult` to the simulation-only variant.
+ *
+ * @example
+ * ```ts
+ * const result = await tool.execute({ ..., simulateOnly: true });
+ * if (isSorobanSimulationResult(result)) {
+ *   console.log(result.simulationResult); // Transaction
+ * }
+ * ```
+ */
+export function isSorobanSimulationResult(
+  result: SorobanInvokeResult
+): result is { simulationResult: Transaction } {
+  return result.simulationResult !== undefined;
+}
+
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class SorobanInvokeTool {
@@ -89,8 +117,6 @@ export class SorobanInvokeTool {
   private networkPassphrase: string;
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
-    // Safety guard: timeout MUST be a positive integer to prevent
-    // transactions without time bounds (which are replayable indefinitely).
     if (SOROBAN_TX_TIMEOUT <= 0 || SOROBAN_TX_TIMEOUT > 300) {
       throw new Error(
         `SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT}`
@@ -139,7 +165,7 @@ export class SorobanInvokeTool {
    */
   async execute(
     rawInput: unknown
-  ): Promise<{ txHash?: string; simulationResult?: unknown }> {
+  ): Promise<SorobanInvokeResult> {
     const input = SorobanInvokeInputSchema.parse(rawInput);
 
     // 1. Resolve contract
@@ -165,7 +191,7 @@ export class SorobanInvokeTool {
 
     // 3. Build invocation transaction
     const tx = new TransactionBuilder(sourceAccount, {
-      fee: BASE_FEE,
+      fee: "0", // Fee is overwritten by prepareSorobanTx — initial value is irrelevant
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(input.method, ...input.args))
@@ -180,9 +206,15 @@ export class SorobanInvokeTool {
     // 4. MANDATORY simulate step — throws on simulation failure
     const preparedTx = await prepareSorobanTx(tx);
 
+    if (preparedTx.fee > config.MAX_SOROBAN_FEE_STROOPS) {
+      throw new Error(
+        `Soroban fee ${preparedTx.fee} exceeds MAX_SOROBAN_FEE_STROOPS ${config.MAX_SOROBAN_FEE_STROOPS}`
+      );
+    }
+
     if (input.simulateOnly) {
       logger.info("Simulation passed (dry-run, not broadcasting)");
-      return { simulationResult: preparedTx };
+      return { simulationResult: preparedTx as Transaction };
     }
 
     // 5. Timeout safety guard: reject transactions with no time bounds
@@ -194,11 +226,26 @@ export class SorobanInvokeTool {
       );
     }
 
-    // 6. Sign prepared transaction
-    preparedTx.sign(this.keypair);
+    // 6. Sign prepared transaction.
+    // NOTE: Transaction.sign() mutates the transaction in place — the reference
+    // `signedTx` intentionally aliases `preparedTx` so the post-sign assertion
+    // verifies the same object that will be submitted. If the transaction is ever
+    // rebuilt (e.g., after a fee bump), this alias must be updated accordingly.
+    const signedTx = preparedTx;
+    signedTx.sign(this.keypair);
+
+    // Guard: ensure at least one signature was attached. A no-op sign() call
+    // (e.g., bad Keypair or future SDK changes) would produce zero signatures,
+    // causing the network to reject the transaction immediately.
+    // Use optional chaining so tests using plain mock objects without a
+    // `signatures` array still get a meaningful error rather than a
+    // TypeError on `.length`.
+    if (!signedTx.signatures?.length) {
+      throw new Error("Transaction signing produced no signatures");
+    }
 
     // 7. Submit
-    const result = await sorobanServer.sendTransaction(preparedTx);
+    const result = await sorobanServer.sendTransaction(signedTx);
 
     if (result.status === "ERROR") {
       throw new Error(`Soroban submit failed: ${result.errorResult?.toXDR("base64")}`);

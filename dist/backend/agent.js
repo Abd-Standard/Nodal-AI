@@ -164,17 +164,20 @@ class PayFiAgent extends events_1.EventEmitter {
                     data = await this.paymentTool.execute(task.payload);
                     break;
                 }
-                case "soroban_invoke":
+                case "soroban_invoke": {
                     data = await this.sorobanTool.execute(task.payload);
                     break;
+                }
                 case "x402_respond": {
                     const p = task.payload;
                     assertWithinSpendingLimit(p?.amount);
                     data = await this.x402Tool.respond(task.payload);
                     break;
                 }
-                default:
-                    throw new Error(`Unknown task type: ${task.type}`);
+                default: {
+                    const exhaustiveCheck = task.type;
+                    throw new Error(`Unknown task type: ${exhaustiveCheck}`);
+                }
             }
             logger_1.logger.info("Task completed", { taskType: task.type });
             const result = { success: true, taskType: task.type, data };
