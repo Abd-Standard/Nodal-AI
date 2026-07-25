@@ -174,7 +174,7 @@ export async function withRetry<T>(
   const lastErrorMessage =
     lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
   throw new StellarRPCError(
-    "RPC call failed after  attempt: ",
+    `RPC call failed after ${retries} attempt(s): ${lastErrorMessage}`,
     lastErr
   );
 }
