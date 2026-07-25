@@ -92,7 +92,7 @@ export class X402PaymentTool {
       throw new Error("x402: nonce already used");
     }
 
-    const { txHash } = await this.paymentTool.execute({
+    const { txHash, ledger } = await this.paymentTool.execute({
       destination: challenge.payTo,
       amount: challenge.amount,
       assetCode: challenge.assetCode,
@@ -104,7 +104,16 @@ export class X402PaymentTool {
 
     this.usedNonces.add(challenge.nonce);
 
-    const signedAt = new Date().toISOString();
+    let signedAt: string;
+    try {
+      const ledgerRecord: any = await this.horizonServer
+        .ledgers()
+        .ledger(ledger)
+        .call();
+      signedAt = ledgerRecord.closed_at;
+    } catch {
+      signedAt = new Date().toISOString();
+    }
 
     return {
       protocol: "x402",
@@ -150,7 +159,7 @@ export class X402PaymentTool {
       throw new Error("x402 verification failed: asset mismatch");
     }
 
-    const expectedMemo = originalChallenge.nonce.slice(0, 28);
+    const expectedMemo = createHash("sha256").update(originalChallenge.nonce).digest("hex").slice(0, 28);
 
     if (tx.memo !== expectedMemo) {
       throw new Error("x402 verification failed: nonce mismatch");
