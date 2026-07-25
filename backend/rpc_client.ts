@@ -91,7 +91,7 @@ export function resolveNetworkPassphrase(network: string): string {
   if (network === "mainnet") return Networks.PUBLIC;
   if (network === "futurenet") return Networks.FUTURENET;
   if (network === "testnet") return Networks.TESTNET;
-  throw new Error("Unsupported network: ");
+  throw new Error(`Unsupported network: ${network}`);
 }
 
 export class TimeoutError extends Error {
