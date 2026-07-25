@@ -174,9 +174,6 @@ const EnvSchema = z.object({
   WEBHOOK_SECRET: z.string().min(1).optional(),
   SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
   OTLP_ENDPOINT: z.string().url().optional(),
-  SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
-  OTLP_ENDPOINT: z.string().url().optional(),
-  WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;

@@ -19,6 +19,7 @@ import { logger } from "./logger";
 import { validateXDR } from "./types/xdr";
 import { createLogger } from "./utils/logger";
 import { isThrottled, handleRateLimitResponse, withBackoffGuard } from "./network";
+import { withSpan } from "./telemetry";
 
 const log = createLogger("rpc-client");
 const RPC_BREAKER_OPTIONS = {
@@ -135,47 +136,53 @@ export async function withRetry<T>(
   isRetryable: (err: unknown) => boolean = DEFAULT_IS_RETRYABLE,
   maxDelayMs = 30_000
 ): Promise<T> {
-  let lastErr: unknown;
-  for (let attempt = 1; attempt <= retries; attempt++) {
-    logger.debug(`[withRetry] Attempt ${attempt}/${retries}: calling...`);
-    try {
-      // Check backoff before each attempt
-      if (isThrottled()) {
-        throw new RateLimitError(30);
-      }
-      return await fn();
-    } catch (err) {
-      // Detect 429 from Horizon/Soroban responses
-      if (err instanceof Error && err.message.includes("429")) {
-        handleRateLimitResponse(null);
-        lastErr = new RateLimitError(30);
-      } else {
-        lastErr = err;
-      }
+  return withSpan(
+    "withRetry",
+    async () => {
+      let lastErr: unknown;
+      for (let attempt = 1; attempt <= retries; attempt++) {
+        logger.debug(`[withRetry] Attempt ${attempt}/${retries}: calling...`);
+        try {
+          // Check backoff before each attempt
+          if (isThrottled()) {
+            throw new RateLimitError(30);
+          }
+          return await fn();
+        } catch (err) {
+          // Detect 429 from Horizon/Soroban responses
+          if (err instanceof Error && err.message.includes("429")) {
+            handleRateLimitResponse(null);
+            lastErr = new RateLimitError(30);
+          } else {
+            lastErr = err;
+          }
 
-      if (!isRetryable(err) && !(err instanceof RateLimitError)) {
-        throw err;
-      }
+          if (!isRetryable(err) && !(err instanceof RateLimitError)) {
+            throw err;
+          }
 
-      logger.warn("Retry attempt failed", {
-        attempt,
-        maxRetries: retries,
-        error: (err as Error).message,
-      });
+          logger.warn("Retry attempt failed", {
+            attempt,
+            maxRetries: retries,
+            error: (err as Error).message,
+          });
 
-      if (attempt < retries) {
-        const exponential = delayMs * Math.pow(2, attempt - 1);
-        const capped = Math.min(exponential, maxDelayMs);
-        const jitter = Math.random() * 0.2 * capped;
-        await new Promise((r) => setTimeout(r, capped + jitter));
+          if (attempt < retries) {
+            const exponential = delayMs * Math.pow(2, attempt - 1);
+            const capped = Math.min(exponential, maxDelayMs);
+            const jitter = Math.random() * 0.2 * capped;
+            await new Promise((r) => setTimeout(r, capped + jitter));
+          }
+        }
       }
-    }
-  }
-  const lastErrorMessage =
-    lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
-  throw new StellarRPCError(
-    `RPC call failed after ${retries} attempt(s): ${lastErrorMessage}`,
-    lastErr
+      const lastErrorMessage =
+        lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
+      throw new StellarRPCError(
+        `RPC call failed after ${retries} attempt(s): ${lastErrorMessage}`,
+        lastErr
+      );
+    },
+    { "rpc.maxRetries": retries }
   );
 }
 

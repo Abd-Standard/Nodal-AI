@@ -226,7 +226,7 @@ describe("withRetry", () => {
     }
     expect(caught).toBeDefined();
     expect((caught as Error).name).toBe("StellarRPCError");
-    expect((caught as Error).message).toContain("RPC call failed after 3 attempts");
+    expect((caught as Error).message).toContain("RPC call failed after 3 attempt(s)");
   });
 });
 
