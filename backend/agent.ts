@@ -12,6 +12,7 @@
 
 // Updated imports
 import { EventEmitter } from "events";
+import { rpc } from "@stellar/stellar-sdk";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
 import { saveResult } from "./persistence";
@@ -21,9 +22,13 @@ import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
 import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
-
 import { BatchPaymentTool } from "./tools/BatchPaymentTool";
 import { SorobanQueryTool } from "./tools/SorobanQueryTool";
+import { BalanceCheckTool } from "./tools/BalanceCheckTool";
+import { PathPaymentTool } from "./tools/PathPaymentTool";
+import { FeeBumpTool } from "./tools/FeeBumpTool";
+import { DexOfferTool } from "./tools/DexOfferTool";
+import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
@@ -72,7 +77,11 @@ export type TaskType =
   | "account_info"
   | "change_trust"
   | "multisig_payment"
-  | "batch_payment";
+  | "batch_payment"
+  | "balance_check"
+  | "path_payment"
+  | "fee_bump"
+  | "dex_offer";
 
 
 export interface AgentTask {
@@ -94,7 +103,7 @@ export interface AgentResultData {
 export interface AgentResult {
   success: boolean;
   taskType: TaskType;
-  data?: AgentResultData;
+  data?: unknown;
   error?: string;
 }
 
@@ -129,13 +138,16 @@ export class PayFiAgent extends EventEmitter {
   private accountInfoTool: AccountInfoTool;
   private trustlineTool: TrustlineTool;
   private multiSigTool: MultiSigPaymentTool;
-
   private batchPaymentTool: BatchPaymentTool;
-
+  private balanceCheckTool: BalanceCheckTool;
+  private pathPaymentTool: PathPaymentTool;
+  private feeBumpTool: FeeBumpTool;
+  private dexOfferTool: DexOfferTool;
 
   private activeTasks = 0;
   private isDraining = false;
   private _streamStop: (() => void) | null = null;
+  private _contractListenerStop: (() => void) | null = null;
 
   // Bound handler references kept so destroy() can call .off() with the exact same function
   // reference — EventEmitter requires identity equality for removal.
@@ -155,6 +167,10 @@ export class PayFiAgent extends EventEmitter {
     this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
     this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
     this.batchPaymentTool = new BatchPaymentTool(config.agentKeypair().secret());
+    this.balanceCheckTool = new BalanceCheckTool();
+    this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
+    this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
+    this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -230,6 +246,36 @@ export class PayFiAgent extends EventEmitter {
   }
 
   /**
+   * Start polling a Soroban contract for events.
+   * Calls onEvent for each new event matching the provided eventTypes filter.
+   * Pass an empty array for eventTypes to receive all contract events.
+   *
+   * @param contractId - The Stellar contract ID to monitor.
+   * @param eventTypes - Topic strings to filter by (empty array = all events).
+   * @param onEvent    - Callback invoked for each matching event.
+   */
+  startContractListener(
+    contractId: string,
+    eventTypes: string[],
+    onEvent: (event: rpc.Api.EventResponse) => void
+  ): void {
+    if (this._contractListenerStop) {
+      this._contractListenerStop();
+    }
+    this._contractListenerStop = listenContractEvents(contractId, eventTypes, onEvent);
+    logger.info("Contract event listener started", { contractId });
+  }
+
+  /** Stop the active contract event listener. */
+  stopContractListener(): void {
+    if (this._contractListenerStop) {
+      this._contractListenerStop();
+      this._contractListenerStop = null;
+      logger.info("Contract event listener stopped");
+    }
+  }
+
+  /**
    * Detach all registered event listeners and release internal resources.
    *
    * Must be called by the lifecycle manager when an agent instance is
@@ -244,6 +290,7 @@ export class PayFiAgent extends EventEmitter {
    */
   destroy(): void {
     this.stopListening();
+    this.stopContractListener();
     for (const [event, handler] of this._boundHandlers) {
       this.off(event, handler);
     }
@@ -305,7 +352,7 @@ export class PayFiAgent extends EventEmitter {
     this.activeTasks++;
     logger.info("Running task", { taskType: task.type });
     try {
-      let data: AgentResultData;
+      let data: unknown;
 
       switch (task.type) {
         case "stellar_payment": {
@@ -348,6 +395,21 @@ export class PayFiAgent extends EventEmitter {
           data = await this.batchPaymentTool.execute(task.payload);
           break;
 
+        case "balance_check":
+          data = await this.balanceCheckTool.getBalance(task.payload);
+          break;
+
+        case "path_payment":
+          data = await this.pathPaymentTool.execute(task.payload);
+          break;
+
+        case "fee_bump":
+          data = await this.feeBumpTool.execute(task.payload);
+          break;
+
+        case "dex_offer":
+          data = await this.dexOfferTool.execute(task.payload);
+          break;
 
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
