@@ -70,6 +70,8 @@ pub enum EscrowError {
     InvalidExpiry = 7,
     /// The escrow has not been initialized yet.
     NotInitialized = 8,
+    /// The depositor and recipient must be different parties.
+    InvalidParty = 9,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -113,6 +115,9 @@ impl EscrowContract {
 
         depositor.require_auth();
 
+        if depositor == recipient {
+            panic_with_error!(&env, EscrowError::InvalidParty);
+        }
         if amount <= 0 {
             panic_with_error!(&env, EscrowError::InvalidAmount);
         }
@@ -310,6 +315,62 @@ impl EscrowContract {
                 .get(&DataKey::Released)
                 .unwrap_or(false),
         }
+    }
+
+    /// Reject the escrow and return funds to the depositor. Only callable by the arbiter.
+    ///
+    /// This allows the arbiter to unilaterally return funds when conditions are not met,
+    /// without waiting for expiry. Once rejected, a subsequent refund or release will panic.
+    ///
+    /// # Arguments
+    /// * `env`     - The execution environment.
+    /// * `arbiter` - Must match the arbiter recorded at initialisation.
+    ///
+    /// # Panics
+    /// * `NotArbiter` - If caller is not the stored arbiter.
+    /// * `AlreadyReleased` - If funds have already been released, refunded, or rejected.
+    ///
+    /// # Return Value
+    /// None.
+    pub fn reject(env: Env, arbiter: Address) {
+        let stored_arbiter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Arbiter)
+            .expect("escrow: state corrupted");
+        stored_arbiter.require_auth();
+        if arbiter != stored_arbiter {
+            panic_with_error!(&env, EscrowError::NotArbiter);
+        }
+
+        Self::assert_not_released(&env);
+
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("escrow: state corrupted");
+        let amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Amount)
+            .expect("escrow: state corrupted");
+        let depositor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Depositor)
+            .expect("escrow: state corrupted");
+
+        env.storage().instance().set(&DataKey::Released, &true);
+
+        TokenClient::new(&env, &token).transfer(
+            &env.current_contract_address(),
+            &depositor,
+            &amount,
+        );
+
+        env.events()
+            .publish((Symbol::new(&env, "rejected"),), (depositor, amount));
     }
 
     /// Cancel the escrow cooperatively. Requires both depositor and arbiter to authorise.

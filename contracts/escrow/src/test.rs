@@ -611,4 +611,141 @@ mod tests {
         client.cancel(&depositor, &arbiter);
         assert_eq!(token.balance(&depositor), 1_000);
     }
+
+    // ── InvalidParty / depositor == recipient ────────────────────────────────
+
+    // 22. depositor == recipient panics with InvalidParty
+    #[test]
+    #[should_panic]
+    fn test_depositor_equals_recipient_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let expiry = env.ledger().timestamp() + EXPIRY_OFFSET;
+        env.as_contract(&contract_id, || {
+            EscrowContract::initialize(
+                env.clone(),
+                depositor.clone(),
+                depositor.clone(), // same as depositor
+                arbiter.clone(),
+                token_id.clone(),
+                500,
+                expiry,
+            );
+        });
+    }
+
+    // ── Reject function tests ─────────────────────────────────────────────────
+
+    // 23. reject returns funds to depositor
+    #[test]
+    fn test_reject_returns_funds_to_depositor() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, token) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        assert_eq!(token.balance(&depositor), 500);
+        assert_eq!(token.balance(&contract_id), 500);
+        client.reject(&arbiter);
+        assert_eq!(token.balance(&depositor), 1_000);
+        assert_eq!(token.balance(&contract_id), 0);
+        assert_eq!(token.balance(&recipient), 0);
+    }
+
+    // 24. reject after release panics
+    #[test]
+    #[should_panic]
+    fn test_reject_after_release_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        client.release(&arbiter);
+        env.as_contract(&contract_id, || {
+            EscrowContract::reject(env.clone(), arbiter.clone());
+        });
+    }
+
+    // 25. unauthorized reject panics
+    #[test]
+    #[should_panic]
+    fn test_unauthorized_reject_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let impostor = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        env.as_contract(&contract_id, || {
+            EscrowContract::reject(env.clone(), impostor.clone());
+        });
+    }
+
+    // 26. reject emits "rejected" event
+    #[test]
+    fn test_reject_emits_event() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        client.reject(&arbiter);
+        let events = env.events().all();
+        assert!(!events.is_empty());
+        assert!(std::format!("{:?}", events).contains("rejected"));
+    }
 }
