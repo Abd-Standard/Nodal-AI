@@ -58,6 +58,34 @@ vi.mock("../backend/tools/SorobanQueryTool", () => ({
   })),
 }));
 
+vi.mock("../backend/tools/BalanceCheckTool", () => ({
+  BalanceCheckTool: vi.fn().mockImplementation(() => ({
+    getBalance: vi.fn().mockResolvedValue({ publicKey: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", balances: [] }),
+  })),
+}));
+
+vi.mock("../backend/tools/PathPaymentTool", () => ({
+  PathPaymentTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ txHash: "path_mock_hash", ledger: 1 }),
+  })),
+}));
+
+vi.mock("../backend/tools/FeeBumpTool", () => ({
+  FeeBumpTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ txHash: "fee_bump_mock_hash", ledger: 1 }),
+  })),
+}));
+
+vi.mock("../backend/tools/DexOfferTool", () => ({
+  DexOfferTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ txHash: "dex_mock_hash", ledger: 1, offerId: "0" }),
+  })),
+}));
+
+vi.mock("../backend/tools/ContractEventListener", () => ({
+  listen: vi.fn().mockReturnValue(() => {}),
+}));
+
 vi.mock("../backend/webhook", () => ({
   dispatchWebhook: vi.fn().mockResolvedValue(undefined),
 }));
@@ -294,6 +322,79 @@ describe("AgentResult snapshot", () => {
     expect(result).toHaveProperty("success", false);
     expect(result).toHaveProperty("taskType", "stellar_payment");
     expect(result).toHaveProperty("error");
+  });
+});
+
+describe("PayFiAgent — new task types", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
+    agent = new PayFiAgent();
+  });
+
+  it("dispatches balance_check and returns success", async () => {
+    const result = await agent.run({
+      type: "balance_check",
+      payload: { publicKey: DEST },
+    });
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe("balance_check");
+  });
+
+  it("dispatches path_payment and returns success", async () => {
+    const result = await agent.run({
+      type: "path_payment",
+      payload: {
+        destination: DEST,
+        sendAsset: { code: "XLM" },
+        sendAmount: "10",
+        destAsset: { code: "USDC", issuer: ISSUER },
+        destMinAmount: "9",
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe("path_payment");
+  });
+
+  it("dispatches fee_bump and returns success", async () => {
+    const result = await agent.run({
+      type: "fee_bump",
+      payload: { innerTxXdr: "AAAA" },
+    });
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe("fee_bump");
+  });
+
+  it("dispatches dex_offer and returns success", async () => {
+    const result = await agent.run({
+      type: "dex_offer",
+      payload: {
+        action: "create",
+        selling: { code: "XLM" },
+        buying: { code: "USDC", issuer: ISSUER },
+        amount: "100",
+        price: "0.25",
+      },
+    });
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe("dex_offer");
+  });
+
+  it("startContractListener starts the listener and stopContractListener stops it", () => {
+    const onEvent = vi.fn();
+    agent.startContractListener("CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH", [], onEvent);
+    agent.stopContractListener();
+    // No error thrown — listener lifecycle works
+  });
+
+  it("destroy() cleans up the contract listener", () => {
+    const onEvent = vi.fn();
+    agent.startContractListener("CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH", [], onEvent);
+    expect(() => agent.destroy()).not.toThrow();
   });
 });
 
