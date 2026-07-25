@@ -5,14 +5,14 @@
  */
 
 import { PayFiAgent } from "./agent";
-import { createHealthServer } from "./server";
+import { startHealthServer } from "./server";
 import { db } from "./db/client";
 import { createLogger } from "./utils/logger";
 
 const log = createLogger("process");
 
 const agent = new PayFiAgent();
-const healthServer = createHealthServer();
+const healthServer = startHealthServer();
 
 const HARD_KILL_MS = 10_000;
 let isShuttingDown = false;

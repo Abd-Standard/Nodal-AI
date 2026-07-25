@@ -25,6 +25,10 @@ target
 .DS_Store
 Thumbs.db
 
+# ─── Keys / certificates ──────────────────────────────────────────────────────
+*.key
+*.pem
+
 # ─── Test artefacts ───────────────────────────────────────────────────────────
 tests
 *.test.ts

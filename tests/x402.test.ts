@@ -8,16 +8,40 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { hash, Keypair } from "@stellar/stellar-sdk";
+import { createHash } from "crypto";
 import { X402PaymentTool } from "../backend/tools/X402PaymentTool";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
 import { config } from "../backend/config";
+import { horizonServer } from "../backend/rpc_client";
+
+// ─── Mock rpc_client so horizonServer.ledgers() is interceptable ──────────────
+
+vi.mock("../backend/rpc_client", () => ({
+  horizonServer: {
+    ledgers: vi.fn().mockReturnValue({
+      ledger: vi.fn().mockReturnValue({
+        call: vi.fn().mockResolvedValue({ closed_at: "2024-01-01T00:00:00Z" }),
+      }),
+    }),
+    transactions: vi.fn().mockReturnValue({
+      transaction: vi.fn().mockReturnValue({
+        call: vi.fn().mockResolvedValue({ memo: "" }),
+      }),
+    }),
+    operations: vi.fn().mockReturnValue({
+      forTransaction: vi.fn().mockReturnValue({
+        call: vi.fn().mockResolvedValue({ records: [] }),
+      }),
+    }),
+  },
+}));
 
 // ─── Mock StellarPaymentTool so x402 tests don't hit Horizon ─────────────────
 
 vi.mock("../backend/tools/StellarPaymentTool");
 
 vi.mock("../backend/config", () => {
-  const { Keypair } = require("@stellar/stellar-sdk");
+  const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
   const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
   return {
     config: {
@@ -161,20 +185,28 @@ describe("X402PaymentTool", () => {
     });
 
     it("accepts a challenge expiring 1 ms from now", async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
       const proof = await tool.respond({
         ...VALID_CHALLENGE,
-        expiresAt: futureIso(1),
+        nonce: "770e8400-e29b-41d4-a716-446655440099",
+        expiresAt: new Date(now + 1).toISOString(),
       });
       expect(proof.txHash).toBeTruthy();
+      vi.useRealTimers();
     });
   });
 
   // ── Rate limiting ────────────────────────────────────────────────────────────
 
   describe("Rate limiting", () => {
+    function uniqueNonce(i: number): string {
+      return `a0000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+    }
+
     it("allows up to MAX_X402_PAYMENTS_PER_MINUTE calls within the window", async () => {
       for (let i = 0; i < 10; i++) {
-        const proof = await tool.respond(VALID_CHALLENGE);
+        const proof = await tool.respond({ ...VALID_CHALLENGE, nonce: uniqueNonce(i) });
         expect(proof.txHash).toBe("x402_mock_tx_hash");
       }
       expect(mockPaymentTool.execute).toHaveBeenCalledTimes(10);
@@ -182,9 +214,11 @@ describe("X402PaymentTool", () => {
 
     it("throws on the 11th call within the same 60s window", async () => {
       for (let i = 0; i < 10; i++) {
-        await tool.respond(VALID_CHALLENGE);
+        await tool.respond({ ...VALID_CHALLENGE, nonce: uniqueNonce(i) });
       }
-      await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow("x402: rate limit exceeded");
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, nonce: uniqueNonce(10) })
+      ).rejects.toThrow("x402: rate limit exceeded");
     });
 
     it("resets the counter after 60s window elapses", async () => {
@@ -194,13 +228,15 @@ describe("X402PaymentTool", () => {
       const challenge = { ...VALID_CHALLENGE, expiresAt: farFutureExpiry };
 
       for (let i = 0; i < 10; i++) {
-        await tool.respond(challenge);
+        await tool.respond({ ...challenge, nonce: uniqueNonce(i) });
       }
-      await expect(tool.respond(challenge)).rejects.toThrow("rate limit exceeded");
+      await expect(
+        tool.respond({ ...challenge, nonce: uniqueNonce(10) })
+      ).rejects.toThrow("rate limit exceeded");
 
       vi.setSystemTime(startTime + 60_001);
 
-      const proof = await tool.respond(challenge);
+      const proof = await tool.respond({ ...challenge, nonce: uniqueNonce(11) });
       expect(proof.txHash).toBe("x402_mock_tx_hash");
       vi.useRealTimers();
     });
@@ -239,8 +275,10 @@ describe("X402PaymentTool", () => {
       expect(proof.txHash).toBe("x402_mock_tx_hash");
       expect(proof.nonce).toBe(VALID_CHALLENGE.nonce);
       expect(proof.payer).toMatch(/^G[A-Z2-7]{55}$/);
+      // signedAt is either ledger close time or wall-clock fallback — both are valid ISO strings
       expect(proof.signedAt).toBeTruthy();
-      expect(new Date(proof.signedAt).getTime()).toBeLessThanOrEqual(Date.now());
+      expect(() => new Date(proof.signedAt)).not.toThrow();
+      expect(new Date(proof.signedAt).toISOString()).toBe(proof.signedAt);
     });
 
     it("embeds nonce in memo as SHA-256 fingerprint (28 hex chars)", async () => {
@@ -312,19 +350,218 @@ describe("X402PaymentTool", () => {
     });
   });
 
-  // ── Snapshot tests for X402PaymentProof shape ──────────────────────────────
+  // ── Nonce replay protection ─────────────────────────────────────────────────
+
+  describe("Nonce replay protection", () => {
+    it("first use with a given nonce succeeds", async () => {
+      await expect(tool.respond(VALID_CHALLENGE)).resolves.toHaveProperty("nonce", VALID_CHALLENGE.nonce);
+    });
+
+    it("second use with the same nonce throws", async () => {
+      await tool.respond(VALID_CHALLENGE);
+      await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow("x402: nonce already used");
+    });
+
+    it("allows a different nonce after a previous one was consumed", async () => {
+      await tool.respond(VALID_CHALLENGE);
+      const second = { ...VALID_CHALLENGE, nonce: "660e8400-e29b-41d4-a716-446655440001" };
+      await expect(tool.respond(second)).resolves.toHaveProperty("nonce", second.nonce);
+    });
+  });
+
+  // ── X402PaymentProof snapshot ──────────────────────────────────────────────
 
   describe("X402PaymentProof snapshot", () => {
     it("X402PaymentProof has expected shape and fields", async () => {
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
       const proof = await tool.respond(VALID_CHALLENGE);
+      vi.useRealTimers();
 
-      expect(proof).toMatchSnapshot();
+      // signedAt changes every run so we verify structure rather than snapshot
+      expect(proof).toMatchObject({
+        protocol: "x402",
+        network: expect.any(String),
+        txHash: expect.any(String),
+        nonce: expect.any(String),
+        payer: expect.any(String),
+        signedAt: expect.any(String),
+      });
       expect(proof).toHaveProperty("protocol", "x402");
       expect(proof).toHaveProperty("network");
       expect(proof).toHaveProperty("txHash");
       expect(proof).toHaveProperty("nonce");
       expect(proof).toHaveProperty("payer");
       expect(proof).toHaveProperty("signedAt");
+    });
+  });
+
+  // ── verify() ──────────────────────────────────────────────────────────────
+
+  describe("verify()", () => {
+    const NONCE = "550e8400-e29b-41d4-a716-446655440000";
+    const EXPECTED_MEMO = createHash("sha256").update(NONCE).digest("hex").slice(0, 28);
+
+    function getHorizonMock() {
+      return vi.mocked(horizonServer);
+    }
+
+    function setupValidMocks() {
+      const horizon = getHorizonMock();
+      horizon.transactions.mockReturnValue({
+        transaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({ memo: EXPECTED_MEMO }),
+        }),
+      } as any);
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "1.5000000",
+                asset_code: "USDC",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+    }
+
+    const VALID_PROOF = {
+      protocol: "x402" as const,
+      network: "testnet",
+      txHash: "abc123",
+      nonce: NONCE,
+      payer: Keypair.fromSecret(TEST_SECRET).publicKey(),
+      signedAt: new Date().toISOString(),
+    };
+
+    it("passes for a valid proof and matching challenge", async () => {
+      setupValidMocks();
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).resolves.toBeUndefined();
+    });
+
+    it("throws when destination does not match originalChallenge.payTo", async () => {
+      setupValidMocks();
+      const badChallenge = { ...VALID_CHALLENGE, payTo: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" };
+      // Override mock to return a different destination
+      const horizon = getHorizonMock();
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                amount: "1.5000000",
+                asset_code: "USDC",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, badChallenge)).rejects.toThrow("destination mismatch");
+    });
+
+    it("throws when amount does not match", async () => {
+      setupValidMocks();
+      const horizon = getHorizonMock();
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "99.0000000",
+                asset_code: "USDC",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("amount mismatch");
+    });
+
+    it("throws when assetCode does not match", async () => {
+      setupValidMocks();
+      const horizon = getHorizonMock();
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "1.5000000",
+                asset_code: "XLM",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("asset mismatch");
+    });
+
+    it("throws when memo does not match SHA-256(nonce)[0:28]", async () => {
+      const horizon = getHorizonMock();
+      horizon.transactions.mockReturnValue({
+        transaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({ memo: "wrongmemovalue123456789012" }),
+        }),
+      } as any);
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "1.5000000",
+                asset_code: "USDC",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("nonce mismatch");
+    });
+
+    it("throws when payer does not match proof.payer", async () => {
+      setupValidMocks();
+      const horizon = getHorizonMock();
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "1.5000000",
+                asset_code: "USDC",
+                from: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("payer mismatch");
+    });
+
+    it("throws when the transaction has no operations", async () => {
+      const horizon = getHorizonMock();
+      horizon.transactions.mockReturnValue({
+        transaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({ memo: EXPECTED_MEMO }),
+        }),
+      } as any);
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({ records: [] }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("missing operation");
     });
   });
 });

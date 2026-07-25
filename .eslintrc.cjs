@@ -1,4 +1,3 @@
-
 module.exports = {
   parser: "@typescript-eslint/parser",
   plugins: ["@typescript-eslint"],
@@ -32,6 +31,14 @@ module.exports = {
               "Do not access process.env directly. Use backend/config.ts instead.",
           },
         ],
+      },
+    },
+    {
+      // Test files use require() inside vi.mock() factories which are hoisted
+      // by Vitest and cannot use ESM import syntax. Disable the rule for tests.
+      files: ["tests/**/*.ts"],
+      rules: {
+        "@typescript-eslint/no-var-requires": "off",
       },
     },
   ],

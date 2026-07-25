@@ -28,35 +28,35 @@ describe("handleError", () => {
     it("maps the field path correctly for a top-level field", () => {
       const schema = z.object({ name: z.string() });
       const err = parseWithSchema(schema, { name: 123 });
-      const detail = handleError(err).details[0];
+      const detail = handleError(err).details[0]!;
       expect(detail.field).toBe("name");
     });
 
     it("maps a nested field path using dot notation", () => {
       const schema = z.object({ user: z.object({ email: z.string().email() }) });
       const err = parseWithSchema(schema, { user: { email: "not-an-email" } });
-      const detail = handleError(err).details[0];
+      const detail = handleError(err).details[0]!;
       expect(detail.field).toBe("user.email");
     });
 
     it("includes the message from the ZodIssue", () => {
       const schema = z.string().min(5, "Too short");
       const err = parseWithSchema(schema, "ab");
-      const detail = handleError(err).details[0];
+      const detail = handleError(err).details[0]!;
       expect(detail.message).toBe("Too short");
     });
 
     it("includes the code from the ZodIssue", () => {
       const schema = z.string();
       const err = parseWithSchema(schema, 99);
-      const detail = handleError(err).details[0];
+      const detail = handleError(err).details[0]!;
       expect(detail.code).toBeDefined();
     });
 
     it("returns 'root' as field when path is empty", () => {
       const schema = z.string();
       const err = parseWithSchema(schema, null);
-      const detail = handleError(err).details[0];
+      const detail = handleError(err).details[0]!;
       expect(detail.field).toBe("root");
     });
 

@@ -1,9 +1,4 @@
 #!/usr/bin/env sh
-
-if git diff --cached --name-only | grep -qE "^.env$"; then
-  echo "ERROR: .env is staged! Unstage it with: git reset -- .env"
-  exit 1
-fi
-
+. "$(dirname "$0")/scan-secrets.sh"
 npx tsc --noEmit
 npx lint-staged --config .lintstagedrc.json

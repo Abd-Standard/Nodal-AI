@@ -10,23 +10,94 @@
  *   - The spending limit is enforced here before delegating to tools.
  */
 
+// Updated imports
 import { EventEmitter } from "events";
+import { rpc } from "@stellar/stellar-sdk";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
+import { saveResult } from "./persistence";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
-import { X402PaymentTool } from "./tools/X402PaymentTool";
+import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
+import { AccountInfoTool } from "./tools/AccountInfoTool";
+import { TrustlineTool } from "./tools/TrustlineTool";
+import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
+import { BatchPaymentTool } from "./tools/BatchPaymentTool";
+import { SorobanQueryTool } from "./tools/SorobanQueryTool";
+import { BalanceCheckTool } from "./tools/BalanceCheckTool";
+import { PathPaymentTool } from "./tools/PathPaymentTool";
+import { FeeBumpTool } from "./tools/FeeBumpTool";
+import { DexOfferTool } from "./tools/DexOfferTool";
+import { listen as listenContractEvents } from "./tools/ContractEventListener";
+
+import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
+import { SpendingTracker } from "./spending_tracker";
+import { dispatchWebhook } from "./webhook";
+
+// Instantiate a singleton tracker
+const spendingTracker = new SpendingTracker();
+
+// ─── Spending limit guard ─────────────────────────────────────────────────────
+
+/**
+ * Check that a payment amount does not exceed the configured spending limit.
+ * Also enforces cumulative spending within the sliding window.
+ */
+function assertWithinSpendingLimit(amount: unknown): void {
+  if (typeof amount !== "string") return; // let the tool's own schema catch this
+  // Record cumulative spending
+  spendingTracker.record(amount);
+
+  const parsed = parseFloat(amount);
+  const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
+  if (!isNaN(parsed) && parsed > limit) {
+    throw new Error(
+      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
+        `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
+    );
+  }
+  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
+    throw new Error(
+      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
+        `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
+    );
+  }
+}
 
 const log = createLogger("orchestrator");
 
 // ─── Task types ───────────────────────────────────────────────────────────────
 
-export type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond";
+export type TaskType =
+  | "stellar_payment"
+  | "soroban_invoke"
+  | "soroban_query"
+  | "x402_respond"
+  | "account_info"
+  | "change_trust"
+  | "multisig_payment"
+  | "batch_payment"
+  | "balance_check"
+  | "path_payment"
+  | "fee_bump"
+  | "dex_offer";
+
 
 export interface AgentTask {
   type: TaskType;
   payload: unknown;
+}
+
+export interface AgentResultData {
+  txHash?: string;
+  ledger?: number;
+  simulationResult?: unknown;
+  protocol?: string;
+  network?: string;
+  nonce?: string;
+  payer?: string;
+  signedAt?: string;
 }
 
 export interface AgentResult {
@@ -36,28 +107,25 @@ export interface AgentResult {
   error?: string;
 }
 
-// ─── Spending limit guard ─────────────────────────────────────────────────────
+// ─── Payload sanitisation ─────────────────────────────────────────────────────
 
-/**
- * Check that a payment amount does not exceed the configured spending limit.
- * Called before delegating to StellarPaymentTool or X402PaymentTool.
- */
-function assertWithinSpendingLimit(amount: unknown): void {
-  if (typeof amount !== "string") return; // let the tool's own schema catch this
-  const parsed = parseFloat(amount);
-  const limit  = parseFloat(config.AGENT_SPENDING_LIMIT);
-  if (!isNaN(parsed) && parsed > limit) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-      `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
-    );
+const SECRET_KEY_RE = /^(?<prefix>.*?["':\s]?)(?<secret>S[ A-Z2-7]{55})(?<suffix>["'\s]?.*)$/i;
+
+function redactSecretString(value: string): string {
+  return value.replace(SECRET_KEY_RE, "$<prefix>[REDACTED]$<suffix>");
+}
+
+function sanitizePayload(payload: unknown): unknown {
+  if (payload === null || typeof payload !== "object") return payload;
+  if (Array.isArray(payload)) return payload.map(sanitizePayload);
+
+  const sanitized: Record<string, unknown> = {};
+  for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (/secret|key|seed|mnemonic|private/i.test(key)) continue;
+    sanitized[key] = rawValue;
   }
-  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-      `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
-    );
-  }
+  return sanitized;
 }
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
@@ -65,10 +133,21 @@ function assertWithinSpendingLimit(amount: unknown): void {
 export class PayFiAgent extends EventEmitter {
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
+  private sorobanQueryTool: SorobanQueryTool;
   private x402Tool: X402PaymentTool;
+  private accountInfoTool: AccountInfoTool;
+  private trustlineTool: TrustlineTool;
+  private multiSigTool: MultiSigPaymentTool;
+  private batchPaymentTool: BatchPaymentTool;
+  private balanceCheckTool: BalanceCheckTool;
+  private pathPaymentTool: PathPaymentTool;
+  private feeBumpTool: FeeBumpTool;
+  private dexOfferTool: DexOfferTool;
 
   private activeTasks = 0;
   private isDraining = false;
+  private _streamStop: (() => void) | null = null;
+  private _contractListenerStop: (() => void) | null = null;
 
   // Bound handler references kept so destroy() can call .off() with the exact same function
   // reference — EventEmitter requires identity equality for removal.
@@ -82,7 +161,17 @@ export class PayFiAgent extends EventEmitter {
     // type (Omit<RawEnv, "AGENT_SECRET_KEY">); using agentKeypair() makes the access explicit.
     this.paymentTool = new StellarPaymentTool(config.agentKeypair().secret());
     this.sorobanTool = new SorobanInvokeTool(config.agentKeypair().secret());
+    this.sorobanQueryTool = new SorobanQueryTool(config.agentKeypair().secret());
     this.x402Tool    = new X402PaymentTool(config.agentKeypair().secret());
+    this.accountInfoTool = new AccountInfoTool();
+    this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
+    this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
+    this.batchPaymentTool = new BatchPaymentTool(config.agentKeypair().secret());
+    this.balanceCheckTool = new BalanceCheckTool();
+    this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
+    this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
+    this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
+
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -116,6 +205,77 @@ export class PayFiAgent extends EventEmitter {
   }
 
   /**
+   * Start polling the Horizon payment stream for incoming x402 challenges.
+   * Calls onChallenge for each payment whose memo starts with "x402:".
+   */
+  startListening(resourceUrl: string, onChallenge: (challenge: X402Challenge) => void): void {
+    if (this._streamStop) return; // already listening
+
+    const closeStream = horizonServer
+      .payments()
+      .forAccount(config.AGENT_PUBLIC_KEY)
+      .stream({
+        onmessage: (payment: any) => {
+          const memo: string = payment.memo ?? "";
+          if (!memo.startsWith("x402:")) return;
+          try {
+            const challenge: X402Challenge = JSON.parse(
+              Buffer.from(memo.slice(5), "base64").toString("utf8")
+            );
+            onChallenge(challenge);
+          } catch {
+            // Malformed memo — ignore
+          }
+        },
+        onerror: (event: MessageEvent) => {
+          logger.warn("Payment stream error", { error: String(event) });
+        },
+      });
+
+    this._streamStop = closeStream as unknown as () => void;
+    logger.info("Payment stream started", { resourceUrl });
+  }
+
+  /** Stop the active Horizon payment stream subscription. */
+  stopListening(): void {
+    if (this._streamStop) {
+      this._streamStop();
+      this._streamStop = null;
+      logger.info("Payment stream stopped");
+    }
+  }
+
+  /**
+   * Start polling a Soroban contract for events.
+   * Calls onEvent for each new event matching the provided eventTypes filter.
+   * Pass an empty array for eventTypes to receive all contract events.
+   *
+   * @param contractId - The Stellar contract ID to monitor.
+   * @param eventTypes - Topic strings to filter by (empty array = all events).
+   * @param onEvent    - Callback invoked for each matching event.
+   */
+  startContractListener(
+    contractId: string,
+    eventTypes: string[],
+    onEvent: (event: rpc.Api.EventResponse) => void
+  ): void {
+    if (this._contractListenerStop) {
+      this._contractListenerStop();
+    }
+    this._contractListenerStop = listenContractEvents(contractId, eventTypes, onEvent);
+    logger.info("Contract event listener started", { contractId });
+  }
+
+  /** Stop the active contract event listener. */
+  stopContractListener(): void {
+    if (this._contractListenerStop) {
+      this._contractListenerStop();
+      this._contractListenerStop = null;
+      logger.info("Contract event listener stopped");
+    }
+  }
+
+  /**
    * Detach all registered event listeners and release internal resources.
    *
    * Must be called by the lifecycle manager when an agent instance is
@@ -129,6 +289,8 @@ export class PayFiAgent extends EventEmitter {
    *   agent.destroy(); // call when decommissioning
    */
   destroy(): void {
+    this.stopListening();
+    this.stopContractListener();
     for (const [event, handler] of this._boundHandlers) {
       this.off(event, handler);
     }
@@ -200,8 +362,13 @@ export class PayFiAgent extends EventEmitter {
           break;
         }
 
-        case "soroban_invoke":
+        case "soroban_invoke": {
           data = await this.sorobanTool.execute(task.payload);
+          break;
+        }
+
+        case "soroban_query":
+          data = await this.sorobanQueryTool.query(task.payload);
           break;
 
         case "x402_respond": {
@@ -211,6 +378,39 @@ export class PayFiAgent extends EventEmitter {
           break;
         }
 
+        case "account_info":
+          data = await this.accountInfoTool.fetch();
+          break;
+
+        case "change_trust":
+          data = await this.trustlineTool.execute(task.payload);
+          break;
+
+        case "multisig_payment":
+          data = await this.multiSigTool.execute(task.payload);
+          break;
+
+
+        case "batch_payment":
+          data = await this.batchPaymentTool.execute(task.payload);
+          break;
+
+        case "balance_check":
+          data = await this.balanceCheckTool.getBalance(task.payload);
+          break;
+
+        case "path_payment":
+          data = await this.pathPaymentTool.execute(task.payload);
+          break;
+
+        case "fee_bump":
+          data = await this.feeBumpTool.execute(task.payload);
+          break;
+
+        case "dex_offer":
+          data = await this.dexOfferTool.execute(task.payload);
+          break;
+
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
       }
@@ -218,14 +418,19 @@ export class PayFiAgent extends EventEmitter {
       logger.info("Task completed", { taskType: task.type });
       const result: AgentResult = { success: true, taskType: task.type, data };
       this.emit("task:complete", result);
+      
+      saveResult({ ...result, timestamp: new Date().toISOString() });
+      void dispatchWebhook(result);
+
       return result;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      // Redact anything that looks like a secret key before logging
-      const safe = message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
-      logger.error("Task failed", { taskType: task.type, error: safe });
+      const safe = redactSecretString(message);
+      const sanitized = sanitizePayload(task.payload);
+      logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
       const result: AgentResult = { success: false, taskType: task.type, error: safe };
       this.emit("task:failed", result);
+      void dispatchWebhook(result);
       return result;
     } finally {
       this.activeTasks--;
