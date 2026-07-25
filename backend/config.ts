@@ -166,6 +166,9 @@ const EnvSchema = z.object({
     .min(100)
     .default(1_000_000),
 
+  // Health check HTTP server
+  HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
@@ -291,6 +294,12 @@ export interface AgentConfig {
    * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
    */
   readonly MAX_SOROBAN_FEE_STROOPS: number;
+  /**
+   * Port for the health-check HTTP server.
+   * Validated by EnvSchema to be an integer between 1 and 65535.
+   * Defaults to 3000.
+   */
+  readonly HEALTH_PORT: number;
   readonly WEBHOOK_URL?: string;
   readonly WEBHOOK_SECRET?: string;
 }
