@@ -16,6 +16,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
 import { saveResult } from "./persistence";
+import { StructuredError, ErrorType, getErrorType } from "./errors";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
 import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from "./tools/X402PaymentTool";
@@ -110,6 +111,12 @@ export interface AgentResult {
   taskType: TaskType;
   data?: unknown;
   error?: string;
+  /**
+   * Structured error type for programmatic error handling.
+   * Allows callers to distinguish between different error categories
+   * (e.g., InsufficientFunds, NetworkTimeout) without string matching.
+   */
+  errorType?: string;
   /**
    * Correlation ID that ties every log line, persisted result, and webhook
    * dispatch for a single task execution together. Generated at dispatch time
@@ -468,8 +475,9 @@ export class PayFiAgent extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       const safe = redactSecretString(message);
       const sanitized = sanitizePayload(task.payload);
-      taskLog.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
-      const result: AgentResult = { success: false, taskType: task.type, error: safe, correlationId };
+      const errorType = err instanceof StructuredError ? err.errorType : ErrorType.UnknownError;
+      taskLog.error("Task failed", { taskType: task.type, error: safe, errorType, sanitizedPayload: sanitized });
+      const result: AgentResult = { success: false, taskType: task.type, error: safe, errorType, correlationId };
       this.emit("task:failed", result);
       void dispatchWebhook(result);
       return result;

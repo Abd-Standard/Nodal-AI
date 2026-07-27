@@ -8,6 +8,7 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PayFiAgent } from "../backend/agent";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
+import { ValidationError } from "../backend/errors";
 
 vi.mock("../backend/tools/StellarPaymentTool", () => ({
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
@@ -456,5 +457,26 @@ describe("PayFiAgent — payload sanitisation", () => {
 
     expect(result.success).toBe(false);
     expect(result.error).toBe("simulated nested payload failure");
+  });
+
+  it("includes errorType in AgentResult for structured errors", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    mockInstance.execute.mockRejectedValueOnce(
+      new ValidationError("Invalid payment parameters")
+    );
+
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: {
+        destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        amount: "100",
+        assetCode: "USDC",
+        assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe("VALIDATION_ERROR");
+    expect(result.error).toBe("Invalid payment parameters");
   });
 });
