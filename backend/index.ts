@@ -8,8 +8,12 @@ import { PayFiAgent } from "./agent";
 import { startHealthServer } from "./server";
 import { db } from "./db/client";
 import { createLogger } from "./utils/logger";
+import { initTelemetry, shutdownTelemetry } from "./telemetry";
 
 const log = createLogger("process");
+
+// Initialise OpenTelemetry export (no-op when OTLP_ENDPOINT is unset)
+initTelemetry();
 
 const agent = new PayFiAgent();
 const healthServer = startHealthServer();
@@ -43,6 +47,9 @@ async function shutdown(signal: string): Promise<void> {
 
     // 4. Close database connection
     await db.close();
+
+    // 5. Shut down telemetry (flushes pending spans)
+    await shutdownTelemetry();
 
     clearTimeout(hardKill);
     log.info({ msg: "All resources released, exiting cleanly" });
