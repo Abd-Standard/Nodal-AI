@@ -183,6 +183,14 @@ Responds to a sample x402 payment challenge and prints the resulting `X402Paymen
 npx ts-node scripts/examples/respond_x402.ts
 ```
 
+### `multisig_payment.ts` — multisig_payment
+
+Demonstrates the two-phase multisig workflow: first dispatch returns an unsigned XDR for external signature collection, then re-dispatch with collected signatures to submit (simulate-only in this example).
+
+```bash
+npx ts-node scripts/examples/multisig_payment.ts
+```
+
 ---
 
 ## E2E Tests
