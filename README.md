@@ -183,6 +183,22 @@ Responds to a sample x402 payment challenge and prints the resulting `X402Paymen
 npx ts-node scripts/examples/respond_x402.ts
 ```
 
+### `check_balance.ts` — balance_check
+
+Queries asset balances for a Stellar account and pretty-prints the results. Great entry point for learning the agent API.
+
+```bash
+npx ts-node scripts/examples/check_balance.ts
+```
+
+### `path_payment.ts` — path_payment
+
+Demonstrates a cross-asset swap: sends XLM while the recipient receives USDC via Stellar's DEX. Showcases one of the most powerful PayFi primitives.
+
+```bash
+npx ts-node scripts/examples/path_payment.ts
+```
+
 ---
 
 ## E2E Tests
