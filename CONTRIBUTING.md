@@ -87,6 +87,21 @@ Before submitting your PR, make sure:
 
 ---
 
+## Adding a New Tool
+
+The most common contribution to this repo is adding a new tool to the agent (e.g. a new Stellar operation). Follow this checklist rather than reverse-engineering the pattern from existing tools:
+
+1. **Create `backend/tools/YourTool.ts`** with a Zod input schema, a class with an `execute()` (or similarly-named) method, and JSDoc on the exported schema/class. Look at `backend/tools/StellarPaymentTool.ts` for the shape: exported `YourToolInputSchema`, an inferred `YourToolInput` type, and a class that validates its input with `YourToolInputSchema.parse(rawInput)` before doing anything else.
+2. **Add a new task type** to the `TaskType` union in `backend/agent.ts` (e.g. `"your_task"`).
+3. **Import and instantiate your tool** in the `PayFiAgent` constructor in `backend/agent.ts`, alongside the existing tool instances (`paymentTool`, `sorobanTool`, `x402Tool`, etc.).
+4. **Add a `case "your_task":`** to the `switch` in `PayFiAgent.run()` (`backend/agent.ts`) that delegates to your tool's execute method, matching the existing cases (`"stellar_payment"`, `"soroban_invoke"`, `"x402_respond"`, ...).
+5. **Add a mock for your tool** in every test file's `vi.mock("../backend/tools/YourTool")` block that exercises `agent.ts` (e.g. wherever `PayFiAgent`/`run()` is tested), so agent-level tests don't hit the real network.
+6. **Create `tests/your_tool.test.ts`** covering input validation (schema edge cases), the happy path, and network/error handling — see `tests/payment.test.ts` for the expected level of coverage (validation, happy path, network errors, retry exhaustion, state verification).
+7. **Add an entry to the README's [API Reference](./README.md#api-reference) table** (`TaskType` union and the `PayFiAgent` method table) describing the new task type.
+8. **Update [ARCHITECTURE.md](./ARCHITECTURE.md)'s** tool list and task-routing diagram/description so the new tool shows up alongside the others.
+
+---
+
 ## Automated Checks
 
 All pull requests are automatically validated by GitHub Actions. The CI workflow (`.github/workflows/ci.yml`) runs:

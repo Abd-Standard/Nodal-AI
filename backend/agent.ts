@@ -18,7 +18,7 @@ import { logger } from "./logger";
 import { saveResult } from "./persistence";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
-import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
+import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from "./tools/X402PaymentTool";
 import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
@@ -219,12 +219,19 @@ export class PayFiAgent extends EventEmitter {
           const memo: string = payment.memo ?? "";
           if (!memo.startsWith("x402:")) return;
           try {
-            const challenge: X402Challenge = JSON.parse(
+            const raw: unknown = JSON.parse(
               Buffer.from(memo.slice(5), "base64").toString("utf8")
             );
+            const challenge: X402Challenge = X402ChallengeSchema.parse(raw);
             onChallenge(challenge);
-          } catch {
-            // Malformed memo — ignore
+          } catch (err) {
+            // Malformed or schema-invalid memo — log and drop rather than
+            // forwarding to onChallenge (or letting Zod's error surface
+            // deep inside respond(), where it can't be attributed to the
+            // stream that produced it).
+            logger.warn("Dropped invalid x402 challenge memo", {
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
         },
         onerror: (event: MessageEvent) => {
