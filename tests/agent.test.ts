@@ -427,4 +427,34 @@ describe("PayFiAgent — payload sanitisation", () => {
     expect(result.error).toBe("simulated payment failure");
     expect(result.error).not.toContain("SABCDEFGHIJKLMNOPQRSTUVWXYZ234567");
   });
+
+  it("recursively redacts nested sensitive keys in deeply nested objects", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    mockInstance.execute.mockRejectedValueOnce(
+      new Error("simulated nested payload failure")
+    );
+
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: {
+        destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        amount: "100",
+        assetCode: "USDC",
+        assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+        signer: {
+          secretKey: "SABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+          address: "GXYZ",
+        },
+        nested: {
+          level2: {
+            privateKey: "SABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+            mnemonic: "word1 word2 word3",
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("simulated nested payload failure");
+  });
 });

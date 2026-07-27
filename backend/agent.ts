@@ -134,7 +134,7 @@ function sanitizePayload(payload: unknown): unknown {
   for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
     const key = rawKey.trim();
     if (/secret|key|seed|mnemonic|private/i.test(key)) continue;
-    sanitized[key] = rawValue;
+    sanitized[key] = sanitizePayload(rawValue);
   }
   return sanitized;
 }
