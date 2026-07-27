@@ -10,6 +10,7 @@ import {
   Asset,
   BASE_FEE,
   Memo,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { config } from "../config";
@@ -92,11 +93,10 @@ export class MultiSigPaymentTool {
       // Apply additional signatures from provided decorated signatures (XDR-encoded)
       for (const sigXdr of input.signatures) {
         try {
-          const decorated = Keypair.fromPublicKey(sigXdr);
-          // sigXdr is treated as a public key here only for type checking;
-          // external signers attach their signature to the XDR directly.
-        } catch {
-          // Not a public key — skip (external signer format)
+          const decoratedSig = xdr.DecoratedSignature.fromXDR(sigXdr, "base64");
+          tx.addDecoratedSignature(decoratedSig);
+        } catch (err) {
+          throw new Error(`Invalid signature XDR: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
       const result = SubmitResultSchema.parse(await submitTransaction(tx));

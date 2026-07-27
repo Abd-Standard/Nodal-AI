@@ -190,8 +190,6 @@ const EnvSchema = z.object({
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
-  SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
-  OTLP_ENDPOINT: z.string().url().optional(),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -298,7 +296,7 @@ export interface AgentConfig {
    * Optional — when set, the agent exports traces/spans to this OTLP-compatible endpoint.
    * Validated by EnvSchema to be a valid URL string.
    */
-  readonly OTLP_ENDPOINT?: string;
+  readonly OTLP_ENDPOINT?: string | undefined;
 
   /**
    * Spending window in milliseconds for rate/cap computation.
@@ -337,8 +335,8 @@ export interface AgentConfig {
    * Defaults to 3000.
    */
   readonly HEALTH_PORT: number;
-  readonly WEBHOOK_URL?: string;
-  readonly WEBHOOK_SECRET?: string;
+  readonly WEBHOOK_URL?: string | undefined;
+  readonly WEBHOOK_SECRET?: string | undefined;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
