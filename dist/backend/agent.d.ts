@@ -10,10 +10,17 @@
  *   - The spending limit is enforced here before delegating to tools.
  */
 import { EventEmitter } from "events";
-export type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond";
+import { rpc } from "@stellar/stellar-sdk";
+import { X402Challenge } from "./tools/X402PaymentTool";
+export type TaskType = "stellar_payment" | "soroban_invoke" | "soroban_query" | "x402_respond" | "account_info" | "change_trust" | "multisig_payment" | "batch_payment" | "balance_check" | "path_payment" | "fee_bump" | "dex_offer";
 export interface AgentTask {
     type: TaskType;
     payload: unknown;
+    /**
+     * Optional caller-supplied correlation ID. When omitted, `run()` generates
+     * one so every task execution is traceable end-to-end.
+     */
+    correlationId?: string;
 }
 export interface AgentResultData {
     txHash?: string;
@@ -28,17 +35,53 @@ export interface AgentResultData {
 export interface AgentResult {
     success: boolean;
     taskType: TaskType;
-    data?: AgentResultData;
+    data?: unknown;
     error?: string;
+    /**
+     * Correlation ID that ties every log line, persisted result, and webhook
+     * dispatch for a single task execution together. Generated at dispatch time
+     * unless the caller supplies one on the task.
+     */
+    correlationId?: string;
 }
 export declare class PayFiAgent extends EventEmitter {
     private paymentTool;
     private sorobanTool;
+    private sorobanQueryTool;
     private x402Tool;
+    private accountInfoTool;
+    private trustlineTool;
+    private multiSigTool;
+    private batchPaymentTool;
+    private balanceCheckTool;
+    private pathPaymentTool;
+    private feeBumpTool;
+    private dexOfferTool;
     private activeTasks;
     private isDraining;
+    private _streamStop;
+    private _contractListenerStop;
     private readonly _boundHandlers;
     constructor();
+    /**
+     * Start polling the Horizon payment stream for incoming x402 challenges.
+     * Calls onChallenge for each payment whose memo starts with "x402:".
+     */
+    startListening(resourceUrl: string, onChallenge: (challenge: X402Challenge) => void): void;
+    /** Stop the active Horizon payment stream subscription. */
+    stopListening(): void;
+    /**
+     * Start polling a Soroban contract for events.
+     * Calls onEvent for each new event matching the provided eventTypes filter.
+     * Pass an empty array for eventTypes to receive all contract events.
+     *
+     * @param contractId - The Stellar contract ID to monitor.
+     * @param eventTypes - Topic strings to filter by (empty array = all events).
+     * @param onEvent    - Callback invoked for each matching event.
+     */
+    startContractListener(contractId: string, eventTypes: string[], onEvent: (event: rpc.Api.EventResponse) => void): void;
+    /** Stop the active contract event listener. */
+    stopContractListener(): void;
     /**
      * Detach all registered event listeners and release internal resources.
      *

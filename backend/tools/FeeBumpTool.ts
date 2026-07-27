@@ -71,7 +71,7 @@ export class FeeBumpTool {
     const feePerOp = Math.ceil(baseFee / operationCount);
     // baseFeeMultiplier must be >= 2 to ensure the fee-bump fee is strictly greater than
     // the inner transaction's fee, preventing fee_insufficient network rejections.
-    const newFeePerOp = Math.max(feePerOp * input.baseFeeMultiplier, BASE_FEE);
+    const newFeePerOp = Math.max(feePerOp * input.baseFeeMultiplier, parseInt(BASE_FEE, 10));
     // Fee-bump fee must be at least (inner ops + 1) * newFeePerOp per Stellar protocol
     const feeBumpFee = String((operationCount + 1) * newFeePerOp);
 

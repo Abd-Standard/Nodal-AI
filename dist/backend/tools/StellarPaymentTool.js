@@ -7,15 +7,21 @@
  * Never broadcasts without a prior simulation pass.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.StellarPaymentTool = exports.PaymentInputSchema = void 0;
+exports.StellarPaymentTool = exports.PaymentInputSchema = exports.SubmitResultSchema = void 0;
 const stellar_sdk_1 = require("@stellar/stellar-sdk");
 const zod_1 = require("zod");
 const config_1 = require("../config");
 const logger_1 = require("../logger");
 const rpc_client_1 = require("../rpc_client");
+const SorobanInvokeTool_1 = require("./SorobanInvokeTool");
 const logger_2 = require("../utils/logger");
 const log = (0, logger_2.createLogger)("stellar-payment");
 // ─── Input schema ─────────────────────────────────────────────────────────────
+const SubmitResultSchema = zod_1.z.object({
+    hash: zod_1.z.string(),
+    ledger: zod_1.z.number(),
+});
+exports.SubmitResultSchema = SubmitResultSchema;
 /**
  * Zod schema for payment input validation.
  *
@@ -92,7 +98,7 @@ class StellarPaymentTool {
         // 4. Build transaction
         const buildTx = () => {
             const builder = new stellar_sdk_1.TransactionBuilder(sourceAccount, {
-                fee: stellar_sdk_1.BASE_FEE,
+                fee: stellar_sdk_1.BASE_FEE, // BASE_FEE (100 stroops) is the actual fee for classic Stellar payments — not overwritten
                 networkPassphrase: this.networkPassphrase,
             })
                 .addOperation(stellar_sdk_1.Operation.payment({
@@ -103,7 +109,7 @@ class StellarPaymentTool {
             if (input.memo) {
                 builder.addMemo(stellar_sdk_1.Memo.text(input.memo));
             }
-            return builder.setTimeout(30).build();
+            return builder.setTimeout(SorobanInvokeTool_1.SOROBAN_TX_TIMEOUT).build();
         };
         let tx = buildTx();
         // 5. Fee estimation / simulation via Horizon dry-run
@@ -119,7 +125,7 @@ class StellarPaymentTool {
         tx.sign(this.keypair);
         // 7. Submit (with auto-retry on tx_bad_seq)
         try {
-            const result = (await (0, rpc_client_1.submitTransaction)(tx));
+            const result = SubmitResultSchema.parse(await (0, rpc_client_1.submitTransaction)(tx));
             return { txHash: result.hash, ledger: result.ledger };
         }
         catch (err) {
@@ -130,7 +136,7 @@ class StellarPaymentTool {
                 sourceAccount = await (0, rpc_client_1.loadAccount)(this.keypair.publicKey());
                 tx = buildTx();
                 tx.sign(this.keypair);
-                const result = (await (0, rpc_client_1.submitTransaction)(tx));
+                const result = SubmitResultSchema.parse(await (0, rpc_client_1.submitTransaction)(tx));
                 return { txHash: result.hash, ledger: result.ledger };
             }
             throw err;
