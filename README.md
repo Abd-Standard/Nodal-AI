@@ -191,6 +191,14 @@ Demonstrates the two-phase multisig workflow: first dispatch returns an unsigned
 npx ts-node scripts/examples/multisig_payment.ts
 ```
 
+### `place_dex_offer.ts` — dex_offer
+
+Places a manage-sell offer on the Stellar DEX. This example creates an offer to sell XLM for USDC at a specified price. Use `action: "create"` to place, `"update"` to modify, or `"delete"` to cancel.
+
+```bash
+npx ts-node scripts/examples/place_dex_offer.ts
+```
+
 ---
 
 ## E2E Tests
