@@ -22,7 +22,9 @@ import { isThrottled, handleRateLimitResponse, withBackoffGuard } from "./networ
 import { withSpan } from "./telemetry";
 
 const log = createLogger("rpc-client");
-const RPC_BREAKER_OPTIONS = {
+// Exported so the breaker's behaviour can be asserted against the real
+// thresholds rather than a copy that silently drifts from them (#244).
+export const RPC_BREAKER_OPTIONS = {
   errorThresholdPercentage: 50,
   resetTimeout: 30_000,
   timeout: 10_000,
@@ -44,7 +46,7 @@ type SorobanSimulationResult = Awaited<ReturnType<rpc.Server["simulateTransactio
 
 const accountCache = new Map<string, HorizonAccount>();
 
-function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
+export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   breaker: CircuitBreaker<TArgs, TResult>,
   name: string
 ): CircuitBreaker<TArgs, TResult> {
@@ -75,7 +77,7 @@ function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   return breaker;
 }
 
-function createRpcBreaker<TArgs extends unknown[], TResult>(
+export function createRpcBreaker<TArgs extends unknown[], TResult>(
   name: string,
   action: (...args: TArgs) => Promise<TResult>
 ): CircuitBreaker<TArgs, TResult> {

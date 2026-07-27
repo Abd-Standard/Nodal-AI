@@ -14,6 +14,86 @@
 import * as http from "http";
 import { config } from "./config";
 import { getResults } from "./persistence";
+import { horizonServer, sorobanServer } from "./rpc_client";
+import { db } from "./db/client";
+import { handleError } from "./middleware/error_handler";
+import { createLogger } from "./utils/logger";
+
+const log = createLogger("health-server");
+
+// ─── Health types & component probes ─────────────────────────────────────────
+
+/** Reachability of a single dependency. */
+export type ComponentStatus = "up" | "down";
+
+export interface HealthResponse {
+  status: "ok" | "degraded";
+  components: {
+    horizon: ComponentStatus;
+    soroban: ComponentStatus;
+    database: ComponentStatus;
+  };
+}
+
+/**
+ * Bound on a single probe.
+ *
+ * Without it an unreachable endpoint hangs until the socket's own timeout,
+ * and an orchestrator's liveness probe times out first — reporting the agent
+ * as dead rather than degraded, which triggers a restart instead of a
+ * failover.
+ */
+const PROBE_TIMEOUT_MS = 3_000;
+
+async function withTimeout<T>(work: Promise<T>): Promise<T> {
+  let timer: NodeJS.Timeout;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("probe timed out")), PROBE_TIMEOUT_MS);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    clearTimeout(timer!);
+  }
+}
+
+/** Probe Horizon. */
+export async function checkHorizon(): Promise<ComponentStatus> {
+  try {
+    await withTimeout(horizonServer.fetchBaseFee());
+    return "up";
+  } catch (err) {
+    log.warn({ msg: "Horizon health probe failed", err: String(err) });
+    return "down";
+  }
+}
+
+/**
+ * Probe Soroban RPC (#233).
+ *
+ * Previously unchecked, so an agent whose Soroban RPC was down still reported
+ * `status: "ok"` — while every `soroban_invoke` and `soroban_query` task
+ * failed. Horizon being reachable says nothing about Soroban; they are
+ * separate services on separate hosts.
+ */
+export async function checkSoroban(): Promise<ComponentStatus> {
+  try {
+    await withTimeout(sorobanServer.getNetwork());
+    return "up";
+  } catch (err) {
+    log.warn({ msg: "Soroban RPC health probe failed", err: String(err) });
+    return "down";
+  }
+}
+
+export async function checkDatabase(): Promise<ComponentStatus> {
+  try {
+    return (await withTimeout(db.healthCheck())) ? "up" : "down";
+  } catch (err) {
+    log.warn({ msg: "Database health probe failed", err: String(err) });
+    return "down";
+  }
+}
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
@@ -115,13 +195,19 @@ async function handleHealth(
   res: http.ServerResponse
 ): Promise<void> {
   try {
-    const [rpc, database] = await Promise.all([checkRpc(), checkDatabase()]);
+    // Probed concurrently: run serially and a slow Horizon delays the Soroban
+    // answer, so the endpoint's latency becomes the sum of every dependency.
+    const [horizon, soroban, database] = await Promise.all([
+      checkHorizon(),
+      checkSoroban(),
+      checkDatabase(),
+    ]);
 
-    const allUp = rpc === "up" && database === "up";
+    const allUp = horizon === "up" && soroban === "up" && database === "up";
     const statusCode = allUp ? 200 : 503;
     const body: HealthResponse = {
       status: allUp ? "ok" : "degraded",
-      components: { rpc, database },
+      components: { horizon, soroban, database },
     };
 
     const payload = JSON.stringify(body);
