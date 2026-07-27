@@ -87,6 +87,11 @@ export type TaskType =
 export interface AgentTask {
   type: TaskType;
   payload: unknown;
+  /**
+   * Optional caller-supplied correlation ID. When omitted, `run()` generates
+   * one so every task execution is traceable end-to-end.
+   */
+  correlationId?: string;
 }
 
 export interface AgentResultData {
@@ -105,6 +110,12 @@ export interface AgentResult {
   taskType: TaskType;
   data?: unknown;
   error?: string;
+  /**
+   * Correlation ID that ties every log line, persisted result, and webhook
+   * dispatch for a single task execution together. Generated at dispatch time
+   * unless the caller supplies one on the task.
+   */
+  correlationId?: string;
 }
 
 // ─── Payload sanitisation ─────────────────────────────────────────────────────
@@ -348,16 +359,39 @@ export class PayFiAgent extends EventEmitter {
 
   /** Dispatch a task to the correct tool */
   async run(task: AgentTask): Promise<AgentResult> {
+    // Correlation ID ties together every log line, event, persisted result,
+    // and webhook for this single task execution. Reuse the caller's if given.
+    const correlationId = task.correlationId ?? generateCorrelationId();
+    const taskLog = createLogger("orchestrator", correlationId);
+
     if (this.isDraining) {
       return {
         success: false,
         taskType: task.type,
         error: "Agent is shutting down — task rejected",
+        correlationId,
+      };
+    }
+
+    // ── Concurrency rate limit — reject rather than queue when saturated ──
+    if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) {
+      taskLog.warn("Task rejected — max concurrent tasks reached", {
+        taskType: task.type,
+        activeTasks: this.activeTasks,
+        maxConcurrentTasks: config.MAX_CONCURRENT_TASKS,
+      });
+      return {
+        success: false,
+        taskType: task.type,
+        error:
+          `Agent is at capacity — ${this.activeTasks}/${config.MAX_CONCURRENT_TASKS} ` +
+          `concurrent tasks in flight; task rejected`,
+        correlationId,
       };
     }
 
     this.activeTasks++;
-    logger.info("Running task", { taskType: task.type });
+    taskLog.info("Running task", { taskType: task.type });
     try {
       let data: unknown;
 
@@ -422,10 +456,10 @@ export class PayFiAgent extends EventEmitter {
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
       }
 
-      logger.info("Task completed", { taskType: task.type });
-      const result: AgentResult = { success: true, taskType: task.type, data };
+      taskLog.info("Task completed", { taskType: task.type });
+      const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
       this.emit("task:complete", result);
-      
+
       saveResult({ ...result, timestamp: new Date().toISOString() });
       void dispatchWebhook(result);
 
@@ -434,8 +468,8 @@ export class PayFiAgent extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       const safe = redactSecretString(message);
       const sanitized = sanitizePayload(task.payload);
-      logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
-      const result: AgentResult = { success: false, taskType: task.type, error: safe };
+      taskLog.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
+      const result: AgentResult = { success: false, taskType: task.type, error: safe, correlationId };
       this.emit("task:failed", result);
       void dispatchWebhook(result);
       return result;

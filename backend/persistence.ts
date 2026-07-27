@@ -21,14 +21,20 @@ function getDb(): Database.Database {
     _db = new Database(config.DB_PATH);
     _db.exec(`
       CREATE TABLE IF NOT EXISTS agent_results (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp TEXT    NOT NULL,
-        taskType  TEXT    NOT NULL,
-        success   INTEGER NOT NULL,
-        data      TEXT,
-        error     TEXT
+        id            INTEGER PRIMARY KEY AUTOINCREMENT,
+        timestamp     TEXT    NOT NULL,
+        taskType      TEXT    NOT NULL,
+        success       INTEGER NOT NULL,
+        data          TEXT,
+        error         TEXT,
+        correlationId TEXT
       )
     `);
+    // Idempotent migration for databases created before correlationId existed.
+    const cols = _db.prepare(`PRAGMA table_info(agent_results)`).all() as Array<{ name: string }>;
+    if (!cols.some((c) => c.name === "correlationId")) {
+      _db.exec(`ALTER TABLE agent_results ADD COLUMN correlationId TEXT`);
+    }
   }
   return _db;
 }
@@ -50,38 +56,41 @@ export function probeDb(): void {
 export function saveResult(result: PersistedResult): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_results (timestamp, taskType, success, data, error)
-       VALUES (@timestamp, @taskType, @success, @data, @error)`
+      `INSERT INTO agent_results (timestamp, taskType, success, data, error, correlationId)
+       VALUES (@timestamp, @taskType, @success, @data, @error, @correlationId)`
     )
     .run({
-      timestamp: result.timestamp,
-      taskType:  result.taskType,
-      success:   result.success ? 1 : 0,
-      data:      result.data !== undefined ? JSON.stringify(result.data) : null,
-      error:     result.error ?? null,
+      timestamp:     result.timestamp,
+      taskType:      result.taskType,
+      success:       result.success ? 1 : 0,
+      data:          result.data !== undefined ? JSON.stringify(result.data) : null,
+      error:         result.error ?? null,
+      correlationId: result.correlationId ?? null,
     });
 }
 
 export function getResults(limit = 100): PersistedResult[] {
   const rows = getDb()
     .prepare(
-      `SELECT timestamp, taskType, success, data, error
+      `SELECT timestamp, taskType, success, data, error, correlationId
        FROM agent_results ORDER BY id DESC LIMIT ?`
     )
     .all(limit) as Array<{
-      timestamp: string;
-      taskType:  string;
-      success:   number;
-      data:      string | null;
-      error:     string | null;
+      timestamp:     string;
+      taskType:      string;
+      success:       number;
+      data:          string | null;
+      error:         string | null;
+      correlationId: string | null;
     }>;
 
   return rows.map((r) => ({
-    timestamp: r.timestamp,
-    taskType:  r.taskType as AgentResult["taskType"],
-    success:   r.success === 1,
-    data:      r.data !== null ? JSON.parse(r.data) : undefined,
-    error:     r.error ?? undefined,
+    timestamp:     r.timestamp,
+    taskType:      r.taskType as AgentResult["taskType"],
+    success:       r.success === 1,
+    data:          r.data !== null ? JSON.parse(r.data) : undefined,
+    error:         r.error ?? undefined,
+    correlationId: r.correlationId ?? undefined,
   }));
 }
 
