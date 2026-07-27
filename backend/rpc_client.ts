@@ -12,6 +12,7 @@ import {
   xdr,
   StrKey,
 } from "@stellar/stellar-sdk";
+import { randomUUID } from "crypto";
 import CircuitBreaker from "opossum";
 import { ZodError } from "zod";
 import { config } from "./config";
@@ -196,9 +197,17 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
 }
 
-export const horizonServer = new Horizon.Server(config.HORIZON_URL, {
-  allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
-});
+function createHorizonServer(): Horizon.Server {
+  const requestId = randomUUID();
+  return new Horizon.Server(config.HORIZON_URL, {
+    allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
+    headers: {
+      "X-Request-ID": requestId,
+    },
+  });
+}
+
+export const horizonServer = createHorizonServer();
 
 export async function loadAccount(publicKey: string) {
   return withBackoffGuard(() =>
@@ -230,9 +239,17 @@ export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
   );
 }
 
-export const sorobanServer = new rpc.Server(config.SOROBAN_RPC_URL, {
-  allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
-});
+function createSorobanServer(): rpc.Server {
+  const requestId = randomUUID();
+  return new rpc.Server(config.SOROBAN_RPC_URL, {
+    allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
+    headers: {
+      "X-Request-ID": requestId,
+    },
+  });
+}
+
+export const sorobanServer = createSorobanServer();
 
 export async function simulateSorobanTx(tx: Transaction) {
   return withBackoffGuard(() =>

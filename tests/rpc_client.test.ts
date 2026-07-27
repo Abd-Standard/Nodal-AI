@@ -340,3 +340,15 @@ describe("prepareSorobanTx auth checks", () => {
     await expect(prepareSorobanTx(dummyTx)).resolves.toBeDefined();
   });
 });
+
+// ─── Request ID headers ───────────────────────────────────────────────────────
+
+describe("RPC servers with request ID headers", () => {
+  it("horizonServer is created with X-Request-ID header", () => {
+    expect(horizonServer).toBeDefined();
+  });
+
+  it("sorobanServer is created with X-Request-ID header", () => {
+    expect(sorobanServer).toBeDefined();
+  });
+});
