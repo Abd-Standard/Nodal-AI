@@ -205,8 +205,19 @@ export class SorobanInvokeTool {
 
     // 4. MANDATORY simulate step — throws on simulation failure
     const preparedTx = await prepareSorobanTx(tx);
+    const feeValue = preparedTx?.fee;
+    const parsedFee =
+      feeValue === undefined || feeValue === null || feeValue === ""
+        ? undefined
+        : Number.isFinite(feeValue)
+          ? Number(feeValue)
+          : Number.parseInt(String(feeValue), 10);
 
-    if (parseInt(preparedTx.fee, 10) > config.MAX_SOROBAN_FEE_STROOPS) {
+    if (parsedFee !== undefined && Number.isNaN(parsedFee)) {
+      throw new Error(`Invalid Soroban fee: ${feeValue}`);
+    }
+
+    if (parsedFee !== undefined && parsedFee > config.MAX_SOROBAN_FEE_STROOPS) {
       throw new Error(
         `Soroban fee ${preparedTx.fee} exceeds MAX_SOROBAN_FEE_STROOPS ${config.MAX_SOROBAN_FEE_STROOPS}`
       );

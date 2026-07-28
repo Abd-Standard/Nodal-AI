@@ -310,6 +310,23 @@ describe("SorobanInvokeTool", () => {
       expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
     });
 
+    it("rejects when the prepared fee is not numeric", async () => {
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
+        sign: vi.fn(),
+        fee: "not-a-number",
+      } as any);
+
+      await expect(
+        tool.execute({
+          contractId: VALID_CONTRACT,
+          method: "release",
+          args: [],
+        }),
+      ).rejects.toThrow(/invalid Soroban fee/i);
+
+      expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+    });
+
     it("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(
         makeMockPreparedTx(500_000)

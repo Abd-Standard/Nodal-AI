@@ -411,7 +411,11 @@ export class PayFiAgent extends EventEmitter {
         case "stellar_payment": {
           const p = task.payload as Record<string, unknown>;
           assertWithinSpendingLimit(p?.amount);
-          data = await this.paymentTool.execute(task.payload);
+          const paymentResult = await this.paymentTool.execute(task.payload);
+          data = {
+            ...paymentResult,
+            network: config.STELLAR_NETWORK,
+          };
           break;
         }
 
@@ -484,7 +488,13 @@ export class PayFiAgent extends EventEmitter {
         { taskType: task.type, error: safe, sanitizedPayload: sanitized },
         "Task failed"
       );
-      const result: AgentResult = { success: false, taskType: task.type, error: safe, correlationId };
+      const result: AgentResult = {
+        success: false,
+        taskType: task.type,
+        error: safe,
+        errorType: getErrorType(err),
+        correlationId,
+      };
       this.emit("task:failed", result);
       void dispatchWebhook(result);
       return result;

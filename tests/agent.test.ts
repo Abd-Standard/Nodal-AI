@@ -116,8 +116,7 @@ vi.mock("../backend/config", () => ({
     X402_ASSET_CODE: "USDC",
     X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
     MAX_RETRIES: 3,
-    RETRY_DELAY_MS: 100,
-    // Set above MAINNET_SPENDING_CAP to exercise the secondary runtime guard
+    RETRY_DELAY_MS: 100,    MAX_CONCURRENT_TASKS: 10,    // Set above MAINNET_SPENDING_CAP to exercise the secondary runtime guard
     AGENT_SPENDING_LIMIT: "15000",
     agentKeypair: () => ({
       secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73",
@@ -311,6 +310,21 @@ describe("AgentResult snapshot", () => {
     expect(result).toHaveProperty("success", true);
     expect(result).toHaveProperty("taskType", "stellar_payment");
     expect(result).toHaveProperty("data");
+  });
+
+  it("adds network metadata to payment task results", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: {
+        destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        amount: "100",
+        assetCode: "USDC",
+        assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({ network: "mainnet" });
   });
 
   it("AgentResult has expected shape on failure", async () => {
@@ -522,7 +536,8 @@ describe("PayFiAgent — payload sanitisation", () => {
   });
 
   it("recursively redacts nested sensitive keys in deeply nested objects", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (!mockInstance) throw new Error("Mock instance not found");
     mockInstance.execute.mockRejectedValueOnce(
       new Error("simulated nested payload failure")
     );
@@ -552,7 +567,8 @@ describe("PayFiAgent — payload sanitisation", () => {
   });
 
   it("includes errorType in AgentResult for structured errors", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (!mockInstance) throw new Error("Mock instance not found");
     mockInstance.execute.mockRejectedValueOnce(
       new ValidationError("Invalid payment parameters")
     );

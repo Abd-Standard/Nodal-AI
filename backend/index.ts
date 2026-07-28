@@ -41,7 +41,7 @@ async function shutdown(signal: string): Promise<void> {
     // 3. Stop the health check server
     if (healthServer) {
       await new Promise<void>((resolve, reject) =>
-        healthServer.close((err) => (err ? reject(err) : resolve()))
+        healthServer.close((err?: Error) => (err ? reject(err) : resolve()))
       );
     }
 

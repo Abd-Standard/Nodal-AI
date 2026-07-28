@@ -53,7 +53,7 @@ export class ValidationError extends StructuredError {
 }
 
 export class RateLimitError extends StructuredError {
-  readonly retryAfterSeconds?: number;
+  readonly retryAfterSeconds?: number | undefined;
 
   constructor(message: string, retryAfterSeconds?: number, cause?: unknown) {
     super(message, ErrorType.RateLimitError, cause);
@@ -70,7 +70,7 @@ export class UnauthorizedError extends StructuredError {
 }
 
 export class ContractError extends StructuredError {
-  readonly contractId?: string;
+  readonly contractId?: string | undefined;
 
   constructor(message: string, contractId?: string, cause?: unknown) {
     super(message, ErrorType.ContractError, cause);
@@ -80,7 +80,7 @@ export class ContractError extends StructuredError {
 }
 
 export class TransactionFailureError extends StructuredError {
-  readonly txHash?: string;
+  readonly txHash?: string | undefined;
 
   constructor(message: string, txHash?: string, cause?: unknown) {
     super(message, ErrorType.TransactionFailure, cause);
