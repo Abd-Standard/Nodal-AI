@@ -37,7 +37,7 @@ import { SpendingTracker } from "./spending_tracker";
 import { dispatchWebhook } from "./webhook";
 
 // Instantiate a singleton tracker
-const spendingTracker = new SpendingTracker();
+export const spendingTracker = new SpendingTracker();
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
@@ -47,11 +47,10 @@ const spendingTracker = new SpendingTracker();
  */
 function assertWithinSpendingLimit(amount: unknown): void {
   if (typeof amount !== "string") return; // let the tool's own schema catch this
-  // Record cumulative spending
-  spendingTracker.record(amount);
 
   const parsed = parseFloat(amount);
   const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
+
   if (!isNaN(parsed) && parsed > limit) {
     throw new Error(
       `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
@@ -64,6 +63,9 @@ function assertWithinSpendingLimit(amount: unknown): void {
         `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
     );
   }
+
+  // Record cumulative spending (after individual checks pass)
+  spendingTracker.record(amount);
 }
 
 const log = createLogger("orchestrator");

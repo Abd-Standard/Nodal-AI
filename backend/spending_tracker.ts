@@ -43,4 +43,8 @@ export class SpendingTracker {
       this.records.shift();
     }
   }
+
+  clear() {
+    this.records = [];
+  }
 }

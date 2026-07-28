@@ -6,8 +6,12 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PayFiAgent } from "../backend/agent";
+import { PayFiAgent, spendingTracker } from "../backend/agent";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
+import { BalanceCheckTool } from "../backend/tools/BalanceCheckTool";
+import { PathPaymentTool } from "../backend/tools/PathPaymentTool";
+import { FeeBumpTool } from "../backend/tools/FeeBumpTool";
+import { DexOfferTool } from "../backend/tools/DexOfferTool";
 import { ValidationError } from "../backend/errors";
 
 vi.mock("../backend/tools/StellarPaymentTool", () => ({
@@ -131,6 +135,7 @@ describe("PayFiAgent — runSequence", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
     // Re-apply default mock implementation after clearAllMocks (clearMocks resets call history
     // but also clears mockReturnValue / mockResolvedValue set inside vi.mock factories).
@@ -189,6 +194,7 @@ describe("PayFiAgent — mainnet spending cap", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
     vi.mocked(StellarPaymentTool).mockImplementation(() => ({
       execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
@@ -281,6 +287,7 @@ describe("AgentResult snapshot", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
     vi.mocked(StellarPaymentTool).mockImplementation(() => ({
       execute: vi.fn().mockResolvedValue({ txHash: "success_tx_hash", ledger: 1 }),
@@ -297,6 +304,7 @@ describe("AgentResult snapshot", () => {
         assetCode: "USDC",
         assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
       },
+      correlationId: "fixed-test-id-success",
     });
 
     expect(result).toMatchSnapshot();
@@ -317,6 +325,7 @@ describe("AgentResult snapshot", () => {
         assetCode: "USDC",
         assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
       },
+      correlationId: "fixed-test-id-failure",
     });
 
     expect(result).toMatchSnapshot();
@@ -330,9 +339,22 @@ describe("PayFiAgent — new task types", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
     vi.mocked(StellarPaymentTool).mockImplementation(() => ({
       execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
+    vi.mocked(BalanceCheckTool).mockImplementation(() => ({
+      getBalance: vi.fn().mockResolvedValue({ publicKey: DEST, balances: [] }),
+    } as any));
+    vi.mocked(PathPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "path_mock_hash", ledger: 1 }),
+    } as any));
+    vi.mocked(FeeBumpTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "fee_bump_mock_hash", ledger: 1 }),
+    } as any));
+    vi.mocked(DexOfferTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "dex_mock_hash", ledger: 1, offerId: "0" }),
     } as any));
     agent = new PayFiAgent();
   });
@@ -403,7 +425,11 @@ describe("PayFiAgent — payload sanitisation", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 
