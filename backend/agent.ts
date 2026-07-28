@@ -35,8 +35,14 @@ import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
 import { dispatchWebhook } from "./webhook";
 
-// Instantiate a singleton tracker
-const spendingTracker = new SpendingTracker();
+// Instantiate a singleton tracker lazily to avoid loading config at import time
+let _spendingTracker: SpendingTracker | null = null;
+function getSpendingTracker(): SpendingTracker {
+  if (!_spendingTracker) {
+    _spendingTracker = new SpendingTracker();
+  }
+  return _spendingTracker;
+}
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
@@ -47,7 +53,7 @@ const spendingTracker = new SpendingTracker();
 function assertWithinSpendingLimit(amount: unknown): void {
   if (typeof amount !== "string") return; // let the tool's own schema catch this
   // Record cumulative spending
-  spendingTracker.record(amount);
+  getSpendingTracker().record(amount);
 
   const parsed = parseFloat(amount);
   const limit = parseFloat(config.AGENT_SPENDING_LIMIT);

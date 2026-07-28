@@ -150,7 +150,7 @@ describe("DexOfferTool", () => {
     expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
   });
 
-  it("creates an offer and returns the network-assigned offerId", async () => {
+  it("returns offerId from transaction result metadata for create action", async () => {
     const networkAssignedOfferId = "12345678";
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: "offer_tx_hash",
@@ -201,13 +201,13 @@ describe("DexOfferTool", () => {
 
   // ── Input validation ────────────────────────────────────────────────────────
 
-  it("rejects update without offerId", async () => {
+  it("rejects update action without offerId", async () => {
     await expect(
       tool.execute({ action: "update", ...BASE_OFFER })
     ).rejects.toThrow(/offerId is required/);
   });
 
-  it("rejects delete without offerId", async () => {
+  it("rejects delete action without offerId", async () => {
     await expect(
       tool.execute({ action: "delete", ...BASE_OFFER })
     ).rejects.toThrow(/offerId is required/);
@@ -229,6 +229,13 @@ describe("DexOfferTool", () => {
     await expect(
       tool.execute({ action: "buy", ...BASE_OFFER })
     ).rejects.toThrow();
+  });
+
+  it("propagates network errors from submitTransaction", async () => {
+    vi.mocked(rpcClient.submitTransaction).mockRejectedValueOnce(new Error("Network Error"));
+    await expect(
+      tool.execute({ action: "create", ...BASE_OFFER })
+    ).rejects.toThrow("Network Error");
   });
 });
 

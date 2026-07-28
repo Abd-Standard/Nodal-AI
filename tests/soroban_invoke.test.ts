@@ -148,8 +148,8 @@ function makeMockAccount(publicKey: string) {
  * Creates a mock prepared transaction that satisfies the post-sign signature guard.
  * sign() mutates `signatures` in place (matching real Stellar SDK behaviour).
  */
-function makeMockPreparedTx(): any {
-  const obj: any = { signatures: [] };
+function makeMockPreparedTx(fee = 500_000): any {
+  const obj: any = { signatures: [], fee, timeBounds: {} };
   obj.sign = vi.fn().mockImplementation(() => {
     obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
   });
@@ -311,10 +311,9 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-        sign: vi.fn(),
-        fee: 500_000,
-      } as any);
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(
+        makeMockPreparedTx(500_000)
+      );
       vi.mocked(
         rpcClient.sorobanServer.sendTransaction as any,
       ).mockResolvedValue({
@@ -574,6 +573,8 @@ describe("SorobanInvokeTool", () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
         sign: vi.fn(), // no-op — does NOT push to signatures
         signatures: [], // empty signatures list — guard must catch this
+        fee: 500_000,
+        timeBounds: {},
       } as any);
 
       await expect(

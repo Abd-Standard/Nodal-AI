@@ -407,10 +407,10 @@ describe("PayFiAgent — payload sanitisation", () => {
   });
 
   it("scrubs secretKey from payload before logging on failure", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
-    mockInstance.execute.mockRejectedValueOnce(
-      new Error("simulated payment failure")
-    );
+    // The agent constructor calls `new StellarPaymentTool(...)` which populates results[0].
+    // Read the mock instance immediately so we can override execute for this test.
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.instances[0] as any;
+    mockInstance.execute = vi.fn().mockRejectedValueOnce(new Error("simulated payment failure"));
 
     const result = await agent.run({
       type: "stellar_payment",

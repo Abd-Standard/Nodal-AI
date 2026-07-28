@@ -102,7 +102,7 @@ const MOCK_ACCOUNT = {
   };
 
   function makeMockPreparedTx() {
-    const obj: any = { signatures: [] };
+    const obj: any = { signatures: [], fee: 500_000, timeBounds: {} };
     obj.sign = () => {
       obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
     };

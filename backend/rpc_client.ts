@@ -1,4 +1,4 @@
-﻿/**
+/**
  * backend/rpc_client.ts
  * Thin wrapper around Horizon + Soroban RPC with retry logic and rate-limit awareness.
  */
@@ -196,8 +196,16 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
 }
 
-export const horizonServer = new Horizon.Server(config.HORIZON_URL, {
-  allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
+let _horizonServer: Horizon.Server | null = null;
+export const horizonServer = new Proxy({} as Horizon.Server, {
+  get(target, prop, receiver) {
+    if (!_horizonServer) {
+      _horizonServer = new Horizon.Server(config.HORIZON_URL, {
+        allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
+      });
+    }
+    return Reflect.get(_horizonServer, prop, receiver);
+  }
 });
 
 export async function loadAccount(publicKey: string) {
@@ -230,8 +238,16 @@ export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
   );
 }
 
-export const sorobanServer = new rpc.Server(config.SOROBAN_RPC_URL, {
-  allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
+let _sorobanServer: rpc.Server | null = null;
+export const sorobanServer = new Proxy({} as rpc.Server, {
+  get(target, prop, receiver) {
+    if (!_sorobanServer) {
+      _sorobanServer = new rpc.Server(config.SOROBAN_RPC_URL, {
+        allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
+      });
+    }
+    return Reflect.get(_sorobanServer, prop, receiver);
+  }
 });
 
 export async function simulateSorobanTx(tx: Transaction) {

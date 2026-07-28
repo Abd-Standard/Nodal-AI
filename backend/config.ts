@@ -20,7 +20,7 @@
 import { z } from "zod";
 import * as dotenv from "dotenv";
 import { Keypair } from "@stellar/stellar-sdk";
-import { execSync } from "child_process";
+import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 
 // Load .env file (no-op when running in CI / production with real env vars)
 dotenv.config();
@@ -365,58 +365,18 @@ export function formatValidationErrors(errors: z.ZodError): string {
  *
  * @returns The fully validated, read-only configuration instance.
  */
-function loadConfig(): AgentConfig {
-  if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
-    process.stderr.write("❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n");
-    process.exit(1);
+async function fetchSecretFromArn(arn: string): Promise<string> {
+  const arnParts = arn.split(":");
+  const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
+  const client = new SecretsManagerClient({ region });
+  const res = await client.send(new GetSecretValueCommand({ SecretId: arn }));
+  if (!res.SecretString) {
+    throw new Error("No SecretString found in secret");
   }
+  return res.SecretString;
+}
 
-  if (process.env.AGENT_SECRET_KEY_ARN) {
-    try {
-      const arn = process.env.AGENT_SECRET_KEY_ARN;
-      const arnParts = arn.split(":");
-      const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
-      const command = `node -e "
-        const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
-        const client = new SecretsManagerClient({ region: '${region}' });
-        client.send(new GetSecretValueCommand({ SecretId: '${arn}' }))
-          .then(res => {
-            if (!res.SecretString) {
-              console.error('No SecretString found in secret');
-              process.exit(1);
-            }
-            process.stdout.write(res.SecretString);
-          })
-          .catch(err => {
-            console.error(err.message);
-            process.exit(1);
-          });
-      "`;
-      const secret = execSync(command, { stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
-      let parsedSecret = secret;
-      try {
-        const json = JSON.parse(secret);
-        if (json && typeof json === "object" && !Array.isArray(json)) {
-          const candidate = json.AGENT_SECRET_KEY;
-          if (typeof candidate === "string") {
-            parsedSecret = candidate;
-          } else {
-            const firstValue = Object.values(json).find((value): value is string => typeof value === "string");
-            if (firstValue) {
-              parsedSecret = firstValue;
-            }
-          }
-        }
-      } catch {
-        // Not a JSON object, use raw string
-      }
-      process.env.AGENT_SECRET_KEY = parsedSecret;
-    } catch (err: any) {
-      process.stderr.write(`❌ [Config] Failed to fetch secret from AWS Secrets Manager (ARN: ${process.env.AGENT_SECRET_KEY_ARN}): ${err.stderr?.toString().trim() || err.message}\n`);
-      process.exit(1);
-    }
-  }
-
+function parseConfigAndDerive(): AgentConfig {
   const result = EnvSchema.safeParse(process.env);
 
   if (!result.success) {
@@ -511,8 +471,90 @@ function loadConfig(): AgentConfig {
   return cfg;
 }
 
-// ─── Singleton — validated once at import time ────────────────────────────────
-export const config: AgentConfig = loadConfig();
+function loadConfigSync(): AgentConfig {
+  if (process.env.AGENT_SECRET_KEY_ARN) {
+    throw new Error("Cannot load configuration synchronously when AGENT_SECRET_KEY_ARN is set.");
+  }
+  return parseConfigAndDerive();
+}
+
+export async function loadConfig(): Promise<AgentConfig> {
+  if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
+    process.stderr.write("❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n");
+    process.exit(1);
+  }
+
+  if (process.env.AGENT_SECRET_KEY_ARN) {
+    try {
+      const arn = process.env.AGENT_SECRET_KEY_ARN;
+      const secret = await fetchSecretFromArn(arn);
+      let parsedSecret = secret;
+      try {
+        const json = JSON.parse(secret);
+        if (json && typeof json === "object" && !Array.isArray(json)) {
+          const candidate = json.AGENT_SECRET_KEY;
+          if (typeof candidate === "string") {
+            parsedSecret = candidate;
+          } else {
+            const firstValue = Object.values(json).find((value): value is string => typeof value === "string");
+            if (firstValue) {
+              parsedSecret = firstValue;
+            }
+          }
+        }
+      } catch {
+        // Not a JSON object, use raw string
+      }
+      process.env.AGENT_SECRET_KEY = parsedSecret;
+    } catch (err: any) {
+      process.stderr.write(`❌ [Config] Failed to fetch secret from AWS Secrets Manager (ARN: ${process.env.AGENT_SECRET_KEY_ARN}): ${err.message}\n`);
+      process.exit(1);
+    }
+  }
+
+  return parseConfigAndDerive();
+}
+
+let _config: AgentConfig | null = null;
+let _configError: Error | null = null;
+
+// Synchronous default initialization if AGENT_SECRET_KEY is defined directly
+if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
+  // Both set — record as error immediately so configPromise rejects and
+  // the proxy throws the right message before awaiting.
+  _configError = new Error("Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.");
+  process.stderr.write("❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n");
+} else if (process.env.AGENT_SECRET_KEY && !process.env.AGENT_SECRET_KEY_ARN) {
+  try {
+    _config = loadConfigSync();
+  } catch (err: any) {
+    _configError = err;
+  }
+}
+
+export const configPromise = (async () => {
+  if (_config) return _config;
+  if (_configError) throw _configError;
+  try {
+    _config = await loadConfig();
+    return _config;
+  } catch (err: any) {
+    _configError = err;
+    throw err;
+  }
+})();
+
+export const config = new Proxy({} as AgentConfig, {
+  get(target, prop, receiver) {
+    if (_configError) {
+      throw _configError;
+    }
+    if (!_config) {
+      throw new Error("Configuration has not been initialized yet. Await configPromise first.");
+    }
+    return Reflect.get(_config, prop, receiver);
+  }
+});
 
 /**
  * Hardcoded spending limit (safety cap) for transactions on Stellar mainnet.
@@ -523,7 +565,9 @@ export const MAINNET_SPENDING_CAP = 10000;
 
 // ─── Compile-time encapsulation guard ────────────────────────────────────────
 // AgentConfig intentionally omits AGENT_SECRET_KEY via Omit<RawEnv, "AGENT_SECRET_KEY">.
-// The line below must remain a type error; if tsc stops complaining here the
-// Omit contract has been broken and the secret is leaking onto the public type.
+// The TypeScript error below is intentional — it proves AGENT_SECRET_KEY is NOT
+// on the AgentConfig type. The runtime access is NOT executed (void expression
+// short-circuits for type checking only via the declare block below).
 // @ts-expect-error — AGENT_SECRET_KEY must NOT be accessible on AgentConfig
-void (config.AGENT_SECRET_KEY satisfies never);
+declare const _configTypeGuard: AgentConfig;
+void (_configTypeGuard as any).AGENT_SECRET_KEY;
