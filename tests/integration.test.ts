@@ -175,4 +175,60 @@ const MOCK_ACCOUNT = {
     expect(result.data).toHaveProperty("protocol", "x402");
     expect(submitTransaction).toHaveBeenCalled();
   });
+
+  it("executes change_trust task with full tool chain", async () => {
+    const { loadAccount, submitTransaction } = await import("../backend/rpc_client");
+    const result = await agent.run({
+      type: "change_trust",
+      payload: {
+        assetCode: "USDC",
+        assetIssuer: ISSUER,
+        action: "add",
+        limit: "1000",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveProperty("txHash", "test_tx_hash_123456789");
+    expect(loadAccount).toHaveBeenCalled();
+    expect(submitTransaction).toHaveBeenCalled();
+  });
+
+  it("executes multisig_payment task with full tool chain", async () => {
+    const { loadAccount, submitTransaction } = await import("../backend/rpc_client");
+    const result = await agent.run({
+      type: "multisig_payment",
+      payload: {
+        destination: DEST,
+        amount: "50",
+        assetCode: "XLM",
+        additionalSigners: [],
+        minSignatures: 1,
+        signatures: ["dummy-signature"],
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveProperty("txHash", "test_tx_hash_123456789");
+    expect(loadAccount).toHaveBeenCalled();
+    expect(submitTransaction).toHaveBeenCalled();
+  });
+
+  it("executes batch_payment task with full tool chain", async () => {
+    const { loadAccount, submitTransaction } = await import("../backend/rpc_client");
+    const result = await agent.run({
+      type: "batch_payment",
+      payload: {
+        payments: [
+          { destination: DEST, amount: "10", assetCode: "USDC", assetIssuer: ISSUER },
+          { destination: DEST, amount: "20", assetCode: "USDC", assetIssuer: ISSUER },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toHaveProperty("txHash", "test_tx_hash_123456789");
+    expect(loadAccount).toHaveBeenCalled();
+    expect(submitTransaction).toHaveBeenCalled();
+  });
 });

@@ -1,7 +1,7 @@
-﻿import { describe, it, expect, vi, beforeEach } from "vitest";
+﻿import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 
 // We test the network module directly
-import { isThrottled, handleRateLimitResponse, getBackoffStatus } from "../backend/network";
+import { isThrottled, handleRateLimitResponse, getBackoffStatus, withBackoffGuard } from "../backend/network";
 
 describe("Network Rate Limiting", () => {
   beforeEach(() => {
@@ -32,5 +32,68 @@ describe("Network Rate Limiting", () => {
     expect(isThrottled()).toBe(true);
     await new Promise((r) => setTimeout(r, 1100));
     expect(isThrottled()).toBe(false);
+  });
+});
+
+describe("withBackoffGuard queuing behaviour", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("queues a call when throttled and executes it after backoff clears", async () => {
+    handleRateLimitResponse("5");
+    expect(isThrottled()).toBe(true);
+
+    const fn = vi.fn().mockResolvedValue("done");
+    const resultPromise = withBackoffGuard(fn);
+
+    // Still throttled — the callback must not run yet.
+    expect(fn).not.toHaveBeenCalled();
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    await expect(resultPromise).resolves.toBe("done");
+    expect(fn).toHaveBeenCalledTimes(1);
+  });
+
+  it("drains all queued callbacks in order when lock clears", async () => {
+    handleRateLimitResponse("5");
+
+    const order: number[] = [];
+    const makeFn = (n: number) =>
+      vi.fn().mockImplementation(async () => {
+        order.push(n);
+        return n;
+      });
+    const fn1 = makeFn(1);
+    const fn2 = makeFn(2);
+    const fn3 = makeFn(3);
+
+    const p1 = withBackoffGuard(fn1);
+    const p2 = withBackoffGuard(fn2);
+    const p3 = withBackoffGuard(fn3);
+
+    expect(getBackoffStatus().queueSize).toBe(3);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    await Promise.all([p1, p2, p3]);
+
+    expect(order).toEqual([1, 2, 3]);
+  });
+
+  it("a queued callback that rejects propagates the rejection to the caller", async () => {
+    handleRateLimitResponse("5");
+
+    const error = new Error("queued callback failed");
+    const fn = vi.fn().mockRejectedValue(error);
+    const resultPromise = withBackoffGuard(fn);
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    await expect(resultPromise).rejects.toThrow("queued callback failed");
   });
 });

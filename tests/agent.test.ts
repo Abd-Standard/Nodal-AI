@@ -398,6 +398,71 @@ describe("PayFiAgent — new task types", () => {
   });
 });
 
+describe("PayFiAgent — drain / waitForPendingTasks", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
+    agent = new PayFiAgent();
+  });
+
+  it("rejects new tasks after drain() is called", async () => {
+    agent.drain();
+
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/shutting down/i);
+  });
+
+  it("waitForPendingTasks() resolves when activeTasks reaches 0", async () => {
+    let resolveExecute!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      resolveExecute = resolve;
+    });
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    mockInstance.execute.mockReturnValueOnce(pending);
+
+    const runPromise = agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    // Let run() reach the `activeTasks++` before checking wait behaviour.
+    await Promise.resolve();
+
+    let waitResolved = false;
+    const waitPromise = agent.waitForPendingTasks().then(() => {
+      waitResolved = true;
+    });
+
+    // Task is still in flight — waitForPendingTasks() must still be pending.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(waitResolved).toBe(false);
+
+    resolveExecute({ txHash: "mock_hash", ledger: 1 });
+    await runPromise;
+    await waitPromise;
+
+    expect(waitResolved).toBe(true);
+  });
+
+  it("waitForPendingTasks() resolves immediately if no tasks are active", async () => {
+    const setIntervalSpy = vi.spyOn(global, "setInterval");
+
+    await agent.waitForPendingTasks();
+
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    setIntervalSpy.mockRestore();
+  });
+});
+
 describe("PayFiAgent — payload sanitisation", () => {
   let agent: PayFiAgent;
 
