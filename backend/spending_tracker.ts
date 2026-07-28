@@ -1,4 +1,5 @@
 import { config } from "./config";
+import { logger } from "./logger";
 
 /**
  * Simple in‑memory spending tracker that records each payment amount and
@@ -25,8 +26,13 @@ export class SpendingTracker {
     this.records.push({ amount, timestamp: now });
     const total = this.total();
     const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
-    if (!isNaN(total) && !isNaN(limit) && total > limit) {
-      throw new Error(`Cumulative spending ${total} exceeds limit ${limit}`);
+    if (!isNaN(total) && !isNaN(limit)) {
+      if (total > limit * 0.8) {
+        logger.warn("Approaching spending limit", { total, limit, percent: (total / limit * 100).toFixed(1) });
+      }
+      if (total > limit) {
+        throw new Error(`Cumulative spending ${total} exceeds limit ${limit}`);
+      }
     }
   }
 
