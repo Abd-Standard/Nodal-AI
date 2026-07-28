@@ -222,7 +222,7 @@ The primary integration surface for developers. Dispatch tasks to the agent via 
 ### TaskType
 
 ```typescript
-type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump"
+type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump" | "account_info"
 ```
 
 | Value | Description |
@@ -232,6 +232,7 @@ type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_pa
 | `x402_respond` | Respond to an x402 payment challenge with spending limit guard |
 | `path_payment` | Cross-asset path payment strict send via the Stellar DEX |
 | `fee_bump` | Wrap an existing transaction in a fee-bump envelope for sponsored retry |
+| `account_info` | Fetch the agent's account balances, sequence number, and trustlines from Horizon |
 
 ### AgentTask
 
