@@ -107,7 +107,7 @@ export interface AgentConfig {
      * Optional — when set, the agent exports traces/spans to this OTLP-compatible endpoint.
      * Validated by EnvSchema to be a valid URL string.
      */
-    readonly OTLP_ENDPOINT?: string;
+    readonly OTLP_ENDPOINT?: string | undefined;
     /**
      * Spending window in milliseconds for rate/cap computation.
      * Defines the time window over which spending is tracked and enforced.
@@ -142,10 +142,13 @@ export interface AgentConfig {
      * Defaults to 3000.
      */
     readonly HEALTH_PORT: number;
-    readonly WEBHOOK_URL?: string;
-    readonly WEBHOOK_SECRET?: string;
+    readonly CONTRACT_EVENT_POLL_MS?: number | undefined;
+    readonly WEBHOOK_URL?: string | undefined;
+    readonly WEBHOOK_SECRET?: string | undefined;
 }
 export declare function formatValidationErrors(errors: z.ZodError): string;
+export declare function loadConfig(): Promise<AgentConfig>;
+export declare const configPromise: Promise<AgentConfig>;
 export declare const config: AgentConfig;
 /**
  * Hardcoded spending limit (safety cap) for transactions on Stellar mainnet.

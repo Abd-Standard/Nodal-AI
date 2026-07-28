@@ -277,6 +277,9 @@ const VALID_CHALLENGE = {
     // ── X402PaymentProof snapshot ──────────────────────────────────────────────
     (0, vitest_1.describe)("X402PaymentProof snapshot", () => {
         (0, vitest_1.it)("X402PaymentProof has expected shape and fields", async () => {
+            // Pin the clock so signedAt is deterministic across runs
+            vitest_1.vi.useFakeTimers();
+            vitest_1.vi.setSystemTime(new Date("2026-06-25T12:00:19.497Z"));
             vitest_1.vi.useFakeTimers();
             vitest_1.vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
             const proof = await tool.respond(VALID_CHALLENGE);
@@ -296,6 +299,7 @@ const VALID_CHALLENGE = {
             (0, vitest_1.expect)(proof).toHaveProperty("nonce");
             (0, vitest_1.expect)(proof).toHaveProperty("payer");
             (0, vitest_1.expect)(proof).toHaveProperty("signedAt");
+            vitest_1.vi.useRealTimers();
         });
     });
     // ── verify() ──────────────────────────────────────────────────────────────

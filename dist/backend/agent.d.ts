@@ -12,6 +12,8 @@
 import { EventEmitter } from "events";
 import { rpc } from "@stellar/stellar-sdk";
 import { X402Challenge } from "./tools/X402PaymentTool";
+import { SpendingTracker } from "./spending_tracker";
+export declare const spendingTracker: SpendingTracker;
 export type TaskType = "stellar_payment" | "soroban_invoke" | "soroban_query" | "x402_respond" | "account_info" | "change_trust" | "multisig_payment" | "batch_payment" | "balance_check" | "path_payment" | "fee_bump" | "dex_offer";
 export interface AgentTask {
     type: TaskType;
@@ -38,12 +40,32 @@ export interface AgentResult {
     data?: unknown;
     error?: string;
     /**
+     * Structured error type for programmatic error handling.
+     * Allows callers to distinguish between different error categories
+     * (e.g., InsufficientFunds, NetworkTimeout) without string matching.
+     */
+    errorType?: string;
+    /**
      * Correlation ID that ties every log line, persisted result, and webhook
      * dispatch for a single task execution together. Generated at dispatch time
      * unless the caller supplies one on the task.
      */
     correlationId?: string;
 }
+/**
+ * Task middleware function type.
+ *
+ * Middleware functions are executed in registration order before the task
+ * is dispatched to the appropriate tool. Each middleware receives the task
+ * and a `next` function to continue execution. Calling `next()` passes control
+ * to the next middleware or the actual task execution. If a middleware returns
+ * a result without calling `next()`, it short-circuits execution.
+ *
+ * @param task - The task to be executed
+ * @param next - Function to call the next middleware or the actual task
+ * @returns The result of task execution or middleware short-circuit
+ */
+export type TaskMiddleware = (task: AgentTask, next: () => Promise<AgentResult>) => Promise<AgentResult>;
 export declare class PayFiAgent extends EventEmitter {
     private paymentTool;
     private sorobanTool;
@@ -62,6 +84,7 @@ export declare class PayFiAgent extends EventEmitter {
     private _streamStop;
     private _contractListenerStop;
     private readonly _boundHandlers;
+    private middlewares;
     constructor();
     /**
      * Start polling the Horizon payment stream for incoming x402 challenges.
@@ -97,6 +120,18 @@ export declare class PayFiAgent extends EventEmitter {
      */
     destroy(): void;
     drain(): void;
+    /**
+     * Register a middleware function for pre/post task execution hooks.
+     *
+     * Middleware functions are executed in registration order before the task
+     * is dispatched to the appropriate tool. Each middleware can:
+     * - Inspect and modify the task
+     * - Short-circuit execution by returning a result without calling next()
+     * - Call next() to continue to the next middleware or actual task execution
+     *
+     * @param middleware - Middleware function to register
+     */
+    use(middleware: TaskMiddleware): void;
     waitForPendingTasks(): Promise<void>;
     /**
      * Execute an ordered list of tasks sequentially, stopping on the first failure.
