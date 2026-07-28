@@ -1,0 +1,102 @@
+/**
+ * tests/errors.test.ts
+ *
+ * Tests for structured error types in backend/errors.ts
+ */
+
+import { describe, it, expect } from "vitest";
+import {
+  StructuredError,
+  ErrorType,
+  InsufficientFundsError,
+  NetworkTimeoutError,
+  ValidationError,
+  RateLimitError,
+  UnauthorizedError,
+  ContractError,
+  TransactionFailureError,
+  ConfigError,
+  getErrorType,
+} from "../backend/errors";
+
+describe("Structured Error Types", () => {
+  it("creates an InsufficientFundsError with correct type", () => {
+    const error = new InsufficientFundsError("Not enough funds");
+    expect(error).toBeInstanceOf(StructuredError);
+    expect(error.errorType).toBe(ErrorType.InsufficientFunds);
+    expect(error.message).toBe("Not enough funds");
+  });
+
+  it("creates a NetworkTimeoutError with correct type", () => {
+    const error = new NetworkTimeoutError("Request timed out");
+    expect(error).toBeInstanceOf(StructuredError);
+    expect(error.errorType).toBe(ErrorType.NetworkTimeout);
+    expect(error.message).toBe("Request timed out");
+  });
+
+  it("creates a ValidationError with correct type", () => {
+    const error = new ValidationError("Invalid input");
+    expect(error).toBeInstanceOf(StructuredError);
+    expect(error.errorType).toBe(ErrorType.ValidationError);
+    expect(error.message).toBe("Invalid input");
+  });
+
+  it("creates a RateLimitError with retryAfterSeconds", () => {
+    const error = new RateLimitError("Rate limited", 30);
+    expect(error).toBeInstanceOf(StructuredError);
+    expect(error.errorType).toBe(ErrorType.RateLimitError);
+    expect(error.retryAfterSeconds).toBe(30);
+    expect(error.message).toBe("Rate limited");
+  });
+
+  it("creates an UnauthorizedError with correct type", () => {
+    const error = new UnauthorizedError("Access denied");
+    expect(error).toBeInstanceOf(StructuredError);
+    expect(error.errorType).toBe(ErrorType.UnauthorizedError);
+    expect(error.message).toBe("Access denied");
+  });
+
+  it("creates a ContractError with contractId", () => {
+    const contractId = "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH";
+    const error = new ContractError("Contract execution failed", contractId);
+    expect(error).toBeInstanceOf(StructuredError);
+    expect(error.errorType).toBe(ErrorType.ContractError);
+    expect(error.contractId).toBe(contractId);
+  });
+
+  it("creates a TransactionFailureError with txHash", () => {
+    const txHash = "abcd1234";
+    const error = new TransactionFailureError("Transaction failed", txHash);
+    expect(error).toBeInstanceOf(StructuredError);
+    expect(error.errorType).toBe(ErrorType.TransactionFailure);
+    expect(error.txHash).toBe(txHash);
+  });
+
+  it("creates a ConfigError with correct type", () => {
+    const error = new ConfigError("Missing required config");
+    expect(error).toBeInstanceOf(StructuredError);
+    expect(error.errorType).toBe(ErrorType.ConfigError);
+  });
+
+  it("preserves cause when provided", () => {
+    const cause = new Error("Original error");
+    const error = new InsufficientFundsError("Wrapped error", cause);
+    expect(error.cause).toBe(cause);
+  });
+
+  it("getErrorType returns correct error type for StructuredError", () => {
+    const error = new ValidationError("test");
+    expect(getErrorType(error)).toBe(ErrorType.ValidationError);
+  });
+
+  it("getErrorType returns UNKNOWN_ERROR for non-StructuredError", () => {
+    const error = new Error("generic error");
+    expect(getErrorType(error)).toBe(ErrorType.UnknownError);
+  });
+
+  it("getErrorType returns UNKNOWN_ERROR for non-Error objects", () => {
+    expect(getErrorType("string error")).toBe(ErrorType.UnknownError);
+    expect(getErrorType(null)).toBe(ErrorType.UnknownError);
+    expect(getErrorType(undefined)).toBe(ErrorType.UnknownError);
+  });
+});

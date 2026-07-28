@@ -13,12 +13,13 @@ function makeInMemoryDb(): Database.Database {
   const db = new Database(":memory:");
   db.exec(`
     CREATE TABLE IF NOT EXISTS agent_results (
-      id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT    NOT NULL,
-      taskType  TEXT    NOT NULL,
-      success   INTEGER NOT NULL,
-      data      TEXT,
-      error     TEXT
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp     TEXT    NOT NULL,
+      taskType      TEXT    NOT NULL,
+      success       INTEGER NOT NULL,
+      data          TEXT,
+      error         TEXT,
+      correlationId TEXT
     )
   `);
   return db;

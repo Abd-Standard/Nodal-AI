@@ -48,4 +48,8 @@ export class SpendingTracker {
       }
     }
   }
+
+  clear() {
+    this.records = [];
+  }
 }

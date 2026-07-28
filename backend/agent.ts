@@ -16,6 +16,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
 import { saveResult } from "./persistence";
+import { StructuredError, ErrorType, getErrorType } from "./errors";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
 import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from "./tools/X402PaymentTool";
@@ -36,7 +37,7 @@ import { SpendingTracker } from "./spending_tracker";
 import { dispatchWebhook } from "./webhook";
 
 // Instantiate a singleton tracker
-const spendingTracker = new SpendingTracker();
+export const spendingTracker = new SpendingTracker();
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
@@ -46,11 +47,10 @@ const spendingTracker = new SpendingTracker();
  */
 function assertWithinSpendingLimit(amount: unknown): void {
   if (typeof amount !== "string") return; // let the tool's own schema catch this
-  // Record cumulative spending
-  spendingTracker.record(amount);
 
   const parsed = parseFloat(amount);
   const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
+
   if (!isNaN(parsed) && parsed > limit) {
     throw new Error(
       `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
@@ -63,6 +63,9 @@ function assertWithinSpendingLimit(amount: unknown): void {
         `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
     );
   }
+
+  // Record cumulative spending (after individual checks pass)
+  spendingTracker.record(amount);
 }
 
 const log = createLogger("orchestrator");
@@ -111,6 +114,12 @@ export interface AgentResult {
   data?: unknown;
   error?: string;
   /**
+   * Structured error type for programmatic error handling.
+   * Allows callers to distinguish between different error categories
+   * (e.g., InsufficientFunds, NetworkTimeout) without string matching.
+   */
+  errorType?: string;
+  /**
    * Correlation ID that ties every log line, persisted result, and webhook
    * dispatch for a single task execution together. Generated at dispatch time
    * unless the caller supplies one on the task.
@@ -134,7 +143,7 @@ function sanitizePayload(payload: unknown): unknown {
   for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
     const key = rawKey.trim();
     if (/secret|key|seed|mnemonic|private/i.test(key)) continue;
-    sanitized[key] = rawValue;
+    sanitized[key] = sanitizePayload(rawValue);
   }
   return sanitized;
 }
