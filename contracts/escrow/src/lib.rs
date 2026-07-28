@@ -70,6 +70,8 @@ pub enum EscrowError {
     InvalidExpiry = 7,
     /// The escrow has not been initialized yet.
     NotInitialized = 8,
+    /// depositor, recipient, and arbiter must all be distinct addresses.
+    InvalidParties = 9,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -92,6 +94,7 @@ impl EscrowContract {
     ///
     /// # Panics
     /// * `AlreadyInitialized` - If the escrow has already been initialised.
+    /// * `InvalidParties` - If depositor, recipient, and arbiter are not all distinct.
     /// * `InvalidAmount` - If amount is not positive.
     /// * `InvalidExpiry` - If expiry is not in the future.
     ///
@@ -113,7 +116,24 @@ impl EscrowContract {
 
         depositor.require_auth();
 
+        // Parties must all be distinct — a depositor who is also the arbiter
+        // could release funds to themselves, defeating the escrow purpose.
+        if depositor == arbiter {
+            panic_with_error!(&env, EscrowError::InvalidParties);
+        }
+        if depositor == recipient {
+            panic_with_error!(&env, EscrowError::InvalidParties);
+        }
+        if arbiter == recipient {
+            panic_with_error!(&env, EscrowError::InvalidParties);
+        }
+
+        // Ensure amount is positive and within a safe range to avoid overflow in token transfers.
         if amount <= 0 {
+            panic_with_error!(&env, EscrowError::InvalidAmount);
+        }
+        // Guard against amounts that could overflow when added to existing balances.
+        if amount > i128::MAX / 2 {
             panic_with_error!(&env, EscrowError::InvalidAmount);
         }
         if expiry <= env.ledger().timestamp() {
@@ -141,8 +161,11 @@ impl EscrowContract {
         env.storage().instance().set(&DataKey::Released, &false);
 
         env.events().publish(
-            (Symbol::new(&env, "initialized"),),
-            (depositor, recipient, amount),
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "initialized"),
+            ),
+            (depositor.clone(), recipient.clone(), amount),
         );
     }
 
@@ -190,14 +213,22 @@ impl EscrowContract {
 
         env.storage().instance().set(&DataKey::Released, &true);
 
+        // Transfer to stored_recipient (read from storage), not the caller parameter.
+        // This is the intentional pattern: destination always comes from storage,
+        // never from a caller-supplied argument, to prevent TOCTOU-style substitution.
         TokenClient::new(&env, &token).transfer(
             &env.current_contract_address(),
             &recipient,
             &amount,
         );
 
-        env.events()
-            .publish((Symbol::new(&env, "released"),), (recipient, amount));
+        env.events().publish(
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "released"),
+            ),
+            (recipient, amount),
+        );
     }
 
     /// Refund depositor after expiry. Only callable by the stored depositor.
@@ -249,14 +280,17 @@ impl EscrowContract {
 
         env.storage().instance().set(&DataKey::Released, &true);
 
+        // Transfer to stored_depositor (read from storage), not the caller parameter.
+        // This mirrors the pattern used in `release`, which transfers to stored_recipient,
+        // ensuring the destination is always the address recorded at initialization.
         TokenClient::new(&env, &token).transfer(
             &env.current_contract_address(),
-            &depositor,
+            &stored_depositor,
             &amount,
         );
 
         env.events()
-            .publish((Symbol::new(&env, "refunded"),), (depositor, amount));
+            .publish((Symbol::new(&env, "refunded"),), (stored_depositor, amount));
     }
 
     /// Return a snapshot of all escrow fields. Panics if not yet initialized.
@@ -309,6 +343,87 @@ impl EscrowContract {
                 .instance()
                 .get(&DataKey::Released)
                 .unwrap_or(false),
+        }
+    }
+
+    /// Release a partial amount of locked funds to the recipient. Only callable by the stored arbiter.
+    ///
+    /// Enables milestone-based PayFi contracts (e.g., 50% on delivery confirmation,
+    /// 50% on final acceptance). The escrow remains active (`Released = false`) until
+    /// the remaining stored amount reaches 0, at which point it is sealed.
+    ///
+    /// # Arguments
+    /// * `env`            - The execution environment.
+    /// * `arbiter`        - Must match the arbiter recorded at initialisation.
+    /// * `release_amount` - Number of token units to transfer to the recipient.
+    ///
+    /// # Panics
+    /// * `NotArbiter` - If the caller is not the stored arbiter.
+    /// * `AlreadyReleased` - If the escrow has already been fully settled.
+    /// * `InvalidAmount` - If `release_amount` is not positive or exceeds the stored amount.
+    ///
+    /// # Return Value
+    /// None. Emits a `"partial_released"` event (or `"released"` on final settlement).
+    pub fn release_partial(env: Env, arbiter: Address, release_amount: i128) {
+        // Read stored arbiter and authenticate (consistent TOCTOU fix from release())
+        let stored_arbiter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Arbiter)
+            .expect("escrow: state corrupted");
+        stored_arbiter.require_auth();
+        if arbiter != stored_arbiter {
+            panic_with_error!(&env, EscrowError::NotArbiter);
+        }
+
+        Self::assert_not_released(&env);
+
+        // Validate release_amount
+        let stored_amount: i128 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Amount)
+            .expect("escrow: state corrupted");
+
+        if release_amount <= 0 || release_amount > stored_amount {
+            panic_with_error!(&env, EscrowError::InvalidAmount);
+        }
+
+        let token: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Token)
+            .expect("escrow: state corrupted");
+        let recipient: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Recipient)
+            .expect("escrow: state corrupted");
+
+        let remaining = stored_amount - release_amount;
+
+        // Update stored amount to reflect partial release
+        env.storage()
+            .instance()
+            .set(&DataKey::Amount, &remaining);
+
+        // Transfer the partial amount to the recipient
+        TokenClient::new(&env, &token).transfer(
+            &env.current_contract_address(),
+            &recipient,
+            &release_amount,
+        );
+
+        if remaining == 0 {
+            // All funds distributed — seal the escrow
+            env.storage().instance().set(&DataKey::Released, &true);
+            env.events()
+                .publish((Symbol::new(&env, "released"),), (recipient.clone(), release_amount));
+        } else {
+            env.events().publish(
+                (Symbol::new(&env, "partial_released"),),
+                (recipient, release_amount, remaining),
+            );
         }
     }
 
@@ -370,8 +485,13 @@ impl EscrowContract {
             &amount,
         );
 
-        env.events()
-            .publish((Symbol::new(&env, "cancelled"),), (stored_depositor, amount));
+        env.events().publish(
+            (
+                Symbol::new(&env, "escrow"),
+                Symbol::new(&env, "cancelled"),
+            ),
+            (stored_depositor, amount),
+        );
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────

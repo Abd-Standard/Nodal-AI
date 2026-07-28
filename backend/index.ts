@@ -5,15 +5,16 @@
  */
 
 import { PayFiAgent } from "./agent";
-import { createHealthServer } from "./server";
+import { startHealthServer } from "./server";
 import { db } from "./db/client";
 import { createLogger } from "./utils/logger";
+import { initTelemetry, shutdownTelemetry } from "./telemetry";
+import { configPromise } from "./config";
 
 const log = createLogger("process");
 
-const agent = new PayFiAgent();
-const healthServer = createHealthServer();
-
+let agent: PayFiAgent;
+let healthServer: any;
 const HARD_KILL_MS = 10_000;
 let isShuttingDown = false;
 
@@ -31,18 +32,24 @@ async function shutdown(signal: string): Promise<void> {
 
   try {
     // 1. Stop accepting new tasks
-    agent.drain();
-
-    // 2. Wait for in-flight tasks to settle
-    await agent.waitForPendingTasks();
+    if (agent) {
+      agent.drain();
+      // 2. Wait for in-flight tasks to settle
+      await agent.waitForPendingTasks();
+    }
 
     // 3. Stop the health check server
-    await new Promise<void>((resolve, reject) =>
-      healthServer.close((err) => (err ? reject(err) : resolve()))
-    );
+    if (healthServer) {
+      await new Promise<void>((resolve, reject) =>
+        healthServer.close((err?: Error) => (err ? reject(err) : resolve()))
+      );
+    }
 
     // 4. Close database connection
     await db.close();
+
+    // 5. Shut down telemetry (flushes pending spans)
+    await shutdownTelemetry();
 
     clearTimeout(hardKill);
     log.info({ msg: "All resources released, exiting cleanly" });
@@ -54,7 +61,22 @@ async function shutdown(signal: string): Promise<void> {
   }
 }
 
-process.on("SIGTERM", () => shutdown("SIGTERM"));
-process.on("SIGINT",  () => shutdown("SIGINT"));
+async function start() {
+  await configPromise;
+
+  // Initialise OpenTelemetry export (no-op when OTLP_ENDPOINT is unset)
+  initTelemetry();
+
+  agent = new PayFiAgent();
+  healthServer = startHealthServer();
+
+  process.on("SIGTERM", () => shutdown("SIGTERM"));
+  process.on("SIGINT",  () => shutdown("SIGINT"));
+}
+
+start().catch((err) => {
+  log.error({ msg: "Failed to start agent process", error: err instanceof Error ? err.message : String(err) });
+  process.exit(1);
+});
 
 export { agent };

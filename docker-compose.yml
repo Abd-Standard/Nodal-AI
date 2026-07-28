@@ -68,6 +68,12 @@ services:
       interval: 30s
       timeout: 10s
       retries: 3
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
     restart: unless-stopped
     networks:
       - nodal-net

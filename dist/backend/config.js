@@ -52,6 +52,7 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MAINNET_SPENDING_CAP = exports.config = void 0;
+exports.formatValidationErrors = formatValidationErrors;
 const zod_1 = require("zod");
 const dotenv = __importStar(require("dotenv"));
 const stellar_sdk_1 = require("@stellar/stellar-sdk");
@@ -119,12 +120,36 @@ const EnvSchema = zod_1.z.object({
     X402_ASSET_CODE: zod_1.z.string().min(1).max(12).default("USDC"),
     X402_ASSET_ISSUER: zod_1.z
         .string({ required_error: "X402_ASSET_ISSUER is required" })
-        .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address"),
+        .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address")
+        .refine((val) => val.startsWith("G"), {
+        message: "X402_ASSET_ISSUER must start with G",
+    })
+        .refine((val) => {
+        try {
+            stellar_sdk_1.Keypair.fromPublicKey(val);
+            return true;
+        }
+        catch {
+            return false;
+        }
+    }, {
+        message: "X402_ASSET_ISSUER is not a valid Ed25519 public key",
+    }),
     ALLOWED_X402_ORIGINS: zod_1.z.string().optional(),
     // Spending cap
     AGENT_SPENDING_LIMIT: SpendingLimitSchema,
+    // Persistence
+    DB_PATH: zod_1.z.string().default("./agent.db"),
     // Logging
     LOG_LEVEL: zod_1.z.enum(["debug", "info", "warn", "error"]).default("info"),
+    // OpenTelemetry
+    OTLP_ENDPOINT: zod_1.z.string().url().optional(),
+    // Spending window for rate/cap computation
+    SPENDING_WINDOW_MS: zod_1.z.coerce
+        .number()
+        .int()
+        .min(100)
+        .default(86_400_000),
     // Retry behaviour
     // Exponential back-off: delay = RETRY_DELAY_MS * 2^(attempt-1), capped at 30 000 ms,
     // plus ±20% random jitter. Example — MAX_RETRIES=3, RETRY_DELAY_MS=1500 →
@@ -140,13 +165,47 @@ const EnvSchema = zod_1.z.object({
         .int()
         .min(100)
         .default(1500),
+    // Per-call RPC timeout in milliseconds.
+    // Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2, computed post-parse.
+    RPC_TIMEOUT_MS: zod_1.z.coerce
+        .number()
+        .int()
+        .min(100)
+        .optional(),
+    // Rate limiting
+    MAX_X402_PAYMENTS_PER_MINUTE: zod_1.z.coerce
+        .number()
+        .int()
+        .min(1)
+        .default(10),
+    // Maximum number of tasks allowed to execute concurrently in agent.run().
+    // Excess tasks are rejected immediately rather than queued.
+    MAX_CONCURRENT_TASKS: zod_1.z.coerce
+        .number()
+        .int()
+        .min(1)
+        .default(10),
+    MAX_SOROBAN_FEE_STROOPS: zod_1.z.coerce
+        .number()
+        .int()
+        .min(100)
+        .default(1_000_000),
+    // Health check HTTP server
+    HEALTH_PORT: zod_1.z.coerce.number().int().min(1).max(65535).default(3000),
+    // Webhook notifications
+    WEBHOOK_URL: zod_1.z.string().url().optional(),
+    WEBHOOK_SECRET: zod_1.z.string().min(1).optional(),
 });
 // ─── Loader ───────────────────────────────────────────────────────────────────
 function formatValidationErrors(errors) {
     return errors.issues
         .map((issue) => {
-        const field = issue.path.join(".") || "unknown";
-        // Redact any value that looks like a secret key
+        // Redact any path element that looks like a secret key — path may contain
+        // raw values (e.g., when a secret key is used as a Zod path segment).
+        const field = issue.path
+            .map((p) => String(p).replace(/S[A-Z2-7]{55}/g, "[REDACTED]"))
+            .join(".") || "unknown";
+        // Redact any value that looks like a secret key in the human-readable message
         const message = issue.message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
         return `  • ${field}: ${message}`;
     })
@@ -166,7 +225,8 @@ function loadConfig() {
     if (process.env.AGENT_SECRET_KEY_ARN) {
         try {
             const arn = process.env.AGENT_SECRET_KEY_ARN;
-            const region = arn.split(":")[3] || "us-east-1";
+            const arnParts = arn.split(":");
+            const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
             const command = `node -e "
         const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
         const client = new SecretsManagerClient({ region: '${region}' });
@@ -187,8 +247,17 @@ function loadConfig() {
             let parsedSecret = secret;
             try {
                 const json = JSON.parse(secret);
-                if (json && typeof json === "object") {
-                    parsedSecret = json.AGENT_SECRET_KEY || Object.values(json)[0];
+                if (json && typeof json === "object" && !Array.isArray(json)) {
+                    const candidate = json.AGENT_SECRET_KEY;
+                    if (typeof candidate === "string") {
+                        parsedSecret = candidate;
+                    }
+                    else {
+                        const firstValue = Object.values(json).find((value) => typeof value === "string");
+                        if (firstValue) {
+                            parsedSecret = firstValue;
+                        }
+                    }
                 }
             }
             catch {
@@ -237,13 +306,31 @@ function loadConfig() {
         }
     }
     // ── Build the config object — secret key stays in closure only ────────────
-    const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ...rest } = raw;
+    const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ALLOWED_X402_ORIGINS, AGENT_SECRET_KEY_ARN, OTLP_ENDPOINT, WEBHOOK_URL, WEBHOOK_SECRET, ...rest } = raw;
+    const rpcTimeoutMs = raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
+    // Derive the keypair once at startup. agentKeypair returns this cached instance
+    // on every call, avoiding repeated Ed25519 derivation.
+    const _keypair = stellar_sdk_1.Keypair.fromSecret(_secret);
+    const _secretRef = _secret;
     const cfg = {
         ...rest,
         AGENT_PUBLIC_KEY: derivedPublicKey,
+        RPC_TIMEOUT_MS: rpcTimeoutMs,
+        MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
+        MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
+        ...(ALLOWED_X402_ORIGINS && { ALLOWED_X402_ORIGINS }),
+        ...(AGENT_SECRET_KEY_ARN && { AGENT_SECRET_KEY_ARN }),
+        ...(OTLP_ENDPOINT && { OTLP_ENDPOINT }),
+        ...(WEBHOOK_URL && { WEBHOOK_URL }),
+        ...(WEBHOOK_SECRET && { WEBHOOK_SECRET }),
         // Secret is captured in closure; never on the object
-        agentKeypair: () => stellar_sdk_1.Keypair.fromSecret(_secret),
+        agentKeypair: () => _keypair,
     };
+    // Allow GC of the secret string now that the keypair is materialised.
+    // (JS strings are immutable, but this signals intent.)
+    (() => {
+        const _ = _secretRef;
+    })();
     // Startup banner — only safe fields
     process.stdout.write(`✅ [Config] Environment validated\n` +
         `   Network        : ${cfg.STELLAR_NETWORK}\n` +

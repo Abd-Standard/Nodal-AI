@@ -19,11 +19,18 @@ import * as rpcClient from "../backend/rpc_client";
 
 // ─── Module mocks ─────────────────────────────────────────────────────────────
 
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { Keypair, xdr } from "@stellar/stellar-sdk";
+import { SorobanQueryTool, SorobanQueryInputSchema } from "../backend/tools/SorobanQueryTool";
+import * as rpcClient from "../backend/rpc_client";
+
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
   submitTransaction: vi.fn(),
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
+  withTimeout: vi.fn((promise: Promise<unknown>) => promise),
+  resolveNetworkPassphrase: (_network: string) => "Test SDF Network ; September 2015",
   horizonServer: {},
   sorobanServer: {
     sendTransaction: vi.fn(),
@@ -54,6 +61,15 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
+      X402_ASSET_ISSUER:
+        "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      MAX_RETRIES: 3,
+      RETRY_DELAY_MS: 100,
+      RPC_TIMEOUT_MS: 1000,
+    },
+  };
+});
+
 const VALID_CONTRACT = "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH";
 
 function makeMockAccount(publicKey: string) {
@@ -66,6 +82,11 @@ function makeMockAccount(publicKey: string) {
     incrementedSequenceNumber: () => "101",
     thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
     flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
+    flags: {
+      auth_required: false,
+      auth_revocable: false,
+      auth_immutable: false,
+    },
     balances: [],
     signers: [],
     data_attr: {},
@@ -142,5 +163,62 @@ describe("SorobanQueryTool", () => {
 
     // sendTransaction must still never be called even when simulation throws
     expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+  });
+
+  describe("Successful query", () => {
+    it("returns parsed ScVal from simulation result", async () => {
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5") as any,
+      );
+
+      const mockPreparedTx = { fee: 100, sign: vi.fn() };
+
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(mockPreparedTx as any);
+
+      const result = await tool.query({
+        contractId: VALID_CONTRACT,
+        method: "balance",
+        args: [],
+      });
+
+      expect(result.simulationResult).toBe(mockPreparedTx);
+    });
+  });
+
+  describe("Simulation failure", () => {
+    it("propagates simulation error", async () => {
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5") as any,
+      );
+
+      vi.mocked(rpcClient.prepareSorobanTx).mockRejectedValue(
+        new Error("Soroban query failed: Contract error: insufficient balance"),
+      );
+
+      await expect(
+        tool.query({
+          contractId: VALID_CONTRACT,
+          method: "balance",
+          args: [],
+        }),
+      ).rejects.toThrow(/Soroban query failed/);
+    });
+
+    it("applies the RPC timeout wrapper around prepareSorobanTx", async () => {
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5") as any,
+      );
+      vi.mocked(rpcClient.withTimeout).mockRejectedValueOnce(new Error("timed out"));
+
+      await expect(
+        tool.query({
+          contractId: VALID_CONTRACT,
+          method: "balance",
+          args: [],
+        }),
+      ).rejects.toThrow(/timed out/);
+
+      expect(rpcClient.withTimeout).toHaveBeenCalledWith(expect.any(Promise), 1000);
+    });
   });
 });

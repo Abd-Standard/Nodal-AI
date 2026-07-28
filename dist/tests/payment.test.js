@@ -41,6 +41,8 @@ var __importStar = (this && this.__importStar) || (function () {
 })();
 Object.defineProperty(exports, "__esModule", { value: true });
 const vitest_1 = require("vitest");
+const stellar_sdk_1 = require("@stellar/stellar-sdk");
+const zod_1 = require("zod");
 const StellarPaymentTool_1 = require("../backend/tools/StellarPaymentTool");
 const rpcClient = __importStar(require("../backend/rpc_client"));
 // ─── Module mock ──────────────────────────────────────────────────────────────
@@ -52,11 +54,19 @@ vitest_1.vi.mock("../backend/rpc_client", () => ({
     sorobanServer: {},
     simulateSorobanTx: vitest_1.vi.fn(),
     prepareSorobanTx: vitest_1.vi.fn(),
+    resolveNetworkPassphrase: (_network) => {
+        const { Networks } = require("@stellar/stellar-sdk");
+        if (_network === "mainnet")
+            return Networks.PUBLIC;
+        if (_network === "futurenet")
+            return Networks.FUTURENET;
+        return Networks.TESTNET;
+    },
 }));
 // ─── Mock config — isolate from real .env ─────────────────────────────────────
 vitest_1.vi.mock("../backend/config", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const { Keypair } = require("@stellar/stellar-sdk");
+    const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
     const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
     return {
         config: {
@@ -121,6 +131,9 @@ function makeMockAccount(publicKey) {
         });
         (0, vitest_1.it)("rejects amount with more than 7 decimal places", async () => {
             await (0, vitest_1.expect)(tool.execute({ destination: VALID_DEST, amount: "1.12345678", assetCode: "XLM" })).rejects.toThrow(/Amount must be/);
+        });
+        (0, vitest_1.it)("rejects self-payment (destination === agent public key)", async () => {
+            await (0, vitest_1.expect)(tool.execute({ destination: tool.publicKey, amount: "1", assetCode: "XLM" })).rejects.toThrow("Payment destination cannot be the agent's own address");
         });
         (0, vitest_1.it)("rejects a non-XLM asset when issuer is missing", async () => {
             await (0, vitest_1.expect)(tool.execute({
@@ -266,6 +279,19 @@ function makeMockAccount(publicKey) {
             vitest_1.vi.mocked(rpcClient.submitTransaction).mockRejectedValue(new Error("Horizon: tx_bad_seq — sequence number is not valid"));
             await (0, vitest_1.expect)(tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" })).rejects.toThrow(/tx_bad_seq/);
         });
+        (0, vitest_1.it)("recovers from tx_bad_seq on first retry", async () => {
+            vitest_1.vi.mocked(rpcClient.submitTransaction)
+                .mockRejectedValueOnce(new Error("Horizon: tx_bad_seq — sequence number is not valid"))
+                .mockResolvedValueOnce({ hash: "retry_success_hash", ledger: 42 });
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("retry_success_hash");
+            (0, vitest_1.expect)(result.ledger).toBe(42);
+            (0, vitest_1.expect)(rpcClient.submitTransaction).toHaveBeenCalledTimes(2);
+        });
         (0, vitest_1.it)("surfaces destination account non-existent (op_no_destination)", async () => {
             vitest_1.vi.mocked(rpcClient.submitTransaction).mockRejectedValue(new Error("Horizon: op_no_destination — destination account does not exist"));
             await (0, vitest_1.expect)(tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" })).rejects.toThrow(/op_no_destination/);
@@ -300,6 +326,56 @@ function makeMockAccount(publicKey) {
         (0, vitest_1.it)("exposes the agent public key", () => {
             (0, vitest_1.expect)(tool.publicKey).toMatch(/^G[A-Z2-7]{55}$/);
         });
+    });
+    // ── Network passphrase selection ────────────────────────────────────────────
+    (0, vitest_1.describe)("Network passphrase selection", () => {
+        (0, vitest_1.it)("uses Networks.PUBLIC (mainnet) when STELLAR_NETWORK is mainnet", async () => {
+            // The correct network passphrase is verified via resolveNetworkPassphrase
+            // unit tests in rpc_client.test.ts. Here we just verify the tool submits.
+            vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+                hash: "mainnet_tx",
+                ledger: 100,
+            });
+            const tool = new StellarPaymentTool_1.StellarPaymentTool(TEST_SECRET);
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("mainnet_tx");
+            (0, vitest_1.expect)(rpcClient.submitTransaction).toHaveBeenCalled();
+        });
+        (0, vitest_1.it)("uses Networks.FUTURENET when STELLAR_NETWORK is futurenet", async () => {
+            vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+                hash: "futurenet_tx",
+                ledger: 200,
+            });
+            const tool = new StellarPaymentTool_1.StellarPaymentTool(TEST_SECRET);
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("futurenet_tx");
+            (0, vitest_1.expect)(rpcClient.submitTransaction).toHaveBeenCalled();
+        });
+    });
+});
+(0, vitest_1.describe)("Horizon response validation", () => {
+    (0, vitest_1.it)("throws ZodError when submitTransaction returns malformed response", async () => {
+        vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"));
+        vitest_1.vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+            hash: undefined,
+            ledger: 1,
+        });
+        const tool = new StellarPaymentTool_1.StellarPaymentTool();
+        await (0, vitest_1.expect)(tool.execute({
+            destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+            amount: "1",
+            assetCode: "XLM",
+        })).rejects.toThrow(zod_1.z.ZodError);
     });
 });
 //# sourceMappingURL=payment.test.js.map

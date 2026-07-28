@@ -6,6 +6,18 @@
  * Never broadcasts without a prior simulation pass.
  */
 import { z } from "zod";
+declare const SubmitResultSchema: z.ZodObject<{
+    hash: z.ZodString;
+    ledger: z.ZodNumber;
+}, "strip", z.ZodTypeAny, {
+    hash: string;
+    ledger: number;
+}, {
+    hash: string;
+    ledger: number;
+}>;
+export { SubmitResultSchema };
+export type SubmitResult = z.infer<typeof SubmitResultSchema>;
 /**
  * Zod schema for payment input validation.
  *

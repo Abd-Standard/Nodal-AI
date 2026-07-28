@@ -3,7 +3,7 @@
  * x402 machine-to-machine PayFi payment tool.
  */
 import { z } from "zod";
-export declare const X402ChallengeSchema: z.ZodObject<{
+export declare const X402ChallengeSchema: z.ZodEffects<z.ZodObject<{
     resource: z.ZodString;
     amount: z.ZodString;
     assetCode: z.ZodDefault<z.ZodString>;
@@ -12,16 +12,32 @@ export declare const X402ChallengeSchema: z.ZodObject<{
     nonce: z.ZodString;
     expiresAt: z.ZodString;
 }, "strip", z.ZodTypeAny, {
+    resource: string;
     amount: string;
     assetCode: string;
     assetIssuer: string;
-    resource: string;
     payTo: string;
     nonce: string;
     expiresAt: string;
 }, {
-    amount: string;
     resource: string;
+    amount: string;
+    payTo: string;
+    nonce: string;
+    expiresAt: string;
+    assetCode?: string | undefined;
+    assetIssuer?: string | undefined;
+}>, {
+    resource: string;
+    amount: string;
+    assetCode: string;
+    assetIssuer: string;
+    payTo: string;
+    nonce: string;
+    expiresAt: string;
+}, {
+    resource: string;
+    amount: string;
     payTo: string;
     nonce: string;
     expiresAt: string;
@@ -38,9 +54,12 @@ export interface X402PaymentProof {
     signedAt: string;
 }
 export declare class X402PaymentTool {
+    private usedNonces;
     private paymentTool;
     private keypair;
     private horizonServer;
+    private paymentCount;
+    private windowStart;
     constructor(secretKey?: string);
     respond(rawChallenge: unknown): Promise<X402PaymentProof>;
     verify(proof: X402PaymentProof, originalChallenge: X402Challenge): Promise<void>;

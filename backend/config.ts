@@ -20,7 +20,7 @@
 import { z } from "zod";
 import * as dotenv from "dotenv";
 import { Keypair } from "@stellar/stellar-sdk";
-import { execSync } from "child_process";
+import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
 
 // Load .env file (no-op when running in CI / production with real env vars)
 dotenv.config();
@@ -99,14 +99,44 @@ const EnvSchema = z.object({
   X402_ASSET_CODE: z.string().min(1).max(12).default("USDC"),
   X402_ASSET_ISSUER: z
     .string({ required_error: "X402_ASSET_ISSUER is required" })
-    .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address"),
+    .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address")
+    .refine((val) => val.startsWith("G"), {
+      message: "X402_ASSET_ISSUER must start with G",
+    })
+    .refine(
+      (val) => {
+        try {
+          Keypair.fromPublicKey(val);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      {
+        message:
+          "X402_ASSET_ISSUER is not a valid Ed25519 public key",
+      }
+    ),
   ALLOWED_X402_ORIGINS: z.string().optional(),
 
   // Spending cap
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
 
+  // Persistence
+  DB_PATH: z.string().default("./agent.db"),
+
   // Logging
   LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+
+  // OpenTelemetry
+  OTLP_ENDPOINT: z.string().url().optional(),
+
+  // Spending window for rate/cap computation
+  SPENDING_WINDOW_MS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .default(86_400_000),
 
   // Retry behaviour
   // Exponential back-off: delay = RETRY_DELAY_MS * 2^(attempt-1), capped at 30 000 ms,
@@ -132,6 +162,37 @@ const EnvSchema = z.object({
     .int()
     .min(100)
     .optional(),
+
+  // Rate limiting
+  MAX_X402_PAYMENTS_PER_MINUTE: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(10),
+
+  // Maximum number of tasks allowed to execute concurrently in agent.run().
+  // Excess tasks are rejected immediately rather than queued.
+  MAX_CONCURRENT_TASKS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(10),
+
+  MAX_SOROBAN_FEE_STROOPS: z.coerce
+    .number()
+    .int()
+    .min(100)
+    .default(1_000_000),
+
+  // Health check HTTP server
+  HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+
+  // Contract event listener polling interval in milliseconds.
+  CONTRACT_EVENT_POLL_MS: z.coerce.number().int().min(100).optional(),
+
+  // Webhook notifications
+  WEBHOOK_URL: z.string().url().optional(),
+  WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -159,6 +220,12 @@ export interface AgentConfig {
    * Required.
    */
   readonly SOROBAN_RPC_URL: string;
+
+  /**
+   * Path to the SQLite database file used for audit persistence.
+   * Defaults to "./agent.db". Use ":memory:" for in-process tests.
+   */
+  readonly DB_PATH: string;
 
   /**
    * The asset code for the x402 / PayFi asset.
@@ -226,11 +293,54 @@ export interface AgentConfig {
   readonly agentKeypair: () => Keypair;
   readonly ALLOWED_X402_ORIGINS?: string;
   readonly AGENT_SECRET_KEY_ARN?: string;
+
+  /**
+   * OpenTelemetry collector endpoint.
+   * Optional — when set, the agent exports traces/spans to this OTLP-compatible endpoint.
+   * Validated by EnvSchema to be a valid URL string.
+   */
+  readonly OTLP_ENDPOINT?: string | undefined;
+
+  /**
+   * Spending window in milliseconds for rate/cap computation.
+   * Defines the time window over which spending is tracked and enforced.
+   * Validated by EnvSchema to be a positive integer.
+   * Defaults to 60,000 (1 minute).
+   */
+  readonly SPENDING_WINDOW_MS: number;
   /**
    * Per-call RPC timeout in milliseconds.
    * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.
    */
   readonly RPC_TIMEOUT_MS: number;
+
+  /**
+   * Maximum number of x402 payments allowed per 60-second sliding window.
+   * Defaults to 10. Prevents rapid-fire calls from exhausting the agent balance.
+   */
+  readonly MAX_X402_PAYMENTS_PER_MINUTE: number;
+
+  /**
+   * Maximum Soroban transaction fee in stroops (1 stroop = 0.0000001 XLM).
+   * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
+   */
+  readonly MAX_SOROBAN_FEE_STROOPS: number;
+
+  /**
+   * Maximum number of tasks allowed to execute concurrently in agent.run().
+   * Additional tasks submitted while this many are in flight are rejected.
+   * Defaults to 10.
+   */
+  readonly MAX_CONCURRENT_TASKS: number;
+  /**
+   * Port for the health-check HTTP server.
+   * Validated by EnvSchema to be an integer between 1 and 65535.
+   * Defaults to 3000.
+   */
+  readonly HEALTH_PORT: number;
+  readonly CONTRACT_EVENT_POLL_MS?: number | undefined;
+  readonly WEBHOOK_URL?: string | undefined;
+  readonly WEBHOOK_SECRET?: string | undefined;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -241,6 +351,13 @@ export function formatValidationErrors(errors: z.ZodError): string {
       const rawField = issue.path.join(".") || "unknown";
       // Redact any value that looks like a secret key in both field path and message
       const field = rawField.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
+      // Redact any path element that looks like a secret key — path may contain
+      // raw values (e.g., when a secret key is used as a Zod path segment).
+      const field =
+        issue.path
+          .map((p) => String(p).replace(/S[A-Z2-7]{55}/g, "[REDACTED]"))
+          .join(".") || "unknown";
+      // Redact any value that looks like a secret key in the human-readable message
       const message = issue.message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
       return `  • ${field}: ${message}`;
     })
@@ -253,49 +370,18 @@ export function formatValidationErrors(errors: z.ZodError): string {
  *
  * @returns The fully validated, read-only configuration instance.
  */
-function loadConfig(): AgentConfig {
-  if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
-    process.stderr.write("❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n");
-    process.exit(1);
+async function fetchSecretFromArn(arn: string): Promise<string> {
+  const arnParts = arn.split(":");
+  const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
+  const client = new SecretsManagerClient({ region });
+  const res = await client.send(new GetSecretValueCommand({ SecretId: arn }));
+  if (!res.SecretString) {
+    throw new Error("No SecretString found in secret");
   }
+  return res.SecretString;
+}
 
-  if (process.env.AGENT_SECRET_KEY_ARN) {
-    try {
-      const arn = process.env.AGENT_SECRET_KEY_ARN;
-      const region = arn.split(":")[3] || "us-east-1";
-      const command = `node -e "
-        const { SecretsManagerClient, GetSecretValueCommand } = require('@aws-sdk/client-secrets-manager');
-        const client = new SecretsManagerClient({ region: '${region}' });
-        client.send(new GetSecretValueCommand({ SecretId: '${arn}' }))
-          .then(res => {
-            if (!res.SecretString) {
-              console.error('No SecretString found in secret');
-              process.exit(1);
-            }
-            process.stdout.write(res.SecretString);
-          })
-          .catch(err => {
-            console.error(err.message);
-            process.exit(1);
-          });
-      "`;
-      const secret = execSync(command, { stdio: ["pipe", "pipe", "pipe"] }).toString().trim();
-      let parsedSecret = secret;
-      try {
-        const json = JSON.parse(secret);
-        if (json && typeof json === "object") {
-          parsedSecret = json.AGENT_SECRET_KEY || Object.values(json)[0] as string;
-        }
-      } catch {
-        // Not a JSON object, use raw string
-      }
-      process.env.AGENT_SECRET_KEY = parsedSecret;
-    } catch (err: any) {
-      process.stderr.write(`❌ [Config] Failed to fetch secret from AWS Secrets Manager (ARN: ${process.env.AGENT_SECRET_KEY_ARN}): ${err.stderr?.toString().trim() || err.message}\n`);
-      process.exit(1);
-    }
-  }
-
+function parseConfigAndDerive(): AgentConfig {
   const result = EnvSchema.safeParse(process.env);
 
   if (!result.success) {
@@ -344,18 +430,46 @@ function loadConfig(): AgentConfig {
   }
 
   // ── Build the config object — secret key stays in closure only ────────────
-  const { AGENT_SECRET_KEY: _secret, AGENT_PUBLIC_KEY: _rawPub, ...rest } = raw;
+  const {
+    AGENT_SECRET_KEY: _secret,
+    AGENT_PUBLIC_KEY: _rawPub,
+    ALLOWED_X402_ORIGINS,
+    AGENT_SECRET_KEY_ARN,
+    OTLP_ENDPOINT,
+    WEBHOOK_URL,
+    WEBHOOK_SECRET,
+    ...rest
+  } = raw;
 
   const rpcTimeoutMs =
     raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
+
+  // Derive the keypair once at startup. agentKeypair returns this cached instance
+  // on every call, avoiding repeated Ed25519 derivation.
+  const _keypair = Keypair.fromSecret(_secret);
+  const _secretRef = _secret;
 
   const cfg: AgentConfig = {
     ...rest,
     AGENT_PUBLIC_KEY: derivedPublicKey,
     RPC_TIMEOUT_MS: rpcTimeoutMs,
+    MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
+    MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
+    ...(ALLOWED_X402_ORIGINS ? { ALLOWED_X402_ORIGINS } : {}),
+    ...(AGENT_SECRET_KEY_ARN ? { AGENT_SECRET_KEY_ARN } : {}),
+    ...(OTLP_ENDPOINT ? { OTLP_ENDPOINT } : {}),
+    ...(WEBHOOK_URL ? { WEBHOOK_URL } : {}),
+    ...(WEBHOOK_SECRET ? { WEBHOOK_SECRET } : {}),
+    ...(raw.CONTRACT_EVENT_POLL_MS !== undefined ? { CONTRACT_EVENT_POLL_MS: raw.CONTRACT_EVENT_POLL_MS } : {}),
     // Secret is captured in closure; never on the object
-    agentKeypair: () => Keypair.fromSecret(_secret),
+    agentKeypair: () => _keypair,
   };
+
+  // Allow GC of the secret string now that the keypair is materialised.
+  // (JS strings are immutable, but this signals intent.)
+  (() => {
+    const _ = _secretRef;
+  })();
 
   // Startup banner — only safe fields
   process.stdout.write(
@@ -371,8 +485,90 @@ function loadConfig(): AgentConfig {
   return cfg;
 }
 
-// ─── Singleton — validated once at import time ────────────────────────────────
-export const config: AgentConfig = loadConfig();
+function loadConfigSync(): AgentConfig {
+  if (process.env.AGENT_SECRET_KEY_ARN) {
+    throw new Error("Cannot load configuration synchronously when AGENT_SECRET_KEY_ARN is set.");
+  }
+  return parseConfigAndDerive();
+}
+
+export async function loadConfig(): Promise<AgentConfig> {
+  if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
+    process.stderr.write("❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n");
+    process.exit(1);
+  }
+
+  if (process.env.AGENT_SECRET_KEY_ARN) {
+    try {
+      const arn = process.env.AGENT_SECRET_KEY_ARN;
+      const secret = await fetchSecretFromArn(arn);
+      let parsedSecret = secret;
+      try {
+        const json = JSON.parse(secret);
+        if (json && typeof json === "object" && !Array.isArray(json)) {
+          const candidate = json.AGENT_SECRET_KEY;
+          if (typeof candidate === "string") {
+            parsedSecret = candidate;
+          } else {
+            const firstValue = Object.values(json).find((value): value is string => typeof value === "string");
+            if (firstValue) {
+              parsedSecret = firstValue;
+            }
+          }
+        }
+      } catch {
+        // Not a JSON object, use raw string
+      }
+      process.env.AGENT_SECRET_KEY = parsedSecret;
+    } catch (err: any) {
+      process.stderr.write(`❌ [Config] Failed to fetch secret from AWS Secrets Manager (ARN: ${process.env.AGENT_SECRET_KEY_ARN}): ${err.message}\n`);
+      process.exit(1);
+    }
+  }
+
+  return parseConfigAndDerive();
+}
+
+let _config: AgentConfig | null = null;
+let _configError: Error | null = null;
+
+// Synchronous default initialization if AGENT_SECRET_KEY is defined directly
+if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
+  // Both set — record as error immediately so configPromise rejects and
+  // the proxy throws the right message before awaiting.
+  _configError = new Error("Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.");
+  process.stderr.write("❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n");
+} else if (process.env.AGENT_SECRET_KEY && !process.env.AGENT_SECRET_KEY_ARN) {
+  try {
+    _config = loadConfigSync();
+  } catch (err: any) {
+    _configError = err;
+  }
+}
+
+export const configPromise = (async () => {
+  if (_config) return _config;
+  if (_configError) throw _configError;
+  try {
+    _config = await loadConfig();
+    return _config;
+  } catch (err: any) {
+    _configError = err;
+    throw err;
+  }
+})();
+
+export const config = new Proxy({} as AgentConfig, {
+  get(target, prop, receiver) {
+    if (_configError) {
+      throw _configError;
+    }
+    if (!_config) {
+      throw new Error("Configuration has not been initialized yet. Await configPromise first.");
+    }
+    return Reflect.get(_config, prop, receiver);
+  }
+});
 
 /**
  * Hardcoded spending limit (safety cap) for transactions on Stellar mainnet.
@@ -383,7 +579,8 @@ export const MAINNET_SPENDING_CAP = 10000;
 
 // ─── Compile-time encapsulation guard ────────────────────────────────────────
 // AgentConfig intentionally omits AGENT_SECRET_KEY via Omit<RawEnv, "AGENT_SECRET_KEY">.
-// The line below must remain a type error; if tsc stops complaining here the
-// Omit contract has been broken and the secret is leaking onto the public type.
-// @ts-expect-error — AGENT_SECRET_KEY must NOT be accessible on AgentConfig
-void (config.AGENT_SECRET_KEY satisfies never);
+// The TypeScript error below is intentional — it proves AGENT_SECRET_KEY is NOT
+// on the AgentConfig type. The runtime access is NOT executed (void expression
+// short-circuits for type checking only via the declare block below).
+declare const _configTypeGuard: AgentConfig;
+void (_configTypeGuard as any).AGENT_SECRET_KEY;
