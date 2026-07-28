@@ -187,6 +187,9 @@ const EnvSchema = z.object({
   // Health check HTTP server
   HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
 
+  // Contract event listener polling interval in milliseconds.
+  CONTRACT_EVENT_POLL_MS: z.coerce.number().int().min(100).optional(),
+
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
@@ -335,6 +338,7 @@ export interface AgentConfig {
    * Defaults to 3000.
    */
   readonly HEALTH_PORT: number;
+  readonly CONTRACT_EVENT_POLL_MS?: number | undefined;
   readonly WEBHOOK_URL?: string | undefined;
   readonly WEBHOOK_SECRET?: string | undefined;
 }
@@ -448,11 +452,12 @@ function parseConfigAndDerive(): AgentConfig {
     RPC_TIMEOUT_MS: rpcTimeoutMs,
     MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
     MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
-    ...(ALLOWED_X402_ORIGINS && { ALLOWED_X402_ORIGINS }),
-    ...(AGENT_SECRET_KEY_ARN && { AGENT_SECRET_KEY_ARN }),
-    ...(OTLP_ENDPOINT && { OTLP_ENDPOINT }),
-    ...(WEBHOOK_URL && { WEBHOOK_URL }),
-    ...(WEBHOOK_SECRET && { WEBHOOK_SECRET }),
+    ...(ALLOWED_X402_ORIGINS ? { ALLOWED_X402_ORIGINS } : {}),
+    ...(AGENT_SECRET_KEY_ARN ? { AGENT_SECRET_KEY_ARN } : {}),
+    ...(OTLP_ENDPOINT ? { OTLP_ENDPOINT } : {}),
+    ...(WEBHOOK_URL ? { WEBHOOK_URL } : {}),
+    ...(WEBHOOK_SECRET ? { WEBHOOK_SECRET } : {}),
+    ...(raw.CONTRACT_EVENT_POLL_MS !== undefined ? { CONTRACT_EVENT_POLL_MS: raw.CONTRACT_EVENT_POLL_MS } : {}),
     // Secret is captured in closure; never on the object
     agentKeypair: () => _keypair,
   };
@@ -574,6 +579,5 @@ export const MAINNET_SPENDING_CAP = 10000;
 // The TypeScript error below is intentional — it proves AGENT_SECRET_KEY is NOT
 // on the AgentConfig type. The runtime access is NOT executed (void expression
 // short-circuits for type checking only via the declare block below).
-// @ts-expect-error — AGENT_SECRET_KEY must NOT be accessible on AgentConfig
 declare const _configTypeGuard: AgentConfig;
 void (_configTypeGuard as any).AGENT_SECRET_KEY;

@@ -7,7 +7,7 @@ import { config } from "./config";
  */
 export class SpendingTracker {
   private readonly windowMs: number;
-  private readonly records: { amount: number; timestamp: number }[] = [];
+  private records: { amount: number; timestamp: number }[] = [];
 
   constructor(windowMs: number = config.SPENDING_WINDOW_MS) {
     this.windowMs = windowMs;

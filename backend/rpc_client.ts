@@ -260,10 +260,63 @@ export async function simulateSorobanTx(tx: Transaction) {
   );
 }
 
+function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Array<unknown> }> }) {
+  const operations = Array.isArray((tx as { operations?: unknown[] }).operations)
+    ? (tx as { operations?: Array<{ auth?: Array<unknown> }> }).operations ?? []
+    : [];
+
+  for (const operation of operations) {
+    const authEntries = Array.isArray(operation?.auth) ? operation.auth : [];
+    for (const authEntry of authEntries) {
+      const authObject = authEntry as {
+        credentials?: () => {
+          switch?: () => unknown;
+          address?: () => {
+            address?: () => {
+              accountId?: () => {
+                ed25519?: () => Uint8Array;
+                muxedEd25519?: () => { ed25519?: () => Uint8Array };
+              };
+            };
+          };
+        };
+      };
+
+      const credentials = authObject.credentials?.();
+      if (!credentials) continue;
+
+      const hasAddressCredentials = typeof credentials.address === "function";
+      if (!hasAddressCredentials) {
+        continue;
+      }
+
+      const address = credentials.address?.();
+      const innerAddress = address?.address?.();
+      const accountId = innerAddress?.accountId?.();
+      const ed25519 = accountId?.ed25519?.();
+      const muxedEd25519 = accountId?.muxedEd25519?.();
+      const rawKey = ed25519 ?? muxedEd25519?.ed25519?.();
+
+      if (!rawKey) {
+        throw new Error("Unexpected Soroban auth signer format");
+      }
+
+      const signer = StrKey.encodeEd25519PublicKey(rawKey);
+      if (signer !== config.AGENT_PUBLIC_KEY) {
+        throw new Error(`Unexpected Soroban auth signer: ${signer}`);
+      }
+    }
+  }
+}
+
 export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
   const simResult = await simulateSorobanTx(tx);
   if (rpc.Api.isSimulationError(simResult)) {
     throw new Error("Soroban simulation failed: ");
   }
-  return rpc.assembleTransaction(tx, simResult).build();
+
+  const builtTx = rpc.assembleTransaction(tx, simResult).build();
+  validateSorobanAuth(builtTx as Transaction | { operations?: Array<{ auth?: Array<unknown> }> });
+
+  return builtTx;
 }
