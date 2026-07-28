@@ -31,7 +31,7 @@ import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
-import { horizonServer } from "./rpc_client";
+import { horizonServer, StellarRPCError } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
 import { dispatchWebhook } from "./webhook";
@@ -488,6 +488,9 @@ export class PayFiAgent extends EventEmitter {
         { taskType: task.type, error: safe, sanitizedPayload: sanitized },
         "Task failed"
       );
+      if (err instanceof StellarRPCError) {
+        this.emit("task:retry_exhausted", { taskType: task.type, attempts: config.MAX_RETRIES });
+      }
       const result: AgentResult = {
         success: false,
         taskType: task.type,
