@@ -66,6 +66,33 @@ export class FeeBumpTool {
       throw new Error("Inner transaction must not itself be a fee-bump transaction");
     }
 
+    // ── Network passphrase guard ──────────────────────────────────────────────
+    // XDR does not embed the network passphrase, so TransactionBuilder.fromXDR()
+    // will successfully deserialize a transaction signed for any network.
+    // We detect cross-network XDRs by verifying the source account's signature
+    // against the transaction hash computed with the current network passphrase.
+    // If the signature is invalid for our hash, the inner tx was signed for a
+    // different network and must be rejected before we build or submit the
+    // fee-bump envelope.
+    if (innerTx.signatures.length > 0) {
+      const sourceKeypair = Keypair.fromPublicKey(innerTx.source);
+      const sourceHint = sourceKeypair.signatureHint();
+      const sourceSig = innerTx.signatures.find((d) =>
+        d.hint().equals(sourceHint)
+      );
+
+      if (sourceSig) {
+        const sigValid = sourceKeypair.verify(innerTx.hash(), sourceSig.signature());
+        if (!sigValid) {
+          throw new Error(
+            "Inner transaction was signed for a different network passphrase. " +
+            "Ensure the inner XDR originates from the same network as the agent " +
+            `(${this.networkPassphrase}).`
+          );
+        }
+      }
+    }
+
     const baseFee = parseInt(innerTx.fee, 10);
     const operationCount = innerTx.operations.length || 1;
     const feePerOp = Math.ceil(baseFee / operationCount);
