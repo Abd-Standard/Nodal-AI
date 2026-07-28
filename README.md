@@ -183,6 +183,22 @@ Responds to a sample x402 payment challenge and prints the resulting `X402Paymen
 npx ts-node scripts/examples/respond_x402.ts
 ```
 
+### `multisig_payment.ts` — multisig_payment
+
+Demonstrates the two-phase multisig workflow: first dispatch returns an unsigned XDR for external signature collection, then re-dispatch with collected signatures to submit (simulate-only in this example).
+
+```bash
+npx ts-node scripts/examples/multisig_payment.ts
+```
+
+### `place_dex_offer.ts` — dex_offer
+
+Places a manage-sell offer on the Stellar DEX. This example creates an offer to sell XLM for USDC at a specified price. Use `action: "create"` to place, `"update"` to modify, or `"delete"` to cancel.
+
+```bash
+npx ts-node scripts/examples/place_dex_offer.ts
+```
+
 ---
 
 ## E2E Tests
@@ -222,7 +238,7 @@ The primary integration surface for developers. Dispatch tasks to the agent via 
 ### TaskType
 
 ```typescript
-type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump"
+type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump" | "account_info"
 ```
 
 | Value | Description |
@@ -232,6 +248,7 @@ type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_pa
 | `x402_respond` | Respond to an x402 payment challenge with spending limit guard |
 | `path_payment` | Cross-asset path payment strict send via the Stellar DEX |
 | `fee_bump` | Wrap an existing transaction in a fee-bump envelope for sponsored retry |
+| `account_info` | Fetch the agent's account balances, sequence number, and trustlines from Horizon |
 
 ### AgentTask
 
@@ -244,8 +261,17 @@ interface AgentTask {
 
 Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }`
-- `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; ... }`
+- `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; simulateOnly?: boolean; ... }`
 - `x402_respond`: `{ resource: string; amount: string; assetCode?: string; assetIssuer?: string; payTo: string; nonce: string; expiresAt: string }`
+- `change_trust`: `{ assetCode: string; assetIssuer: string; action: "add" | "remove"; limit?: string }`
+- `batch_payment`: `{ payments: PaymentInput[] }` (max 100 payments; aggregate spending limit enforced)
+- `multisig_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string; additionalSigners: string[]; minSignatures: number; signatures?: string[] }`
+- `dex_offer`: `{ action: "create" | "update" | "delete"; selling: Asset; buying: Asset; amount: string; price: string; offerId?: string | number }`
+- `path_payment`: `{ destination: string; sendAsset: Asset; sendMax: string; destAsset: Asset; destAmount: string; ... }`
+- `fee_bump`: `{ innerTx: string; feeAccount: string; maxFee: string }`
+- `account_info`: `{ publicKey?: string }`
+- `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
+- `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
 
 ### AgentResult
 

@@ -69,13 +69,13 @@ export function saveResult(result: PersistedResult): void {
     });
 }
 
-export function getResults(limit = 100): PersistedResult[] {
+export function getResults(limit = 100, offset = 0): PersistedResult[] {
   const rows = getDb()
     .prepare(
       `SELECT timestamp, taskType, success, data, error, correlationId
-       FROM agent_results ORDER BY id DESC LIMIT ?`
+       FROM agent_results ORDER BY id DESC LIMIT ? OFFSET ?`
     )
-    .all(limit) as Array<{
+    .all(limit, offset) as Array<{
       timestamp:     string;
       taskType:      string;
       success:       number;
@@ -84,14 +84,17 @@ export function getResults(limit = 100): PersistedResult[] {
       correlationId: string | null;
     }>;
 
-  return rows.map((r) => ({
-    timestamp:     r.timestamp,
-    taskType:      r.taskType as AgentResult["taskType"],
-    success:       r.success === 1,
-    data:          r.data !== null ? JSON.parse(r.data) : undefined,
-    error:         r.error ?? undefined,
-    correlationId: r.correlationId ?? undefined,
-  }));
+  return rows.map((r) => {
+    const result: PersistedResult = {
+      timestamp: r.timestamp,
+      taskType: r.taskType as AgentResult["taskType"],
+      success: r.success === 1,
+      data: r.data !== null ? JSON.parse(r.data) : undefined,
+    };
+    if (r.error !== null) result.error = r.error;
+    if (r.correlationId !== null) result.correlationId = r.correlationId;
+    return result;
+  });
 }
 
 /** Replace the underlying DB instance — used in tests to inject an in-memory DB. */

@@ -384,11 +384,14 @@ export class PayFiAgent extends EventEmitter {
 
     // ── Concurrency rate limit — reject rather than queue when saturated ──
     if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) {
-      taskLog.warn("Task rejected — max concurrent tasks reached", {
-        taskType: task.type,
-        activeTasks: this.activeTasks,
-        maxConcurrentTasks: config.MAX_CONCURRENT_TASKS,
-      });
+      taskLog.warn(
+        {
+          taskType: task.type,
+          activeTasks: this.activeTasks,
+          maxConcurrentTasks: config.MAX_CONCURRENT_TASKS,
+        },
+        "Task rejected — max concurrent tasks reached"
+      );
       return {
         success: false,
         taskType: task.type,
@@ -400,7 +403,7 @@ export class PayFiAgent extends EventEmitter {
     }
 
     this.activeTasks++;
-    taskLog.info("Running task", { taskType: task.type });
+    taskLog.info({ taskType: task.type }, "Running task");
     try {
       let data: unknown;
 
@@ -465,7 +468,7 @@ export class PayFiAgent extends EventEmitter {
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
       }
 
-      taskLog.info("Task completed", { taskType: task.type });
+      taskLog.info({ taskType: task.type }, "Task completed");
       const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
       this.emit("task:complete", result);
 
@@ -477,9 +480,11 @@ export class PayFiAgent extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       const safe = redactSecretString(message);
       const sanitized = sanitizePayload(task.payload);
-      const errorType = err instanceof StructuredError ? err.errorType : ErrorType.UnknownError;
-      taskLog.error("Task failed", { taskType: task.type, error: safe, errorType, sanitizedPayload: sanitized });
-      const result: AgentResult = { success: false, taskType: task.type, error: safe, errorType, correlationId };
+      taskLog.error(
+        { taskType: task.type, error: safe, sanitizedPayload: sanitized },
+        "Task failed"
+      );
+      const result: AgentResult = { success: false, taskType: task.type, error: safe, correlationId };
       this.emit("task:failed", result);
       void dispatchWebhook(result);
       return result;
