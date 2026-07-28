@@ -21,7 +21,7 @@ export function listen(
   let cursor: string | undefined;
   let startLedgerPromise: Promise<number> | undefined;
 
-  const pollIntervalMs = config.RETRY_DELAY_MS * 2;
+  const pollIntervalMs = config.CONTRACT_EVENT_POLL_MS ?? config.RETRY_DELAY_MS * 2;
 
   const poll = async () => {
     try {
@@ -59,6 +59,7 @@ export function listen(
     }
   };
 
+  void poll();
   const intervalId = setInterval(poll, pollIntervalMs);
   return () => clearInterval(intervalId);
 }

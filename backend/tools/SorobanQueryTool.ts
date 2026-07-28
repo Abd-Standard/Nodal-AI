@@ -10,6 +10,7 @@ import { SorobanInvokeTool, SorobanInvokeInputSchema } from "./SorobanInvokeTool
 import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
+import { withTimeout } from "../rpc_client";
 
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
@@ -46,7 +47,10 @@ export class SorobanQueryTool {
       method: input.method,
       contractId: input.contractId,
     });
-    const result = await this.invokeTool.execute({ ...input, simulateOnly: true });
+    const result = await withTimeout(
+      this.invokeTool.execute({ ...input, simulateOnly: true }),
+      config.RPC_TIMEOUT_MS
+    );
     if ("simulationResult" in result) {
       return { simulationResult: result.simulationResult };
     }

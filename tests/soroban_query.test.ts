@@ -8,6 +8,7 @@ vi.mock("../backend/rpc_client", () => ({
   submitTransaction: vi.fn(),
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
+  withTimeout: vi.fn((promise: Promise<unknown>) => promise),
   resolveNetworkPassphrase: (_network: string) => "Test SDF Network ; September 2015",
   horizonServer: {},
   sorobanServer: {
@@ -32,6 +33,7 @@ vi.mock("../backend/config", () => {
         "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
       MAX_RETRIES: 3,
       RETRY_DELAY_MS: 100,
+      RPC_TIMEOUT_MS: 1000,
     },
   };
 });
@@ -104,6 +106,23 @@ describe("SorobanQueryTool", () => {
           args: [],
         }),
       ).rejects.toThrow(/Soroban query failed/);
+    });
+
+    it("applies the RPC timeout wrapper around prepareSorobanTx", async () => {
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5") as any,
+      );
+      vi.mocked(rpcClient.withTimeout).mockRejectedValueOnce(new Error("timed out"));
+
+      await expect(
+        tool.query({
+          contractId: VALID_CONTRACT,
+          method: "balance",
+          args: [],
+        }),
+      ).rejects.toThrow(/timed out/);
+
+      expect(rpcClient.withTimeout).toHaveBeenCalledWith(expect.any(Promise), 1000);
     });
   });
 });

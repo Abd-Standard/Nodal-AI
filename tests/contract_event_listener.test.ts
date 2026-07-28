@@ -12,6 +12,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => ({
   config: {
     RETRY_DELAY_MS: 100,
+    CONTRACT_EVENT_POLL_MS: 300,
   },
 }));
 
@@ -114,7 +115,6 @@ describe("ContractEventListener", () => {
     } as any);
 
     const onEvent = vi.fn();
-    // pollIntervalMs = RETRY_DELAY_MS * 2 = 200ms (mocked config)
     stopListening = listen(VALID_CONTRACT, [], onEvent);
 
     await vi.advanceTimersByTimeAsync(600);
