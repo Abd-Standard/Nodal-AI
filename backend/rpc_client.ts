@@ -1,4 +1,4 @@
-﻿/**
+/**
  * backend/rpc_client.ts
  * Thin wrapper around Horizon + Soroban RPC with retry logic and rate-limit awareness.
  */

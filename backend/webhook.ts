@@ -4,7 +4,7 @@
  * Signs the payload with HMAC-SHA256 if WEBHOOK_SECRET is set.
  */
 
-import { createHmac } from "crypto";
+import crypto, { createHmac } from "crypto";
 import axios from "axios";
 import { config } from "./config";
 import { withRetry } from "./rpc_client";
@@ -15,6 +15,13 @@ const log = createLogger("webhook");
 
 export function signPayload(payload: string, secret: string): string {
   return createHmac("sha256", secret).update(payload).digest("hex");
+}
+
+export function verifyWebhookSignature(payload: string, sig: string, secret: string): boolean {
+  const expected = Buffer.from(signPayload(payload, secret), "hex");
+  const received = Buffer.from(sig, "hex");
+  if (expected.length !== received.length) return false;
+  return crypto.timingSafeEqual(expected, received);
 }
 
 export async function dispatchWebhook(result: AgentResult): Promise<void> {

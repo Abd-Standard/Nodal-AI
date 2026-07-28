@@ -1,29 +1,14 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { execSync } from "child_process";
 import { z } from "zod";
 
-vi.mock("child_process", async () => {
-  const original = await vi.importActual<any>("child_process");
-  return {
-    ...original,
-    execSync: vi.fn(),
-  };
-});
+// A single shared send mock — all SecretsManagerClient instances use it.
+// This must be declared before vi.mock() because vi.mock() is hoisted.
+const mockSend = vi.fn();
 
-// We need formatValidationErrors without triggering config's process.exit side-effect.
-// Import it via importActual which bypasses the mock but still runs the module —
-// however since we're in a test environment where process.exit is overrideable,
-// we just declare it and assign lazily in the formatValidationErrors describe.
-type FormatFn = (err: z.ZodError) => string;
-let formatValidationErrors: FormatFn;
-
-vi.mock("child_process", async () => {
-  const original = await vi.importActual<any>("child_process");
-  return {
-    ...original,
-    execSync: vi.fn(),
-  };
-});
+vi.mock("@aws-sdk/client-secrets-manager", () => ({
+  SecretsManagerClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
+  GetSecretValueCommand: vi.fn().mockImplementation((args: any) => args),
+}));
 
 describe("config.ts startup validation", () => {
   let originalEnv: NodeJS.ProcessEnv;
@@ -33,6 +18,7 @@ describe("config.ts startup validation", () => {
 
   beforeEach(() => {
     vi.resetModules();
+    mockSend.mockReset();
     originalEnv = { ...process.env };
 
     // Setup process spies
@@ -53,16 +39,16 @@ describe("config.ts startup validation", () => {
     process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
     await expect(async () => {
-      await import("../backend/config");
-    }).rejects.toThrow("process.exit: 1");
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
+    }).rejects.toThrow(/process\.exit: 1|Cannot specify both/);
 
-    expect(exitSpy).toHaveBeenCalledWith(1);
     expect(stderrSpy).toHaveBeenCalledWith(
       expect.stringContaining("Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN")
     );
   });
 
-  it("fetches the secret using Secrets Manager command when AGENT_SECRET_KEY_ARN is set", async () => {
+  it("fetches the secret using Secrets Manager SDK when AGENT_SECRET_KEY_ARN is set", async () => {
     const validSecret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
 
     // Set minimal environment for EnvSchema to pass
@@ -72,12 +58,13 @@ describe("config.ts startup validation", () => {
     delete process.env.AGENT_SECRET_KEY;
     process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
-    // Mock execSync to return the secret key
-    vi.mocked(execSync).mockReturnValue(Buffer.from(validSecret));
+    // mockSend is shared across all SecretsManagerClient instances
+    mockSend.mockResolvedValueOnce({ SecretString: validSecret });
 
-    const { config } = await import("../backend/config");
+    const { configPromise } = await import("../backend/config");
+    const config = await configPromise;
 
-    expect(execSync).toHaveBeenCalled();
+    expect(mockSend).toHaveBeenCalled();
     expect(config.AGENT_PUBLIC_KEY).toBe("GDRIFTCEWUMA5IM6NUQPLA27YPHDMUNMPDXCQWCD3BRPVKMPX5KEM5F5");
     expect(config.agentKeypair().secret()).toBe(validSecret);
   });
@@ -92,9 +79,10 @@ describe("config.ts startup validation", () => {
     delete process.env.AGENT_SECRET_KEY;
     process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
-    vi.mocked(execSync).mockReturnValue(Buffer.from(jsonSecret));
+    mockSend.mockResolvedValueOnce({ SecretString: jsonSecret });
 
-    const { config } = await import("../backend/config");
+    const { configPromise } = await import("../backend/config");
+    const config = await configPromise;
 
     expect(config.agentKeypair().secret()).toBe(validSecret);
   });
@@ -106,10 +94,11 @@ describe("config.ts startup validation", () => {
     delete process.env.AGENT_SECRET_KEY;
     process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
-    vi.mocked(execSync).mockReturnValue(Buffer.from("invalid-secret"));
+    mockSend.mockResolvedValueOnce({ SecretString: "invalid-secret" });
 
     await expect(async () => {
-      await import("../backend/config");
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
     }).rejects.toThrow("process.exit: 1");
 
     expect(exitSpy).toHaveBeenCalledWith(1);

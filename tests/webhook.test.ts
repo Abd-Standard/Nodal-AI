@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHmac } from "crypto";
-import { signPayload, dispatchWebhook } from "../backend/webhook";
+import { signPayload, dispatchWebhook, verifyWebhookSignature } from "../backend/webhook";
 import type { AgentResult } from "../backend/agent";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -50,6 +50,35 @@ describe("signPayload", () => {
     const secret = "mysecret";
     const expected = createHmac("sha256", secret).update(payload).digest("hex");
     expect(signPayload(payload, secret)).toBe(expected);
+  });
+});
+
+describe("verifyWebhookSignature", () => {
+  it("returns true for a valid signature", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const sig = signPayload(payload, secret);
+    expect(verifyWebhookSignature(payload, sig, secret)).toBe(true);
+  });
+
+  it("returns false for an invalid signature", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const sig = "incorrectsignature";
+    expect(verifyWebhookSignature(payload, sig, secret)).toBe(false);
+  });
+
+  it("returns false for a signature with incorrect length", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const sig = "abc";
+    expect(verifyWebhookSignature(payload, sig, secret)).toBe(false);
+  });
+
+  it("returns false for a valid signature signed with a different secret", () => {
+    const payload = '{"foo":"bar"}';
+    const sig = signPayload(payload, "wrongsecret");
+    expect(verifyWebhookSignature(payload, sig, "mysecret")).toBe(false);
   });
 });
 
