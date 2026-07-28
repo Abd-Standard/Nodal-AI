@@ -14,6 +14,7 @@ vi.mock("../backend/rpc_client", () => ({
     id: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
     accountId: () => "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
     sequenceNumber: () => "100",
+    incrementSequenceNumber: vi.fn(),
     incrementSequenceNumber: () => {},
     sequence: "100",
     incrementedSequenceNumber: () => "101",
@@ -23,6 +24,11 @@ vi.mock("../backend/rpc_client", () => ({
     signers: [],
     data_attr: {},
     subentry_count: 0,
+  }),
+  resolveNetworkPassphrase: vi.fn((network) => {
+    return network === "mainnet"
+      ? "Public Global Stellar Network ; September 2015"
+      : "Test SDF Network ; September 2015";
     home_domain: "",
     inflation_dest: null,
   }),
@@ -35,6 +41,14 @@ vi.mock("../backend/rpc_client", () => ({
     hash: "test_tx_hash_123456789",
     ledger: 1000,
   }),
+  prepareSorobanTx: vi.fn().mockResolvedValue({
+    sign: vi.fn(),
+    toEnvelope: vi.fn(),
+  }),
+  horizonServer: {
+    transactions: vi.fn(),
+    operations: vi.fn(),
+  },
   // prepareSorobanTx must return a tx-like object with sign() + signatures[]
   prepareSorobanTx: vi.fn().mockImplementation(() => {
     const obj: any = { signatures: [] };
@@ -83,6 +97,53 @@ describe("PayFiAgent integration", () => {
   let agent: PayFiAgent;
   const DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
   const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+
+    // Re-apply mock implementations after clearAllMocks resets them
+    const { loadAccount, submitTransaction, prepareSorobanTx, resolveNetworkPassphrase } =
+      await import("../backend/rpc_client");
+
+    vi.mocked(resolveNetworkPassphrase).mockImplementation((network: string) =>
+      network === "mainnet"
+        ? "Public Global Stellar Network ; September 2015"
+        : "Test SDF Network ; September 2015"
+    );
+
+    vi.mocked(loadAccount).mockResolvedValue({
+      id: DEST,
+      accountId: () => DEST,
+      sequenceNumber: () => "100",
+      incrementSequenceNumber: vi.fn(),
+      sequence: "100",
+      incrementedSequenceNumber: () => "101",
+      thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
+      flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
+      balances: [{ asset_type: "native", balance: "10000.0000000" }],
+      signers: [],
+      data_attr: {},
+      subentry_count: 0,
+    } as any);
+
+    vi.mocked(submitTransaction).mockResolvedValue({
+      hash: "test_tx_hash_123456789",
+      ledger: 1000,
+    } as any);
+
+    vi.mocked(prepareSorobanTx).mockResolvedValue({
+      sign: vi.fn(),
+      toEnvelope: vi.fn(),
+    } as any);
+
+    const { sorobanServer } = await import("../backend/rpc_client");
+    vi.mocked(sorobanServer.sendTransaction as any).mockResolvedValue({
+      status: "PENDING",
+      hash: "soroban_tx_hash_123456789",
+    });
+    vi.mocked(sorobanServer.getTransaction as any).mockResolvedValue({
+      status: "SUCCESS",
+    });
 
 const MOCK_ACCOUNT = {
     id: DEST,

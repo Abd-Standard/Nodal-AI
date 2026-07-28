@@ -276,6 +276,8 @@ describe("PayFiAgent — mainnet spending cap", () => {
 
     expect(result1.success).toBe(true);
     expect(result2.success).toBe(true);
+    expect((result1.data as Record<string, unknown>)?.txHash).toBe("tx_hash_1");
+    expect((result2.data as Record<string, unknown>)?.txHash).toBe("tx_hash_2");
     expect((result1.data as any)?.txHash).toBe("tx_hash_1");
     expect((result2.data as any)?.txHash).toBe("tx_hash_2");
     expect(agent1).not.toBe(agent2);

@@ -75,6 +75,30 @@ export class X402PaymentTool {
       new SqliteNonceStore(new Database(config.DB_PATH));
   }
 
+  /**
+   * Respond to an x402 `402 Payment Required` challenge by executing a
+   * Stellar payment and returning a signed proof of payment.
+   *
+   * ### Processing steps
+   * 1. Parse and validate `rawChallenge` against {@link X402ChallengeSchema}.
+   * 2. Guard against self-payment (payTo must not equal the agent's public key).
+   * 3. If `ALLOWED_X402_ORIGINS` is configured, verify the challenge resource
+   *    hostname is in the allow-list.
+   * 4. Reject expired challenges (`expiresAt` < now).
+   * 5. Delegate to {@link StellarPaymentTool.execute} to sign and submit
+   *    the payment, using `SHA-256(nonce)[0:28 hex]` as the transaction memo.
+   * 6. Return an {@link X402PaymentProof} with the settled `txHash`.
+   *
+   * @param rawChallenge - Raw (unvalidated) challenge object, typically the
+   *   parsed JSON body of a `402 Payment Required` HTTP response.
+   * @returns A resolved {@link X402PaymentProof} containing the `txHash`,
+   *   original `nonce`, agent `payer` address, and `signedAt` timestamp.
+   * @throws {z.ZodError} If `rawChallenge` does not conform to
+   *   {@link X402ChallengeSchema} (missing fields, bad UUID, expired datetime, etc.).
+   * @throws {Error} If the challenge has expired, the resource origin is not
+   *   allowed, the destination equals the agent's own address, or the underlying
+   *   Stellar payment fails.
+   */
   async respond(rawChallenge: unknown): Promise<X402PaymentProof> {
     const now = Date.now();
     if (now - this.windowStart >= RATE_LIMIT_WINDOW_MS) {
@@ -149,6 +173,25 @@ export class X402PaymentTool {
     };
   }
 
+  /**
+   * Verify that an {@link X402PaymentProof} corresponds to a settled Stellar
+   * transaction that satisfies the original challenge's requirements.
+   *
+   * Fetches the transaction and its first operation from Horizon and checks:
+   * - destination matches `originalChallenge.payTo`
+   * - amount matches `originalChallenge.amount`
+   * - asset code matches `originalChallenge.assetCode`
+   * - transaction memo equals `originalChallenge.nonce.slice(0, 28)`
+   * - source account matches `proof.payer`
+   *
+   * @param proof - The {@link X402PaymentProof} returned by {@link respond}.
+   * @param originalChallenge - The parsed {@link X402Challenge} that was used
+   *   to produce `proof`. Must be the same challenge passed to {@link respond}.
+   * @returns Resolves with `void` when all checks pass.
+   * @throws {Error} If the transaction cannot be found on Horizon, if the
+   *   transaction has no payment operation, or if any of the verification
+   *   checks (destination, amount, asset, memo, payer) fail.
+   */
   async verify(
     proof: X402PaymentProof,
     originalChallenge: X402Challenge

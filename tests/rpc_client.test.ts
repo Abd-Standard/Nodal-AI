@@ -162,6 +162,8 @@ describe("withRetry", () => {
 
   it("respects exponential delay progression [1500, 3000, 6000]", async () => {
     vi.useFakeTimers();
+    // Mock Math.random to return 0 so jitter (±20%) is eliminated from delays
+    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
     const fn = vi.fn()
       .mockRejectedValueOnce(new Error("try1"))
       .mockRejectedValueOnce(new Error("try2"))
@@ -183,6 +185,7 @@ describe("withRetry", () => {
     expect(fn).toHaveBeenCalledTimes(4);
 
     await expect(promise).resolves.toBe("success");
+    randomSpy.mockRestore();
     vi.useRealTimers();
   });
 
@@ -220,6 +223,16 @@ describe("withRetry", () => {
   it("last error is re-thrown after exhaustion with StellarRPCError", async () => {
     const fn = vi.fn().mockRejectedValue(new Error("Service Unavailable"));
 
+    let caughtErr: unknown;
+    try {
+      await withRetry(fn, 3, 0);
+    } catch (e) {
+      caughtErr = e;
+    }
+    expect(caughtErr).toBeInstanceOf(Error);
+    const err = caughtErr as Error;
+    expect(err.name).toBe("StellarRPCError");
+    expect(err.message).toContain("RPC call failed after 3 attempts");
     let caught: unknown;
     try {
       await withRetry(fn, 3, 0);

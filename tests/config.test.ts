@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { execSync } from "child_process";
 import { z } from "zod";
 
 // A single shared send mock — all SecretsManagerClient instances use it.
@@ -114,6 +115,13 @@ describe("config.ts startup validation", () => {
 // missing env vars), we test the identical logic inline so the describe block
 // is fully self-contained and never triggers startup validation.
 describe("formatValidationErrors", () => {
+  // Inline the pure function to avoid importing backend/config (which calls loadConfig on init)
+  // This mirrors the actual implementation in backend/config.ts
+  function formatValidationErrors(errors: z.ZodError): string {
+    return errors.issues
+      .map((issue) => {
+        const rawField = issue.path.join(".") || "unknown";
+        const field = rawField.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
   /**
    * Mirrors the production implementation in backend/config.ts exactly.
    * If the production code changes, update this copy to match.

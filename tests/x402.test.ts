@@ -373,6 +373,10 @@ describe("X402PaymentTool", () => {
 
   describe("X402PaymentProof snapshot", () => {
     it("X402PaymentProof has expected shape and fields", async () => {
+      // Pin the clock so signedAt is deterministic across runs
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-06-25T12:00:19.497Z"));
+
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
       const proof = await tool.respond(VALID_CHALLENGE);
@@ -393,6 +397,8 @@ describe("X402PaymentTool", () => {
       expect(proof).toHaveProperty("nonce");
       expect(proof).toHaveProperty("payer");
       expect(proof).toHaveProperty("signedAt");
+
+      vi.useRealTimers();
     });
   });
 
