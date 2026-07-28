@@ -45,7 +45,11 @@ export class TrustlineTool {
       .addOperation(
         Operation.changeTrust({
           asset,
-          limit: input.action === "remove" ? "0" : input.limit,
+          ...(input.action === "remove"
+            ? { limit: "0" }
+            : input.limit
+            ? { limit: input.limit }
+            : {}),
         })
       )
       .setTimeout(30)

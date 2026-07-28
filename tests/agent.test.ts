@@ -407,7 +407,8 @@ describe("PayFiAgent — payload sanitisation", () => {
   });
 
   it("scrubs secretKey from payload before logging on failure", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (!mockInstance) throw new Error("Mock instance not found");
     mockInstance.execute.mockRejectedValueOnce(
       new Error("simulated payment failure")
     );

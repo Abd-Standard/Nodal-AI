@@ -99,7 +99,7 @@ export type DexOfferInput = z.infer<typeof DexOfferInputSchema>;
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
-function resolveAsset(a: { code: string; issuer?: string }): Asset {
+function resolveAsset(a: { code: string; issuer?: string | undefined }): Asset {
   return a.code === "XLM" ? Asset.native() : new Asset(a.code, a.issuer!);
 }
 

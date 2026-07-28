@@ -4,8 +4,9 @@
  *
  * MANDATORY simulation step enforced before any broadcast.
  */
-import { xdr } from "@stellar/stellar-sdk";
+import { Transaction, xdr } from "@stellar/stellar-sdk";
 import { z } from "zod";
+export declare const SOROBAN_TX_TIMEOUT = 30;
 /**
  * Zod schema for {@link SorobanInvokeTool.execute} inputs.
  *
@@ -65,6 +66,32 @@ export declare const SorobanInvokeInputSchema: z.ZodObject<{
     simulateOnly?: boolean | undefined;
 }>;
 export type SorobanInvokeInput = z.infer<typeof SorobanInvokeInputSchema>;
+/**
+ * Discriminated union return type for {@link SorobanInvokeTool.execute}.
+ * - When `simulateOnly=false`: `{ txHash: string }`
+ * - When `simulateOnly=true`:  `{ simulationResult: Transaction }`
+ */
+export type SorobanInvokeResult = {
+    txHash: string;
+    simulationResult?: never;
+} | {
+    txHash?: never;
+    simulationResult: Transaction;
+};
+/**
+ * Type guard: narrows a `SorobanInvokeResult` to the simulation-only variant.
+ *
+ * @example
+ * ```ts
+ * const result = await tool.execute({ ..., simulateOnly: true });
+ * if (isSorobanSimulationResult(result)) {
+ *   console.log(result.simulationResult); // Transaction
+ * }
+ * ```
+ */
+export declare function isSorobanSimulationResult(result: SorobanInvokeResult): result is {
+    simulationResult: Transaction;
+};
 export declare class SorobanInvokeTool {
     private keypair;
     private networkPassphrase;
@@ -106,10 +133,7 @@ export declare class SorobanInvokeTool {
      *   (`status === "ERROR"`), or the transaction does not reach a terminal state
      *   within the polling window.
      */
-    execute(rawInput: unknown): Promise<{
-        txHash?: string;
-        simulationResult?: unknown;
-    }>;
+    execute(rawInput: unknown): Promise<SorobanInvokeResult>;
     /**
      * Poll Soroban RPC until the transaction reaches a terminal state.
      *
