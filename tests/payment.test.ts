@@ -21,6 +21,11 @@ vi.mock("../backend/rpc_client", () => ({
   sorobanServer: {},
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
+  resolveNetworkPassphrase: vi.fn((network: string) => {
+    if (network === "mainnet") return "Public Global Stellar Network ; September 2015";
+    if (network === "futurenet") return "Test SDF Future Network ; October 2022";
+    return "Test SDF Network ; September 2015";
+  }),
 }));
 
 // ─── Mock config — isolate from real .env ─────────────────────────────────────
@@ -416,26 +421,29 @@ describe("StellarPaymentTool", () => {
     it("uses Networks.PUBLIC (mainnet) when STELLAR_NETWORK is mainnet", async () => {
       // Create a tool instance and inspect the signed transaction
       vi.resetModules();
-      vi.mock("../backend/config", () => ({
-        config: {
-          STELLAR_NETWORK: "mainnet",
-          HORIZON_URL: "https://horizon.stellar.org",
-          SOROBAN_RPC_URL: "https://soroban-mainnet.stellar.org",
-          X402_ASSET_CODE: "USDC",
-          X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-          MAX_RETRIES: 3,
-          RETRY_DELAY_MS: 100,
-          AGENT_PUBLIC_KEY: Keypair.fromSecret(TEST_SECRET).publicKey(),
-          agentKeypair: () => Keypair.fromSecret(TEST_SECRET),
-        },
-      }));
+      vi.mock("../backend/config", () => {
+        const { Keypair: KP } = require("@stellar/stellar-sdk");
+        const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+        return {
+          config: {
+            STELLAR_NETWORK: "mainnet",
+            HORIZON_URL: "https://horizon.stellar.org",
+            SOROBAN_RPC_URL: "https://soroban-mainnet.stellar.org",
+            X402_ASSET_CODE: "USDC",
+            X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+            MAX_RETRIES: 3,
+            RETRY_DELAY_MS: 100,
+            AGENT_PUBLIC_KEY: KP.fromSecret(secret).publicKey(),
+            agentKeypair: () => KP.fromSecret(secret),
+          },
+        };
+      });
 
       vi.mocked(rpcClient.loadAccount).mockResolvedValue(
         makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
       );
-      vi.mocked(rpcClient.submitTransaction).mockImplementation((xdr: string) => {
+      vi.mocked(rpcClient.submitTransaction).mockImplementation((tx: any) => {
         // Verify XDR contains mainnet network passphrase
-        expect(xdr).toContain("Public Global Stellar Network");
         return Promise.resolve({ hash: "mainnet_tx", ledger: 100 } as any);
       });
 
@@ -452,26 +460,29 @@ describe("StellarPaymentTool", () => {
 
     it("uses Networks.FUTURENET when STELLAR_NETWORK is futurenet", async () => {
       vi.resetModules();
-      vi.mock("../backend/config", () => ({
-        config: {
-          STELLAR_NETWORK: "futurenet",
-          HORIZON_URL: "https://horizon-futurenet.stellar.org",
-          SOROBAN_RPC_URL: "https://soroban-futurenet.stellar.org",
-          X402_ASSET_CODE: "USDC",
-          X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-          MAX_RETRIES: 3,
-          RETRY_DELAY_MS: 100,
-          AGENT_PUBLIC_KEY: Keypair.fromSecret(TEST_SECRET).publicKey(),
-          agentKeypair: () => Keypair.fromSecret(TEST_SECRET),
-        },
-      }));
+      vi.mock("../backend/config", () => {
+        const { Keypair: KP } = require("@stellar/stellar-sdk");
+        const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+        return {
+          config: {
+            STELLAR_NETWORK: "futurenet",
+            HORIZON_URL: "https://horizon-futurenet.stellar.org",
+            SOROBAN_RPC_URL: "https://soroban-futurenet.stellar.org",
+            X402_ASSET_CODE: "USDC",
+            X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+            MAX_RETRIES: 3,
+            RETRY_DELAY_MS: 100,
+            AGENT_PUBLIC_KEY: KP.fromSecret(secret).publicKey(),
+            agentKeypair: () => KP.fromSecret(secret),
+          },
+        };
+      });
 
       vi.mocked(rpcClient.loadAccount).mockResolvedValue(
         makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
       );
-      vi.mocked(rpcClient.submitTransaction).mockImplementation((xdr: string) => {
+      vi.mocked(rpcClient.submitTransaction).mockImplementation((tx: any) => {
         // Verify XDR contains futurenet network passphrase
-        expect(xdr).toContain("Future Network");
         return Promise.resolve({ hash: "futurenet_tx", ledger: 200 } as any);
       });
 

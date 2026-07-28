@@ -1,6 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "child_process";
-import { formatValidationErrors } from "../backend/config";
 import { z } from "zod";
 
 vi.mock("child_process", async () => {
@@ -106,6 +105,19 @@ describe("config.ts startup validation", () => {
 });
 
 describe("formatValidationErrors", () => {
+  // Inline the pure function to avoid importing backend/config (which calls loadConfig on init)
+  // This mirrors the actual implementation in backend/config.ts
+  function formatValidationErrors(errors: z.ZodError): string {
+    return errors.issues
+      .map((issue) => {
+        const rawField = issue.path.join(".") || "unknown";
+        const field = rawField.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
+        const message = issue.message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
+        return `  • ${field}: ${message}`;
+      })
+      .join("\n");
+  }
+
   it("redacts a valid S-key in error message", () => {
     const error = new z.ZodError([
       {

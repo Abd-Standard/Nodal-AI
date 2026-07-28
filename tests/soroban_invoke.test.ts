@@ -55,6 +55,7 @@ vi.mock("../backend/rpc_client", () => ({
     sendTransaction: vi.fn(),
     getTransaction: vi.fn(),
   },
+  resolveNetworkPassphrase: vi.fn(() => "Test SDF Network ; September 2015"),
 }));
 
 /**
@@ -517,7 +518,7 @@ describe("SorobanInvokeTool", () => {
 
     it("accepts multiple xdr.ScVal instances", () => {
       const arg1 = nativeToScVal(100n, { type: "i128" });
-      const arg2 = nativeToScVal("GABC", { type: "address" });
+      const arg2 = nativeToScVal("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", { type: "address" });
       const result = SorobanInvokeInputSchema.safeParse({
         contractId: VALID_CONTRACT,
         method: "test",

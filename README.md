@@ -225,11 +225,15 @@ The primary integration surface for developers. Dispatch tasks to the agent via 
 type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond"
 ```
 
-| Value | Description |
-|-------|-------------|
-| `stellar_payment` | Native XLM or custom asset payment via Horizon |
-| `soroban_invoke` | Smart contract invocation via Soroban RPC with simulation |
-| `x402_respond` | Respond to an x402 payment challenge with spending limit guard |
+All three values are wired into `PayFiAgent.run()` in `backend/agent.ts`. Any unrecognised type throws `"Unknown task type: <value>"` immediately at dispatch time.
+
+| Value | Tool | Description |
+|-------|------|-------------|
+| `stellar_payment` | `StellarPaymentTool` | Submit a native XLM or custom Stellar asset payment via Horizon. Enforces the per-transaction `AGENT_SPENDING_LIMIT` and the mainnet spending cap before execution. |
+| `soroban_invoke` | `SorobanInvokeTool` | Invoke any Soroban smart contract function. Always runs a mandatory simulation pass via Soroban RPC before broadcast; set `simulateOnly: true` for a dry-run that skips submission. |
+| `x402_respond` | `X402PaymentTool` | Respond to an [x402](https://github.com/x402-foundation/x402) `402 Payment Required` challenge. Validates the challenge schema, enforces spending limits, delegates to `StellarPaymentTool`, and returns an `X402PaymentProof`. |
+
+> **Standalone utilities:** `BalanceCheckTool` (`backend/tools/BalanceCheckTool.ts`) and `SorobanQueryTool` (`backend/tools/SorobanQueryTool.ts`) are importable directly and are not dispatched through `PayFiAgent.run()`. Use them outside the agent task loop when you only need a read-only query.
 
 ### AgentTask
 

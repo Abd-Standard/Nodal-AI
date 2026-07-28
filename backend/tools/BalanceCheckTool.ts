@@ -39,8 +39,29 @@ export interface BalanceResult {
 
 export class BalanceCheckTool {
   /**
-   * Fetch balances for a Stellar account.
-   * Optionally filter by assetCode (and assetIssuer for non-XLM assets).
+   * Fetch balances for a Stellar account via Horizon.
+   *
+   * Validates the input, loads the account from Horizon, and returns all
+   * balance lines. When `assetCode` is provided the result is filtered to
+   * matching entries only; passing `assetIssuer` alongside `assetCode`
+   * narrows the filter further to a specific token issuance.
+   *
+   * ### Filtering behaviour
+   *
+   * | `assetCode` | `assetIssuer` | Rows returned |
+   * |-------------|---------------|---------------|
+   * | omitted     | —             | all balances  |
+   * | `"XLM"`     | —             | native only   |
+   * | `"USDC"`    | omitted       | all USDC issuances |
+   * | `"USDC"`    | `"GA5Z…"`     | only USDC from that issuer |
+   *
+   * @param rawInput - Raw (unvalidated) input; parsed via {@link BalanceCheckInputSchema}.
+   * @returns An object containing the queried `publicKey` and a filtered (or
+   *   full) list of {@link BalanceLine} entries.
+   * @throws {z.ZodError} If `publicKey` is not exactly 56 characters, or if
+   *   `assetIssuer` is provided and is not exactly 56 characters.
+   * @throws {Error} If Horizon cannot load the account (e.g. account not found,
+   *   network timeout).
    */
   async getBalance(rawInput: unknown): Promise<BalanceResult> {
     const input = BalanceCheckInputSchema.parse(rawInput);
