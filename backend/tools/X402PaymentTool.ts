@@ -6,10 +6,16 @@
 import { Keypair, Horizon } from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { createHash } from "crypto";
+import Database from "better-sqlite3";
 import { config } from "../config";
 import { horizonServer } from "../rpc_client";
 import { StellarPaymentTool } from "./StellarPaymentTool";
 import { logger } from "../logger";
+import {
+  INonceStore,
+  SqliteNonceStore,
+  MAX_NONCE_TTL_MS,
+} from "../nonce_store";
 
 // ─── x402 schemas ────────────────────────────────────────────────────────────
 
@@ -42,18 +48,31 @@ export interface X402PaymentProof {
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 export class X402PaymentTool {
-  // TODO: persist to Redis for multi-instance deployments
-  private usedNonces = new Set<string>();
+  private nonceStore: INonceStore;
   private paymentTool: StellarPaymentTool;
   private keypair: Keypair;
   private horizonServer: Horizon.Server;
   private paymentCount = 0;
   private windowStart = Date.now();
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
+  /**
+   * @param secretKey   - Stellar secret key for signing payments.
+   * @param nonceStore  - Pluggable nonce store.  Defaults to SqliteNonceStore
+   *                      backed by the shared agent.db file.  Inject an
+   *                      InMemoryNonceStore (or a custom Redis/DynamoDB
+   *                      implementation of INonceStore) in tests or for
+   *                      multi-instance deployments.
+   */
+  constructor(
+    secretKey: string = config.agentKeypair().secret(),
+    nonceStore?: INonceStore
+  ) {
     this.keypair = Keypair.fromSecret(secretKey);
     this.paymentTool = new StellarPaymentTool(secretKey);
     this.horizonServer = horizonServer;
+    this.nonceStore =
+      nonceStore ??
+      new SqliteNonceStore(new Database(config.DB_PATH));
   }
 
   async respond(rawChallenge: unknown): Promise<X402PaymentProof> {
@@ -88,7 +107,7 @@ export class X402PaymentTool {
       throw new Error(`x402 challenge expired at ${challenge.expiresAt}`);
     }
 
-    if (this.usedNonces.has(challenge.nonce)) {
+    if (await this.nonceStore.has(challenge.nonce)) {
       throw new Error("x402: nonce already used");
     }
 
@@ -102,7 +121,12 @@ export class X402PaymentTool {
       memo: createHash("sha256").update(challenge.nonce).digest("hex").slice(0, 28),
     });
 
-    this.usedNonces.add(challenge.nonce);
+    await this.nonceStore.add(challenge.nonce);
+    // Opportunistic pruning: evict nonces older than the max challenge TTL.
+    // Fire-and-forget — a pruning failure must not abort a successful payment.
+    this.nonceStore.prune(MAX_NONCE_TTL_MS).catch((err) =>
+      logger.warn("x402: nonce pruning failed (non-fatal)", { error: String(err) })
+    );
 
     let signedAt: string;
     try {

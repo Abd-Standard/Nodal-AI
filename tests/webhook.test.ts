@@ -106,9 +106,13 @@ describe("dispatchWebhook", () => {
     await dispatchWebhook(successResult);
 
     expect(axiosPost).toHaveBeenCalledOnce();
-    const [url, body] = axiosPost.mock.calls[0];
+    const calls = axiosPost.mock.calls;
+    const call = calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    const [url, body] = call;
     expect(url).toBe("https://example.com/webhook");
-    expect(JSON.parse(body)).toMatchObject({ success: true, taskType: "stellar_payment" });
+    expect(JSON.parse(body as string)).toMatchObject({ success: true, taskType: "stellar_payment" });
   });
 
   it("includes X-Nodal-Signature header when WEBHOOK_SECRET is set", async () => {
@@ -118,8 +122,11 @@ describe("dispatchWebhook", () => {
 
     await dispatchWebhook(successResult);
 
-    const [, body, opts] = axiosPost.mock.calls[0];
-    const expectedSig = signPayload(body, "supersecret");
+    const call = axiosPost.mock.calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    const [, body, opts] = call;
+    const expectedSig = signPayload(body as string, "supersecret");
     expect(opts.headers["X-Nodal-Signature"]).toBe(expectedSig);
   });
 
@@ -129,8 +136,11 @@ describe("dispatchWebhook", () => {
 
     await dispatchWebhook(failureResult);
 
-    const [, body] = axiosPost.mock.calls[0];
-    expect(JSON.parse(body)).toMatchObject({ success: false, taskType: "x402_respond" });
+    const call = axiosPost.mock.calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    const [, body] = call;
+    expect(JSON.parse(body as string)).toMatchObject({ success: false, taskType: "x402_respond" });
   });
 
   it("does not throw when axios.post rejects (swallows delivery errors)", async () => {

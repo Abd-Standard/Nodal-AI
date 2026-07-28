@@ -16,6 +16,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
 import { saveResult } from "./persistence";
+import { StructuredError, ErrorType, getErrorType } from "./errors";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
 import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from "./tools/X402PaymentTool";
@@ -35,14 +36,8 @@ import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
 import { dispatchWebhook } from "./webhook";
 
-// Instantiate a singleton tracker lazily to avoid loading config at import time
-let _spendingTracker: SpendingTracker | null = null;
-function getSpendingTracker(): SpendingTracker {
-  if (!_spendingTracker) {
-    _spendingTracker = new SpendingTracker();
-  }
-  return _spendingTracker;
-}
+// Instantiate a singleton tracker
+export const spendingTracker = new SpendingTracker();
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
@@ -52,11 +47,10 @@ function getSpendingTracker(): SpendingTracker {
  */
 function assertWithinSpendingLimit(amount: unknown): void {
   if (typeof amount !== "string") return; // let the tool's own schema catch this
-  // Record cumulative spending
-  getSpendingTracker().record(amount);
 
   const parsed = parseFloat(amount);
   const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
+
   if (!isNaN(parsed) && parsed > limit) {
     throw new Error(
       `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
@@ -69,6 +63,9 @@ function assertWithinSpendingLimit(amount: unknown): void {
         `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
     );
   }
+
+  // Record cumulative spending (after individual checks pass)
+  spendingTracker.record(amount);
 }
 
 const log = createLogger("orchestrator");
@@ -117,6 +114,12 @@ export interface AgentResult {
   data?: unknown;
   error?: string;
   /**
+   * Structured error type for programmatic error handling.
+   * Allows callers to distinguish between different error categories
+   * (e.g., InsufficientFunds, NetworkTimeout) without string matching.
+   */
+  errorType?: string;
+  /**
    * Correlation ID that ties every log line, persisted result, and webhook
    * dispatch for a single task execution together. Generated at dispatch time
    * unless the caller supplies one on the task.
@@ -140,7 +143,7 @@ function sanitizePayload(payload: unknown): unknown {
   for (const [rawKey, rawValue] of Object.entries(payload as Record<string, unknown>)) {
     const key = rawKey.trim();
     if (/secret|key|seed|mnemonic|private/i.test(key)) continue;
-    sanitized[key] = rawValue;
+    sanitized[key] = sanitizePayload(rawValue);
   }
   return sanitized;
 }
@@ -381,11 +384,14 @@ export class PayFiAgent extends EventEmitter {
 
     // ── Concurrency rate limit — reject rather than queue when saturated ──
     if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) {
-      taskLog.warn("Task rejected — max concurrent tasks reached", {
-        taskType: task.type,
-        activeTasks: this.activeTasks,
-        maxConcurrentTasks: config.MAX_CONCURRENT_TASKS,
-      });
+      taskLog.warn(
+        {
+          taskType: task.type,
+          activeTasks: this.activeTasks,
+          maxConcurrentTasks: config.MAX_CONCURRENT_TASKS,
+        },
+        "Task rejected — max concurrent tasks reached"
+      );
       return {
         success: false,
         taskType: task.type,
@@ -397,7 +403,7 @@ export class PayFiAgent extends EventEmitter {
     }
 
     this.activeTasks++;
-    taskLog.info("Running task", { taskType: task.type });
+    taskLog.info({ taskType: task.type }, "Running task");
     try {
       let data: unknown;
 
@@ -462,7 +468,7 @@ export class PayFiAgent extends EventEmitter {
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
       }
 
-      taskLog.info("Task completed", { taskType: task.type });
+      taskLog.info({ taskType: task.type }, "Task completed");
       const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
       this.emit("task:complete", result);
 
@@ -474,7 +480,10 @@ export class PayFiAgent extends EventEmitter {
       const message = err instanceof Error ? err.message : String(err);
       const safe = redactSecretString(message);
       const sanitized = sanitizePayload(task.payload);
-      taskLog.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
+      taskLog.error(
+        { taskType: task.type, error: safe, sanitizedPayload: sanitized },
+        "Task failed"
+      );
       const result: AgentResult = { success: false, taskType: task.type, error: safe, correlationId };
       this.emit("task:failed", result);
       void dispatchWebhook(result);

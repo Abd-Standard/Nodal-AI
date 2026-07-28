@@ -136,7 +136,7 @@ const EnvSchema = z.object({
     .number()
     .int()
     .min(100)
-    .default(60_000),
+    .default(86_400_000),
 
   // Retry behaviour
   // Exponential back-off: delay = RETRY_DELAY_MS * 2^(attempt-1), capped at 30 000 ms,
@@ -190,8 +190,6 @@ const EnvSchema = z.object({
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
-  SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
-  OTLP_ENDPOINT: z.string().url().optional(),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -298,7 +296,7 @@ export interface AgentConfig {
    * Optional — when set, the agent exports traces/spans to this OTLP-compatible endpoint.
    * Validated by EnvSchema to be a valid URL string.
    */
-  readonly OTLP_ENDPOINT?: string;
+  readonly OTLP_ENDPOINT?: string | undefined;
 
   /**
    * Spending window in milliseconds for rate/cap computation.
@@ -337,8 +335,8 @@ export interface AgentConfig {
    * Defaults to 3000.
    */
   readonly HEALTH_PORT: number;
-  readonly WEBHOOK_URL?: string;
-  readonly WEBHOOK_SECRET?: string;
+  readonly WEBHOOK_URL?: string | undefined;
+  readonly WEBHOOK_SECRET?: string | undefined;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -430,6 +428,9 @@ function parseConfigAndDerive(): AgentConfig {
     AGENT_PUBLIC_KEY: _rawPub,
     ALLOWED_X402_ORIGINS,
     AGENT_SECRET_KEY_ARN,
+    OTLP_ENDPOINT,
+    WEBHOOK_URL,
+    WEBHOOK_SECRET,
     ...rest
   } = raw;
 
@@ -447,6 +448,11 @@ function parseConfigAndDerive(): AgentConfig {
     RPC_TIMEOUT_MS: rpcTimeoutMs,
     MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
     MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
+    ...(ALLOWED_X402_ORIGINS && { ALLOWED_X402_ORIGINS }),
+    ...(AGENT_SECRET_KEY_ARN && { AGENT_SECRET_KEY_ARN }),
+    ...(OTLP_ENDPOINT && { OTLP_ENDPOINT }),
+    ...(WEBHOOK_URL && { WEBHOOK_URL }),
+    ...(WEBHOOK_SECRET && { WEBHOOK_SECRET }),
     // Secret is captured in closure; never on the object
     agentKeypair: () => _keypair,
   };

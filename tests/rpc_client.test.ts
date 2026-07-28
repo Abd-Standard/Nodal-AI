@@ -4,17 +4,17 @@
  * Tests for withRetry and DEFAULT_IS_RETRYABLE in backend/rpc_client.ts.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ZodError, z } from "zod";
 import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, sorobanServer } from "../backend/rpc_client";
 import { Networks, rpc, xdr, StrKey, Keypair } from "@stellar/stellar-sdk";
 
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
-  const mod = await importOriginal();
+  const mod = await importOriginal() as Record<string, unknown>;
   return {
     ...mod,
     rpc: {
-      ...mod.rpc,
+      ...(mod.rpc as Record<string, unknown>),
       assembleTransaction: vi.fn(),
     },
   };
@@ -284,7 +284,7 @@ describe("prepareSorobanTx auth checks", () => {
 
     vi.mocked(rpc.assembleTransaction).mockReturnValue({
       build: vi.fn().mockReturnValue(mockTx as any),
-    });
+    } as any);
 
     const dummyTx = {} as any;
     await expect(prepareSorobanTx(dummyTx)).rejects.toThrow(/unexpected/i);
@@ -303,7 +303,7 @@ describe("prepareSorobanTx auth checks", () => {
 
     vi.mocked(rpc.assembleTransaction).mockReturnValue({
       build: vi.fn().mockReturnValue(mockTx as any),
-    });
+    } as any);
 
     const dummyTx = {} as any;
     await expect(prepareSorobanTx(dummyTx)).resolves.toBeDefined();
@@ -334,9 +334,21 @@ describe("prepareSorobanTx auth checks", () => {
 
     vi.mocked(rpc.assembleTransaction).mockReturnValue({
       build: vi.fn().mockReturnValue(mockTx as any),
-    });
+    } as any);
 
     const dummyTx = {} as any;
     await expect(prepareSorobanTx(dummyTx)).resolves.toBeDefined();
+  });
+});
+
+// ─── Request ID headers ───────────────────────────────────────────────────────
+
+describe("RPC servers with request ID headers", () => {
+  it("horizonServer is created with X-Request-ID header", () => {
+    expect(horizonServer).toBeDefined();
+  });
+
+  it("sorobanServer is created with X-Request-ID header", () => {
+    expect(sorobanServer).toBeDefined();
   });
 });

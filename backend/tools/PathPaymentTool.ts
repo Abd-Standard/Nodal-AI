@@ -52,7 +52,7 @@ export type PathPaymentInput = z.infer<typeof PathPaymentInputSchema>;
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
-function toAsset(a: { code: string; issuer?: string }): Asset {
+function toAsset(a: { code: string; issuer?: string | undefined }): Asset {
   if (a.code === "XLM") return Asset.native();
   if (!a.issuer) {
     throw new Error(`Asset issuer is required for non-native asset ${a.code}`);

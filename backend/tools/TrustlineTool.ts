@@ -7,6 +7,7 @@ import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE } from "@stella
 import { z } from "zod";
 import { config } from "../config";
 import { loadAccount, submitTransaction, horizonServer, resolveNetworkPassphrase } from "../rpc_client";
+import { SubmitResultSchema } from "./StellarPaymentTool";
 
 export const TrustlineInputSchema = z.object({
   assetCode: z.string().min(1).max(12),
@@ -45,14 +46,18 @@ export class TrustlineTool {
       .addOperation(
         Operation.changeTrust({
           asset,
-          limit: input.action === "remove" ? "0" : input.limit,
+          ...(input.action === "remove"
+            ? { limit: "0" }
+            : input.limit
+            ? { limit: input.limit }
+            : {}),
         })
       )
       .setTimeout(30)
       .build();
 
     tx.sign(this.keypair);
-    const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
+    const result = SubmitResultSchema.parse(await submitTransaction(tx));
     return { txHash: result.hash, ledger: result.ledger };
   }
 }
