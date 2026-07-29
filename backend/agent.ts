@@ -127,6 +127,26 @@ export interface AgentResult {
   correlationId?: string;
 }
 
+// ─── Middleware types ─────────────────────────────────────────────────────────────
+
+/**
+ * Task middleware function type.
+ *
+ * Middleware functions are executed in registration order before the task
+ * is dispatched to the appropriate tool. Each middleware receives the task
+ * and a `next` function to continue execution. Calling `next()` passes control
+ * to the next middleware or the actual task execution. If a middleware returns
+ * a result without calling `next()`, it short-circuits execution.
+ *
+ * @param task - The task to be executed
+ * @param next - Function to call the next middleware or the actual task
+ * @returns The result of task execution or middleware short-circuit
+ */
+export type TaskMiddleware = (
+  task: AgentTask,
+  next: () => Promise<AgentResult>
+) => Promise<AgentResult>;
+
 // ─── Payload sanitisation ─────────────────────────────────────────────────────
 
 const SECRET_KEY_RE = /^(?<prefix>.*?["':\s]?)(?<secret>S[ A-Z2-7]{55})(?<suffix>["'\s]?.*)$/i;
@@ -177,6 +197,9 @@ export class PayFiAgent extends EventEmitter {
   // Bound handler references kept so destroy() can call .off() with the exact same function
   // reference — EventEmitter requires identity equality for removal.
   private readonly _boundHandlers = new Map<string, (...args: unknown[]) => void>();
+
+  // Middleware array for pre/post task execution hooks
+  private middlewares: TaskMiddleware[] = [];
 
   constructor() {
     super();
@@ -337,6 +360,22 @@ export class PayFiAgent extends EventEmitter {
     logger.info("Agent draining — rejecting new tasks");
   }
 
+  /**
+   * Register a middleware function for pre/post task execution hooks.
+   *
+   * Middleware functions are executed in registration order before the task
+   * is dispatched to the appropriate tool. Each middleware can:
+   * - Inspect and modify the task
+   * - Short-circuit execution by returning a result without calling next()
+   * - Call next() to continue to the next middleware or actual task execution
+   *
+   * @param middleware - Middleware function to register
+   */
+  use(middleware: TaskMiddleware): void {
+    this.middlewares.push(middleware);
+    logger.info("Middleware registered", { totalMiddlewares: this.middlewares.length });
+  }
+
   async waitForPendingTasks(): Promise<void> {
     if (this.activeTasks === 0 && this.taskQueue.length === 0) return;
     logger.info("Waiting for pending tasks to finish", {
@@ -450,74 +489,116 @@ export class PayFiAgent extends EventEmitter {
   ): Promise<AgentResult> {
     this.activeTasks++;
     taskLog.info({ taskType: task.type }, "Running task");
-    try {
-      let data: unknown;
 
-      switch (task.type) {
-        case "stellar_payment": {
-          const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
-          const paymentResult = await this.paymentTool.execute(task.payload);
-          data = {
-            ...paymentResult,
-            network: config.STELLAR_NETWORK,
-          };
+    // ── Compose middleware chain ────────────────────────────────────────────────
+    const executeTask = async (): Promise<AgentResult> => {
+      try {
+        let data: unknown;
+
+        switch (task.type) {
+          case "stellar_payment": {
+            const p = task.payload as Record<string, unknown>;
+            assertWithinSpendingLimit(p?.amount);
+            const paymentResult = await this.paymentTool.execute(task.payload);
+            data = {
+              ...paymentResult,
+              network: config.STELLAR_NETWORK,
+            };
+            break;
+          }
+
+          case "soroban_invoke": {
+            data = await this.sorobanTool.execute(task.payload);
+            break;
+          }
+
+          case "soroban_query":
+            data = await this.sorobanQueryTool.query(task.payload);
+            break;
+
+          case "x402_respond": {
+            const p = task.payload as Record<string, unknown>;
+            assertWithinSpendingLimit(p?.amount);
+            data = await this.x402Tool.respond(task.payload);
+            break;
+          }
+
+          case "account_info":
+            data = await this.accountInfoTool.fetch();
+            break;
+
+          case "change_trust":
+            data = await this.trustlineTool.execute(task.payload);
+            break;
+
+          case "multisig_payment":
+            data = await this.multiSigTool.execute(task.payload);
           break;
+
+
+          case "batch_payment":
+            data = await this.batchPaymentTool.execute(task.payload);
+            break;
+
+          case "balance_check":
+            data = await this.balanceCheckTool.getBalance(task.payload);
+            break;
+
+          case "path_payment":
+            data = await this.pathPaymentTool.execute(task.payload);
+            break;
+
+          case "fee_bump":
+            data = await this.feeBumpTool.execute(task.payload);
+            break;
+
+          case "dex_offer":
+            data = await this.dexOfferTool.execute(task.payload);
+            break;
+
+          default:
+            throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
         }
 
-        case "soroban_invoke": {
-          data = await this.sorobanTool.execute(task.payload);
-          break;
-        }
+        taskLog.info({ taskType: task.type }, "Task completed");
+        const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
+        this.emit("task:complete", result);
 
-        case "soroban_query":
-          data = await this.sorobanQueryTool.query(task.payload);
-          break;
+        saveResult({ ...result, timestamp: new Date().toISOString() });
+        void dispatchWebhook(result);
 
-        case "x402_respond": {
-          const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
-          data = await this.x402Tool.respond(task.payload);
-          break;
-        }
-
-        case "account_info":
-          data = await this.accountInfoTool.fetch();
-          break;
-
-        case "change_trust":
-          data = await this.trustlineTool.execute(task.payload);
-          break;
-
-        case "multisig_payment":
-          data = await this.multiSigTool.execute(task.payload);
-          break;
-
-
-        case "batch_payment":
-          data = await this.batchPaymentTool.execute(task.payload);
-          break;
-
-        case "balance_check":
-          data = await this.balanceCheckTool.getBalance(task.payload);
-          break;
-
-        case "path_payment":
-          data = await this.pathPaymentTool.execute(task.payload);
-          break;
-
-        case "fee_bump":
-          data = await this.feeBumpTool.execute(task.payload);
-          break;
-
-        case "dex_offer":
-          data = await this.dexOfferTool.execute(task.payload);
-          break;
-
-        default:
-          throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
+        return result;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        const safe = redactSecretString(message);
+        const sanitized = sanitizePayload(task.payload);
+        taskLog.error(
+          { taskType: task.type, error: safe, sanitizedPayload: sanitized },
+          "Task failed"
+        );
+        const result: AgentResult = {
+          success: false,
+          taskType: task.type,
+          error: safe,
+          errorType: getErrorType(err),
+          correlationId,
+        };
+        this.emit("task:failed", result);
+        void dispatchWebhook(result);
+        return result;
       }
+    };
 
+    // Build middleware chain: middleware[n] -> middleware[n-1] -> ... -> executeTask
+    let chain: () => Promise<AgentResult> = executeTask;
+    for (let i = this.middlewares.length - 1; i >= 0; i--) {
+      const middleware = this.middlewares[i];
+      const next: () => Promise<AgentResult> = chain;
+      chain = () => middleware(task, next);
+    }
+
+    try {
+      return await chain();
       taskLog.info({ taskType: task.type }, "Task completed");
       const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
       this.emit("task:complete", result);
