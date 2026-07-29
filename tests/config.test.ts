@@ -120,15 +120,6 @@ describe("formatValidationErrors", () => {
   function formatValidationErrors(errors: z.ZodError): string {
     return errors.issues
       .map((issue) => {
-        const rawField = issue.path.join(".") || "unknown";
-        const field = rawField.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
-  /**
-   * Mirrors the production implementation in backend/config.ts exactly.
-   * If the production code changes, update this copy to match.
-   */
-  function formatValidationErrors(errors: z.ZodError): string {
-    return errors.issues
-      .map((issue) => {
         const field =
           issue.path
             .map((p) => String(p).replace(/S[A-Z2-7]{55}/g, "[REDACTED]"))

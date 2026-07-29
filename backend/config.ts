@@ -349,14 +349,12 @@ export function formatValidationErrors(errors: z.ZodError): string {
   return errors.issues
     .map((issue) => {
       const rawField = issue.path.join(".") || "unknown";
-      // Redact any value that looks like a secret key in both field path and message
-      const field = rawField.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
       // Redact any path element that looks like a secret key — path may contain
       // raw values (e.g., when a secret key is used as a Zod path segment).
       const field =
         issue.path
           .map((p) => String(p).replace(/S[A-Z2-7]{55}/g, "[REDACTED]"))
-          .join(".") || "unknown";
+          .join(".") || rawField;
       // Redact any value that looks like a secret key in the human-readable message
       const message = issue.message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
       return `  • ${field}: ${message}`;

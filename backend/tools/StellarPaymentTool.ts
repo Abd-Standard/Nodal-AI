@@ -14,6 +14,7 @@ import {
   Asset,
   BASE_FEE,
   Memo,
+  StrKey,
 } from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { config } from "../config";
@@ -44,7 +45,12 @@ export type SubmitResult = z.infer<typeof SubmitResultSchema>;
  * @property memo - Optional memo text, max 28 characters (Stellar network limit)
  */
 export const PaymentInputSchema = z.object({
-  destination: z.string().length(56, "Invalid Stellar public key"),
+  destination: z.string()
+    .length(56, "Invalid Stellar public key")
+    .refine(
+      (val) => StrKey.isValidEd25519PublicKey(val),
+      "Destination must be a valid Stellar public key (G...)",
+    ),
   amount: z
     .string()
     // Negative-lookahead rejects "0" and all zero-value decimals ("0.0", "0.0000000")
