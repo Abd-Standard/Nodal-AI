@@ -106,6 +106,18 @@ describe("backend/server.ts — health check HTTP server", () => {
       expect(res._headers["Content-Type"]).toBe("application/json");
     });
 
+    it("health response matches expected shape", () => {
+      createHealthServer();
+      const req = makeReq("GET", "/health");
+      const res = makeRes();
+
+      capturedHandler!(req, res);
+
+      expect(res._statusCode).toBe(200);
+      const body = JSON.parse(res._body);
+      expect(body).toMatchSnapshot();
+    });
+
     it("includes the correct network value from config", () => {
       createHealthServer();
       const req = makeReq("GET", "/health");
