@@ -40,7 +40,7 @@ The following invariants are enforced throughout the codebase. Any contribution 
 All sensitive credentials — `AGENT_SECRET_KEY`, RPC endpoints, asset issuers — are sourced exclusively from environment variables and validated at startup via Zod schemas (`backend/config.ts`). No secrets appear in source code, committed configuration files, or log output.
 
 **Enforcement:**
-- `.env` is `.gitignore`d; `.env.example` contains only placeholder values.
+- `.env` is `.gitignore`d; `..env` contains only placeholder values.
 - Zod validation error messages strip any value matching a Stellar secret-key pattern (`S[A-Z2-7]{55}`) before writing to stderr (`formatValidationErrors` in `backend/config.ts`).
 - CI pipelines must never inject real secret keys into build logs.
 

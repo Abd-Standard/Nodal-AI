@@ -28,7 +28,7 @@ export type SubmitResult = z.infer<typeof SubmitResultSchema>;
  * @property memo - Optional memo text, max 28 characters (Stellar network limit)
  */
 export declare const PaymentInputSchema: z.ZodObject<{
-    destination: z.ZodString;
+    destination: z.ZodEffects<z.ZodString, string, string>;
     amount: z.ZodEffects<z.ZodString, string, string>;
     assetCode: z.ZodDefault<z.ZodString>;
     assetIssuer: z.ZodOptional<z.ZodString>;

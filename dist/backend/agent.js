@@ -11,12 +11,13 @@
  *   - The spending limit is enforced here before delegating to tools.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PayFiAgent = void 0;
+exports.PayFiAgent = exports.spendingTracker = void 0;
 // Updated imports
 const events_1 = require("events");
 const config_1 = require("./config");
 const logger_1 = require("./logger");
 const persistence_1 = require("./persistence");
+const errors_1 = require("./errors");
 const StellarPaymentTool_1 = require("./tools/StellarPaymentTool");
 const SorobanInvokeTool_1 = require("./tools/SorobanInvokeTool");
 const X402PaymentTool_1 = require("./tools/X402PaymentTool");
@@ -35,7 +36,7 @@ const logger_2 = require("./utils/logger");
 const spending_tracker_1 = require("./spending_tracker");
 const webhook_1 = require("./webhook");
 // Instantiate a singleton tracker
-const spendingTracker = new spending_tracker_1.SpendingTracker();
+exports.spendingTracker = new spending_tracker_1.SpendingTracker();
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 /**
  * Check that a payment amount does not exceed the configured spending limit.
@@ -44,8 +45,6 @@ const spendingTracker = new spending_tracker_1.SpendingTracker();
 function assertWithinSpendingLimit(amount) {
     if (typeof amount !== "string")
         return; // let the tool's own schema catch this
-    // Record cumulative spending
-    spendingTracker.record(amount);
     const parsed = parseFloat(amount);
     const limit = parseFloat(config_1.config.AGENT_SPENDING_LIMIT);
     if (!isNaN(parsed) && parsed > limit) {
@@ -56,6 +55,8 @@ function assertWithinSpendingLimit(amount) {
         throw new Error(`Payment amount ${amount} ${config_1.config.X402_ASSET_CODE} exceeds ` +
             `mainnet spending cap of ${config_1.MAINNET_SPENDING_CAP}`);
     }
+    // Record cumulative spending (after individual checks pass)
+    exports.spendingTracker.record(amount);
 }
 const log = (0, logger_2.createLogger)("orchestrator");
 // ─── Payload sanitisation ─────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ function sanitizePayload(payload) {
         const key = rawKey.trim();
         if (/secret|key|seed|mnemonic|private/i.test(key))
             continue;
-        sanitized[key] = rawValue;
+        sanitized[key] = sanitizePayload(rawValue);
     }
     return sanitized;
 }
@@ -310,7 +311,11 @@ class PayFiAgent extends events_1.EventEmitter {
                 case "stellar_payment": {
                     const p = task.payload;
                     assertWithinSpendingLimit(p?.amount);
-                    data = await this.paymentTool.execute(task.payload);
+                    const paymentResult = await this.paymentTool.execute(task.payload);
+                    data = {
+                        ...paymentResult,
+                        network: config_1.config.STELLAR_NETWORK,
+                    };
                     break;
                 }
                 case "soroban_invoke": {
@@ -365,7 +370,13 @@ class PayFiAgent extends events_1.EventEmitter {
             const safe = redactSecretString(message);
             const sanitized = sanitizePayload(task.payload);
             taskLog.error({ taskType: task.type, error: safe, sanitizedPayload: sanitized }, "Task failed");
-            const result = { success: false, taskType: task.type, error: safe, correlationId };
+            const result = {
+                success: false,
+                taskType: task.type,
+                error: safe,
+                errorType: (0, errors_1.getErrorType)(err),
+                correlationId,
+            };
             this.emit("task:failed", result);
             void (0, webhook_1.dispatchWebhook)(result);
             return result;

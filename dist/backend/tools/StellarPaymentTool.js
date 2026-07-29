@@ -32,7 +32,9 @@ exports.SubmitResultSchema = SubmitResultSchema;
  * @property memo - Optional memo text, max 28 characters (Stellar network limit)
  */
 exports.PaymentInputSchema = zod_1.z.object({
-    destination: zod_1.z.string().length(56, "Invalid Stellar public key"),
+    destination: zod_1.z.string()
+        .length(56, "Invalid Stellar public key")
+        .refine((val) => stellar_sdk_1.StrKey.isValidEd25519PublicKey(val), "Destination must be a valid Stellar public key (G...)"),
     amount: zod_1.z
         .string()
         // Negative-lookahead rejects "0" and all zero-value decimals ("0.0", "0.0000000")

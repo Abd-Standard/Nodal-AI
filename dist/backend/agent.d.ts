@@ -12,6 +12,8 @@
 import { EventEmitter } from "events";
 import { rpc } from "@stellar/stellar-sdk";
 import { X402Challenge } from "./tools/X402PaymentTool";
+import { SpendingTracker } from "./spending_tracker";
+export declare const spendingTracker: SpendingTracker;
 export type TaskType = "stellar_payment" | "soroban_invoke" | "soroban_query" | "x402_respond" | "account_info" | "change_trust" | "multisig_payment" | "batch_payment" | "balance_check" | "path_payment" | "fee_bump" | "dex_offer";
 export interface AgentTask {
     type: TaskType;
@@ -37,6 +39,12 @@ export interface AgentResult {
     taskType: TaskType;
     data?: unknown;
     error?: string;
+    /**
+     * Structured error type for programmatic error handling.
+     * Allows callers to distinguish between different error categories
+     * (e.g., InsufficientFunds, NetworkTimeout) without string matching.
+     */
+    errorType?: string;
     /**
      * Correlation ID that ties every log line, persisted result, and webhook
      * dispatch for a single task execution together. Generated at dispatch time

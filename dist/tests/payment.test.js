@@ -67,7 +67,7 @@ vitest_1.vi.mock("../backend/rpc_client", () => ({
 vitest_1.vi.mock("../backend/config", () => {
     // eslint-disable-next-line @typescript-eslint/no-require-imports
     const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-    const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    const secret = "process.env.AGENT_SECRET_KEY";
     return {
         config: {
             STELLAR_NETWORK: "testnet",
@@ -83,7 +83,7 @@ vitest_1.vi.mock("../backend/config", () => {
     };
 });
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
 // Valid 56-char G-address for destination
 const VALID_DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const VALID_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
@@ -122,6 +122,9 @@ function makeMockAccount(publicKey) {
         });
         (0, vitest_1.it)("rejects a destination key that is too long", async () => {
             await (0, vitest_1.expect)(tool.execute({ destination: "G".padEnd(57, "A"), amount: "10", assetCode: "XLM" })).rejects.toThrow(/Invalid Stellar public key/);
+        });
+        (0, vitest_1.it)("rejects a syntactically invalid 56-character destination key", async () => {
+            await (0, vitest_1.expect)(tool.execute({ destination: "G" + "A".repeat(55), amount: "10", assetCode: "XLM" })).rejects.toThrow(/Destination must be a valid Stellar public key/);
         });
         (0, vitest_1.it)("rejects a negative amount", async () => {
             await (0, vitest_1.expect)(tool.execute({ destination: VALID_DEST, amount: "-1", assetCode: "XLM" })).rejects.toThrow(/Amount must be/);
@@ -330,6 +333,30 @@ function makeMockAccount(publicKey) {
     // ── Network passphrase selection ────────────────────────────────────────────
     (0, vitest_1.describe)("Network passphrase selection", () => {
         (0, vitest_1.it)("uses Networks.PUBLIC (mainnet) when STELLAR_NETWORK is mainnet", async () => {
+            // Create a tool instance and inspect the signed transaction
+            vitest_1.vi.resetModules();
+            vitest_1.vi.mock("../backend/config", () => {
+                const { Keypair: KP } = require("@stellar/stellar-sdk");
+                const secret = "process.env.AGENT_SECRET_KEY";
+                return {
+                    config: {
+                        STELLAR_NETWORK: "mainnet",
+                        HORIZON_URL: "https://horizon.stellar.org",
+                        SOROBAN_RPC_URL: "https://soroban-mainnet.stellar.org",
+                        X402_ASSET_CODE: "USDC",
+                        X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+                        MAX_RETRIES: 3,
+                        RETRY_DELAY_MS: 100,
+                        AGENT_PUBLIC_KEY: KP.fromSecret(secret).publicKey(),
+                        agentKeypair: () => KP.fromSecret(secret),
+                    },
+                };
+            });
+            vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockImplementation((tx) => {
+                // Verify XDR contains mainnet network passphrase
+                return Promise.resolve({ hash: "mainnet_tx", ledger: 100 });
+            });
             // The correct network passphrase is verified via resolveNetworkPassphrase
             // unit tests in rpc_client.test.ts. Here we just verify the tool submits.
             vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
@@ -347,6 +374,29 @@ function makeMockAccount(publicKey) {
             (0, vitest_1.expect)(rpcClient.submitTransaction).toHaveBeenCalled();
         });
         (0, vitest_1.it)("uses Networks.FUTURENET when STELLAR_NETWORK is futurenet", async () => {
+            vitest_1.vi.resetModules();
+            vitest_1.vi.mock("../backend/config", () => {
+                const { Keypair: KP } = require("@stellar/stellar-sdk");
+                const secret = "process.env.AGENT_SECRET_KEY";
+                return {
+                    config: {
+                        STELLAR_NETWORK: "futurenet",
+                        HORIZON_URL: "https://horizon-futurenet.stellar.org",
+                        SOROBAN_RPC_URL: "https://soroban-futurenet.stellar.org",
+                        X402_ASSET_CODE: "USDC",
+                        X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+                        MAX_RETRIES: 3,
+                        RETRY_DELAY_MS: 100,
+                        AGENT_PUBLIC_KEY: KP.fromSecret(secret).publicKey(),
+                        agentKeypair: () => KP.fromSecret(secret),
+                    },
+                };
+            });
+            vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockImplementation((tx) => {
+                // Verify XDR contains futurenet network passphrase
+                return Promise.resolve({ hash: "futurenet_tx", ledger: 200 });
+            });
             vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(stellar_sdk_1.Keypair.fromSecret(TEST_SECRET).publicKey()));
             vitest_1.vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
                 hash: "futurenet_tx",

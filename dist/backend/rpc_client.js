@@ -19,6 +19,7 @@ exports.submitTransaction = submitTransaction;
 exports.simulateSorobanTx = simulateSorobanTx;
 exports.prepareSorobanTx = prepareSorobanTx;
 const stellar_sdk_1 = require("@stellar/stellar-sdk");
+const crypto_1 = require("crypto");
 const opossum_1 = __importDefault(require("opossum"));
 const zod_1 = require("zod");
 const config_1 = require("./config");
@@ -167,9 +168,16 @@ function withTimeout(promise, ms) {
     });
     return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
 }
-exports.horizonServer = new stellar_sdk_1.Horizon.Server(config_1.config.HORIZON_URL, {
-    allowHttp: config_1.config.STELLAR_NETWORK === "testnet" || config_1.config.STELLAR_NETWORK === "futurenet",
-});
+function createHorizonServer() {
+    const requestId = (0, crypto_1.randomUUID)();
+    return new stellar_sdk_1.Horizon.Server(config_1.config.HORIZON_URL, {
+        allowHttp: config_1.config.STELLAR_NETWORK === "testnet" || config_1.config.STELLAR_NETWORK === "futurenet",
+        headers: {
+            "X-Request-ID": requestId,
+        },
+    });
+}
+exports.horizonServer = createHorizonServer();
 async function loadAccount(publicKey) {
     return (0, network_1.withBackoffGuard)(() => withTimeout(withRetry(() => exports.horizonServer.loadAccount(publicKey), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE), config_1.config.RPC_TIMEOUT_MS));
 }
@@ -190,17 +198,57 @@ async function submitTransaction(tx) {
         ]).finally(() => clearTimeout(timeoutId));
     }));
 }
-exports.sorobanServer = new stellar_sdk_1.rpc.Server(config_1.config.SOROBAN_RPC_URL, {
-    allowHttp: config_1.config.STELLAR_NETWORK === "testnet" || config_1.config.STELLAR_NETWORK === "futurenet",
-});
+function createSorobanServer() {
+    const requestId = (0, crypto_1.randomUUID)();
+    return new stellar_sdk_1.rpc.Server(config_1.config.SOROBAN_RPC_URL, {
+        allowHttp: config_1.config.STELLAR_NETWORK === "testnet" || config_1.config.STELLAR_NETWORK === "futurenet",
+        headers: {
+            "X-Request-ID": requestId,
+        },
+    });
+}
+exports.sorobanServer = createSorobanServer();
 async function simulateSorobanTx(tx) {
     return (0, network_1.withBackoffGuard)(() => withTimeout(withRetry(() => exports.sorobanServer.simulateTransaction(tx), config_1.config.MAX_RETRIES, config_1.config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE), config_1.config.RPC_TIMEOUT_MS));
+}
+function validateSorobanAuth(tx) {
+    const operations = Array.isArray(tx.operations)
+        ? tx.operations ?? []
+        : [];
+    for (const operation of operations) {
+        const authEntries = Array.isArray(operation?.auth) ? operation.auth : [];
+        for (const authEntry of authEntries) {
+            const authObject = authEntry;
+            const credentials = authObject.credentials?.();
+            if (!credentials)
+                continue;
+            const hasAddressCredentials = typeof credentials.address === "function";
+            if (!hasAddressCredentials) {
+                continue;
+            }
+            const address = credentials.address?.();
+            const innerAddress = address?.address?.();
+            const accountId = innerAddress?.accountId?.();
+            const ed25519 = accountId?.ed25519?.();
+            const muxedEd25519 = accountId?.muxedEd25519?.();
+            const rawKey = ed25519 ?? muxedEd25519?.ed25519?.();
+            if (!rawKey) {
+                throw new Error("Unexpected Soroban auth signer format");
+            }
+            const signer = stellar_sdk_1.StrKey.encodeEd25519PublicKey(Buffer.from(rawKey));
+            if (signer !== config_1.config.AGENT_PUBLIC_KEY) {
+                throw new Error(`Unexpected Soroban auth signer: ${signer}`);
+            }
+        }
+    }
 }
 async function prepareSorobanTx(tx) {
     const simResult = await simulateSorobanTx(tx);
     if (stellar_sdk_1.rpc.Api.isSimulationError(simResult)) {
         throw new Error("Soroban simulation failed: ");
     }
-    return stellar_sdk_1.rpc.assembleTransaction(tx, simResult).build();
+    const builtTx = stellar_sdk_1.rpc.assembleTransaction(tx, simResult).build();
+    validateSorobanAuth(builtTx);
+    return builtTx;
 }
 //# sourceMappingURL=rpc_client.js.map

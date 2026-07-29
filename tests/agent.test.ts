@@ -119,7 +119,7 @@ vi.mock("../backend/config", () => ({
     RETRY_DELAY_MS: 100,    MAX_CONCURRENT_TASKS: 10,    // Set above MAINNET_SPENDING_CAP to exercise the secondary runtime guard
     AGENT_SPENDING_LIMIT: "15000",
     agentKeypair: () => ({
-      secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73",
+      secret: () => "process.env.AGENT_SECRET_KEY",
     }),
   },
   MAINNET_SPENDING_CAP: 10_000,

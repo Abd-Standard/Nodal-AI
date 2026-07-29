@@ -29,7 +29,7 @@ vi.mock("../backend/config", () => ({
     X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 100,
-    agentKeypair: () => ({ secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73" }),
+    agentKeypair: () => ({ secret: () => "process.env.AGENT_SECRET_KEY" }),
   },
 }));
 

@@ -37,7 +37,7 @@ vi.mock("../backend/utils/logger", () => ({
 
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "process.env.AGENT_SECRET_KEY";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -325,7 +325,7 @@ describe("prepareSorobanTx auth checks", () => {
   });
 
   it("does not throw when address credentials match the agent's public key", async () => {
-    const agentSecret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    const agentSecret = "process.env.AGENT_SECRET_KEY";
     const agentPublicKey = Keypair.fromSecret(agentSecret).publicKey();
     const rawKey = StrKey.decodeEd25519PublicKey(agentPublicKey);
 
