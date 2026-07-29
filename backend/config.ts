@@ -400,7 +400,7 @@ function parseConfigAndDerive(): AgentConfig {
     process.stderr.write(
       `\n❌ [Config] Invalid environment — fix the following before starting:\n` +
       formatValidationErrors(result.error) +
-      `\n\nSee .env.example for reference.\n\n`
+      `\n\nSee ..env for reference.\n\n`
     );
     process.exit(1);
   }

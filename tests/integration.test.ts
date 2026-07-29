@@ -38,7 +38,7 @@ vi.mock("../backend/config", () => ({
     RETRY_DELAY_MS: 100,
     agentKeypair: () => ({
       publicKey: () => "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-      secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73",
+      secret: () => "process.env.AGENT_SECRET_KEY",
     }),
   },
 }));

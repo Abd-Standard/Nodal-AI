@@ -1,0 +1,1 @@
+{"version":3,"file":"spending_tracker.d.ts","sourceRoot":"","sources":["../../backend/spending_tracker.ts"],"names":[],"mappings":"AAGA;;;;GAIG;AACH,qBAAa,eAAe;IAC1B,OAAO,CAAC,QAAQ,CAAC,QAAQ,CAAS;IAClC,OAAO,CAAC,OAAO,CAA+C;gBAElD,QAAQ,GAAE,MAAkC;IAIxD;;;OAGG;IACH,MAAM,CAAC,SAAS,EAAE,MAAM;IAkBxB,+DAA+D;IAC/D,KAAK,IAAI,MAAM;IAMf,OAAO,CAAC,QAAQ;IAYhB,KAAK;CAGN"}

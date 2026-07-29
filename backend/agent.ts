@@ -596,20 +596,13 @@ export class PayFiAgent extends EventEmitter {
     let chain: () => Promise<AgentResult> = executeTask;
     for (let i = this.middlewares.length - 1; i >= 0; i--) {
       const middleware = this.middlewares[i];
+      if (!middleware) continue;
       const next: () => Promise<AgentResult> = chain;
       chain = () => middleware(task, next);
     }
 
     try {
       return await chain();
-      taskLog.info({ taskType: task.type }, "Task completed");
-      const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
-      this.emit("task:complete", result);
-
-      saveResult({ ...result, timestamp: new Date().toISOString() });
-      void dispatchWebhook(result);
-
-      return result;
     } catch (err) {
       const durationMs = Date.now() - startMs;
       const message = err instanceof Error ? err.message : String(err);

@@ -57,7 +57,7 @@ check_env() {
 }
 
 require_env() {
-  [[ -f .env ]] || die ".env file not found. Copy .env.example and fill in your values."
+  [[ -f .env ]] || die ".env file not found. Copy ..env and fill in your values."
   # shellcheck disable=SC1091
   set -a; source .env; set +a
   check_env
