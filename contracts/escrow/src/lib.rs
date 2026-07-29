@@ -19,7 +19,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error,
-    token::Client as TokenClient, Address, Env, Symbol,
+    token::Client as TokenClient, Address, BytesN, Env, Symbol,
 };
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
@@ -103,6 +103,7 @@ impl EscrowContract {
     ///                 or attempting to read its decimals().
     /// * `amount`    - Token amount (stroop-equivalent units).
     /// * `expiry`    - Unix timestamp after which depositor may refund.
+    /// * `admin`     - Privileged address authorized to perform WASM upgrades.
     ///
     /// # Panics
     /// * `AlreadyInitialized` - If the escrow has already been initialised.
@@ -120,6 +121,7 @@ impl EscrowContract {
         token: Address,
         amount: i128,
         expiry: u64,
+        admin: Address,
     ) {
         // Prevent re-initialisation
         if env.storage().instance().has(&DataKey::Depositor) {
