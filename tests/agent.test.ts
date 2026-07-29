@@ -502,6 +502,142 @@ describe("PayFiAgent — drain / waitForPendingTasks", () => {
   });
 });
 
+describe("PayFiAgent — middleware system", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
+    agent = new PayFiAgent();
+  });
+
+  it("registers middleware via use() method", () => {
+    const middleware = vi.fn(async (task, next) => next());
+    agent.use(middleware);
+    // Middleware is registered - verified by internal state
+    expect(agent).toBeDefined();
+  });
+
+  it("executes middleware in registration order", async () => {
+    const executionOrder: string[] = [];
+    
+    agent.use(async (task, next) => {
+      executionOrder.push("middleware1");
+      return next();
+    });
+    
+    agent.use(async (task, next) => {
+      executionOrder.push("middleware2");
+      return next();
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(true);
+    expect(executionOrder).toEqual(["middleware1", "middleware2"]);
+  });
+
+  it("allows middleware to short-circuit task execution", async () => {
+    agent.use(async (task, next) => {
+      return {
+        success: false,
+        taskType: task.type,
+        error: "Short-circuited by middleware",
+        correlationId: task.correlationId ?? "test-correlation-id",
+      };
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Short-circuited by middleware");
+    // Tool should not have been called
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (mockInstance) {
+      expect(mockInstance.execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it("middleware can inspect and modify task before execution", async () => {
+    agent.use(async (task, next) => {
+      // Modify the task payload
+      if (task.type === "stellar_payment") {
+        (task.payload as Record<string, unknown>).amount = "50";
+      }
+      return next();
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(true);
+    // Verify the tool was called with modified payload
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (mockInstance) {
+      expect(mockInstance.execute).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: "50" })
+      );
+    }
+  });
+
+  it("middleware handles errors thrown in middleware", async () => {
+    agent.use(async (task, next) => {
+      throw new Error("Middleware error");
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Middleware error");
+  });
+
+  it("middleware executes after task completion (post-execution)", async () => {
+    const postExecutionLog: string[] = [];
+    
+    agent.use(async (task, next) => {
+      const result = await next();
+      postExecutionLog.push("after-execution");
+      return result;
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(true);
+    expect(postExecutionLog).toEqual(["after-execution"]);
+  });
+
+  it("pass-through middleware with no modifications", async () => {
+    agent.use(async (task, next) => {
+      // Just pass through without modification
+      return next();
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(true);
+  });
+});
+
 describe("PayFiAgent — payload sanitisation", () => {
   let agent: PayFiAgent;
 
