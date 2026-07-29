@@ -13,7 +13,7 @@ vi.mock('../backend/rpc_client', () => ({
 
 vi.mock('../backend/config', () => {
   const { Keypair } = require('@stellar/stellar-sdk');
-  const secret = 'SBZ7EYXHNB4WPPIWC5YAMH2' + 'U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73';
+  const secret = 'SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73';
   return {
     config: {
       STELLAR_NETWORK: 'testnet',

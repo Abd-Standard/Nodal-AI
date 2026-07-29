@@ -1,0 +1,5 @@
+# Security-sensitive files require maintainer review
+backend/config.ts @Dami24-hub
+backend/tools/X402PaymentTool.ts @Dami24-hub
+contracts/escrow/src/lib.rs @Dami24-hub
+SECURITY.md @Dami24-hub
