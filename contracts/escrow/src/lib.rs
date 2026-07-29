@@ -19,7 +19,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error,
-    token::Client as TokenClient, Address, Env, Symbol,
+    token::Client as TokenClient, Address, BytesN, Env, Symbol,
 };
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
@@ -33,6 +33,8 @@ pub enum DataKey {
     Amount,
     Expiry,
     Released,
+    /// Privileged address authorized to perform in-place WASM upgrades.
+    Admin,
 }
 
 // ─── Escrow State ─────────────────────────────────────────────────────────────
@@ -72,6 +74,8 @@ pub enum EscrowError {
     NotInitialized = 8,
     /// depositor, recipient, and arbiter must all be distinct addresses.
     InvalidParties = 9,
+    /// The caller is not the authorized upgrade admin.
+    NotAdmin = 10,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -91,6 +95,7 @@ impl EscrowContract {
     /// * `token`     - SAC token contract address.
     /// * `amount`    - Token amount (stroop-equivalent units).
     /// * `expiry`    - Unix timestamp after which depositor may refund.
+    /// * `admin`     - Privileged address authorized to perform WASM upgrades.
     ///
     /// # Panics
     /// * `AlreadyInitialized` - If the escrow has already been initialised.
@@ -108,6 +113,7 @@ impl EscrowContract {
         token: Address,
         amount: i128,
         expiry: u64,
+        admin: Address,
     ) {
         // Prevent re-initialisation
         if env.storage().instance().has(&DataKey::Depositor) {
@@ -159,6 +165,7 @@ impl EscrowContract {
         env.storage().instance().set(&DataKey::Amount, &amount);
         env.storage().instance().set(&DataKey::Expiry, &expiry);
         env.storage().instance().set(&DataKey::Released, &false);
+        env.storage().instance().set(&DataKey::Admin, &admin);
 
         env.events().publish(
             (
@@ -492,6 +499,44 @@ impl EscrowContract {
             ),
             (stored_depositor, amount),
         );
+    }
+
+    /// Upgrade the contract's WASM bytecode in-place. Only callable by the stored admin.
+    ///
+    /// The upgrade is permitted only while escrow funds remain locked (`Released == false`).
+    /// This prevents upgrading after a settlement has already occurred, which could
+    /// alter finalized state in unexpected ways.
+    ///
+    /// # Arguments
+    /// * `env`          - The execution environment.
+    /// * `admin`        - Must match the admin address recorded at initialisation.
+    /// * `new_wasm_hash` - SHA-256 hash of the new WASM bytecode, already uploaded to the ledger.
+    ///
+    /// # Panics
+    /// * `NotAdmin`       - If `admin` does not match the stored admin address.
+    /// * `AlreadyReleased` - If the escrow funds have already been released or refunded.
+    ///
+    /// # Return Value
+    /// None.
+    pub fn upgrade(env: Env, admin: Address, new_wasm_hash: BytesN<32>) {
+        // Load and authenticate against the stored admin address.
+        let stored_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .expect("escrow: state corrupted");
+        stored_admin.require_auth();
+
+        // Verify the supplied address matches what is in storage (TOCTOU guard).
+        if admin != stored_admin {
+            panic_with_error!(&env, EscrowError::NotAdmin);
+        }
+
+        // Only allow upgrades while funds are still locked.
+        Self::assert_not_released(&env);
+
+        // Perform the in-place WASM migration.
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
     }
 
     // ─── Internal helpers ────────────────────────────────────────────────────
