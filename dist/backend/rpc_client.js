@@ -235,11 +235,7 @@ function validateSorobanAuth(tx) {
             if (!rawKey) {
                 throw new Error("Unexpected Soroban auth signer format");
             }
-<<<<<<< HEAD
             const signer = stellar_sdk_1.StrKey.encodeEd25519PublicKey(Buffer.from(rawKey));
-=======
-            const signer = stellar_sdk_1.StrKey.encodeEd25519PublicKey(rawKey);
->>>>>>> b8d1d12685779ef37cc3426f4e18609c62d8cac3
             if (signer !== config_1.config.AGENT_PUBLIC_KEY) {
                 throw new Error(`Unexpected Soroban auth signer: ${signer}`);
             }

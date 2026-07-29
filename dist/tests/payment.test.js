@@ -54,13 +54,6 @@ vitest_1.vi.mock("../backend/rpc_client", () => ({
     sorobanServer: {},
     simulateSorobanTx: vitest_1.vi.fn(),
     prepareSorobanTx: vitest_1.vi.fn(),
-    resolveNetworkPassphrase: vitest_1.vi.fn((network) => {
-        if (network === "mainnet")
-            return "Public Global Stellar Network ; September 2015";
-        if (network === "futurenet")
-            return "Test SDF Future Network ; October 2022";
-        return "Test SDF Network ; September 2015";
-    }),
     resolveNetworkPassphrase: (_network) => {
         const { Networks } = require("@stellar/stellar-sdk");
         if (_network === "mainnet")
@@ -485,11 +478,7 @@ function makeMockAccount(publicKey) {
             vitest_1.vi.resetModules();
             vitest_1.vi.mock("../backend/config", () => {
                 const { Keypair: KP } = require("@stellar/stellar-sdk");
-<<<<<<< HEAD
                 const secret = "process.env.AGENT_SECRET_KEY";
-=======
-                const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
->>>>>>> b8d1d12685779ef37cc3426f4e18609c62d8cac3
                 return {
                     config: {
                         STELLAR_NETWORK: "mainnet",
@@ -529,11 +518,7 @@ function makeMockAccount(publicKey) {
             vitest_1.vi.resetModules();
             vitest_1.vi.mock("../backend/config", () => {
                 const { Keypair: KP } = require("@stellar/stellar-sdk");
-<<<<<<< HEAD
                 const secret = "process.env.AGENT_SECRET_KEY";
-=======
-                const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
->>>>>>> b8d1d12685779ef37cc3426f4e18609c62d8cac3
                 return {
                     config: {
                         STELLAR_NETWORK: "futurenet",

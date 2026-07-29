@@ -69,7 +69,7 @@ function buildMemo(memoType, memoValue) {
             if (id < 0n || id > 18446744073709551615n) {
                 throw new Error("Memo ID must be a 64-bit unsigned integer (0 to 2^64-1)");
             }
-            return stellar_sdk_1.Memo.id(id);
+            return stellar_sdk_1.Memo.id(id.toString());
         case "hash":
             if (typeof memoValue !== "string") {
                 throw new Error("Memo hash must be a string");

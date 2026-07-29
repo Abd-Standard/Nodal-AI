@@ -180,12 +180,19 @@ const EnvSchema = zod_1.z.object({
         .min(1)
         .default(10),
     // Maximum number of tasks allowed to execute concurrently in agent.run().
-    // Excess tasks are rejected immediately rather than queued.
+    // Excess tasks are queued (bounded by QUEUE_CAPACITY) or rejected.
     MAX_CONCURRENT_TASKS: zod_1.z.coerce
         .number()
         .int()
         .min(1)
         .default(10),
+    // Bounded FIFO queue for tasks submitted while at MAX_CONCURRENT_TASKS.
+    // 0 (default) disables queuing — excess tasks are rejected immediately.
+    QUEUE_CAPACITY: zod_1.z.coerce
+        .number()
+        .int()
+        .min(0)
+        .default(0),
     MAX_SOROBAN_FEE_STROOPS: zod_1.z.coerce
         .number()
         .int()
@@ -204,11 +211,6 @@ function formatValidationErrors(errors) {
     return errors.issues
         .map((issue) => {
         const rawField = issue.path.join(".") || "unknown";
-<<<<<<< HEAD
-=======
-        // Redact any value that looks like a secret key in both field path and message
-        const field = rawField.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
->>>>>>> b8d1d12685779ef37cc3426f4e18609c62d8cac3
         // Redact any path element that looks like a secret key — path may contain
         // raw values (e.g., when a secret key is used as a Zod path segment).
         const field = issue.path

@@ -81,6 +81,7 @@ export declare class PayFiAgent extends EventEmitter {
     private dexOfferTool;
     private activeTasks;
     private isDraining;
+    private readonly taskQueue;
     private _streamStop;
     private _contractListenerStop;
     private readonly _boundHandlers;
@@ -147,5 +148,12 @@ export declare class PayFiAgent extends EventEmitter {
     runSequence(tasks: AgentTask[]): Promise<AgentResult[]>;
     /** Dispatch a task to the correct tool */
     run(task: AgentTask): Promise<AgentResult>;
+    /**
+     * Pull the next queued task (if any) and dispatch it once a concurrency
+     * slot frees up. Called from executeTask()'s `finally` block.
+     */
+    private dispatchQueued;
+    /** Run a task's tool logic — assumes the concurrency slot has already been reserved. */
+    private executeTask;
 }
 //# sourceMappingURL=agent.d.ts.map
