@@ -301,7 +301,7 @@ function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Arr
         throw new Error("Unexpected Soroban auth signer format");
       }
 
-      const signer = StrKey.encodeEd25519PublicKey(rawKey);
+      const signer = StrKey.encodeEd25519PublicKey(Buffer.from(rawKey));
       if (signer !== config.AGENT_PUBLIC_KEY) {
         throw new Error(`Unexpected Soroban auth signer: ${signer}`);
       }

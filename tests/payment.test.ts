@@ -23,11 +23,6 @@ vi.mock("../backend/rpc_client", () => ({
   sorobanServer: {},
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
-  resolveNetworkPassphrase: vi.fn((network: string) => {
-    if (network === "mainnet") return "Public Global Stellar Network ; September 2015";
-    if (network === "futurenet") return "Test SDF Future Network ; October 2022";
-    return "Test SDF Network ; September 2015";
-  }),
   resolveNetworkPassphrase: (_network: string) => {
     const { Networks } = require("@stellar/stellar-sdk");
     if (_network === "mainnet") return Networks.PUBLIC;
@@ -110,6 +105,12 @@ describe("StellarPaymentTool", () => {
       await expect(
         tool.execute({ destination: "G".padEnd(57, "A"), amount: "10", assetCode: "XLM" })
       ).rejects.toThrow(/Invalid Stellar public key/);
+    });
+
+    it("rejects a syntactically invalid 56-character destination key", async () => {
+      await expect(
+        tool.execute({ destination: "G" + "A".repeat(55), amount: "10", assetCode: "XLM" })
+      ).rejects.toThrow(/Destination must be a valid Stellar public key/);
     });
 
     it("rejects a negative amount", async () => {
