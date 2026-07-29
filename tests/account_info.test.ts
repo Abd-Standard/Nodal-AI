@@ -93,6 +93,26 @@ describe("AccountInfoTool", () => {
     expect(info.subentryCount).toBe(2);
   });
 
+  it("returns publicKey, balances, sequenceNumber, and subentryCount in one call", async () => {
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount() as any);
+    const info = await tool.fetch();
+    expect(info).toMatchObject({
+      publicKey: AGENT_KEY,
+      sequenceNumber: "1234567890",
+      subentryCount: 2,
+    });
+    expect(Array.isArray(info.balances)).toBe(true);
+    expect(info.balances.length).toBeGreaterThan(0);
+  });
+
+  it("returns empty balances array for an account with no balances", async () => {
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      makeMockAccount({ balances: [] }) as any
+    );
+    const info = await tool.fetch();
+    expect(info.balances).toEqual([]);
+  });
+
   it("propagates loadAccount error", async () => {
     vi.mocked(rpcClient.loadAccount).mockRejectedValue(new Error("account not found"));
     await expect(tool.fetch()).rejects.toThrow("account not found");

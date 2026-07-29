@@ -171,12 +171,20 @@ const EnvSchema = z.object({
     .default(10),
 
   // Maximum number of tasks allowed to execute concurrently in agent.run().
-  // Excess tasks are rejected immediately rather than queued.
+  // Excess tasks are queued (bounded by QUEUE_CAPACITY) or rejected.
   MAX_CONCURRENT_TASKS: z.coerce
     .number()
     .int()
     .min(1)
     .default(10),
+
+  // Bounded FIFO queue for tasks submitted while at MAX_CONCURRENT_TASKS.
+  // 0 (default) disables queuing — excess tasks are rejected immediately.
+  QUEUE_CAPACITY: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .default(0),
 
   MAX_SOROBAN_FEE_STROOPS: z.coerce
     .number()
@@ -332,6 +340,11 @@ export interface AgentConfig {
    * Defaults to 10.
    */
   readonly MAX_CONCURRENT_TASKS: number;
+  /**
+   * Bounded FIFO queue capacity for tasks submitted while at MAX_CONCURRENT_TASKS.
+   * Defaults to 0 (no queuing — excess tasks are rejected immediately).
+   */
+  readonly QUEUE_CAPACITY: number;
   /**
    * Port for the health-check HTTP server.
    * Validated by EnvSchema to be an integer between 1 and 65535.

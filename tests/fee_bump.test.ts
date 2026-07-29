@@ -140,6 +140,27 @@ describe("FeeBumpTool", () => {
     ).rejects.toThrow(/Invalid inner transaction XDR/);
   });
 
+  it("throws when innerTxXdr is a fee-bump transaction itself", async () => {
+    // Build a real inner transaction, then wrap it in a fee-bump envelope.
+    // Passing that fee-bump XDR as innerTxXdr must be rejected because the
+    // protocol forbids nested fee-bump transactions.
+    const innerXdr = buildInnerTxXdr();
+    const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
+    const innerTx = TransactionBuilder.fromXDR(innerXdr, Networks.TESTNET);
+    const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+      agentKeypair.publicKey(),
+      String(parseInt(BASE_FEE, 10) * 2),
+      innerTx as any,
+      Networks.TESTNET
+    );
+    feeBumpTx.sign(agentKeypair);
+    const feeBumpXdr = feeBumpTx.toEnvelope().toXDR("base64");
+
+    await expect(
+      tool.execute({ innerTxXdr: feeBumpXdr })
+    ).rejects.toThrow(/Inner transaction must not itself be a fee-bump transaction/);
+  });
+
   it("rejects an empty innerTxXdr", async () => {
     await expect(
       tool.execute({ innerTxXdr: "" })
