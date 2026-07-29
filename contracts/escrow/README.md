@@ -162,3 +162,42 @@ soroban contract invoke \
   release \
   --arbiter G_ARBITER_ADDRESS
 ```
+
+---
+
+## Contract Upgrade Path
+
+### Immutability Constraint
+
+Soroban contracts are **immutable once deployed**. The escrow contract does not include an upgrade mechanism, meaning once deployed to mainnet, the contract code cannot be patched or modified. This is a fundamental design constraint of Soroban and ensures the security and predictability of deployed contracts.
+
+### Upgrade Strategy
+
+To deploy a new version of the escrow contract:
+
+1. **Deploy a New Contract**: Build and deploy the updated contract to Soroban, which will generate a new contract ID.
+
+2. **Migrate Active Escrows**: Transfer all active escrows from the old contract to the new contract:
+   - **Manual Migration**: For each active escrow, call `refund()` on the old contract (if expired) or coordinate with the arbiter to release funds, then re-initialize on the new contract.
+   - **Automated Migration Script**: Create a migration script that:
+     - Reads all active escrow states from the old contract
+     - Re-initializes each escrow on the new contract with the same parameters
+     - Validates that all funds have been transferred correctly
+
+3. **Update Contract Address Configuration**: Update the agent's configuration to reference the new contract address. This allows operators to swap contract addresses without code changes.
+
+### Recommended Pattern: Configuration-Driven Addresses
+
+To minimize downtime and simplify upgrades, store contract addresses in the agent's configuration file rather than hardcoding them:
+
+```json
+{
+  "escrow_contract_address": "CD_CURRENT_CONTRACT_ID"
+}
+```
+
+This approach allows operators to:
+- Quickly switch to a new contract by updating the configuration
+- Roll back to a previous contract if needed
+- Test new contracts on testnet before mainnet deployment
+- Avoid code deployments for contract address changes
