@@ -115,6 +115,15 @@ describe("BatchPaymentTool", () => {
     ).rejects.toThrow(/AGENT_SPENDING_LIMIT/);
   });
 
+  it("rejects a batch where total exceeds AGENT_SPENDING_LIMIT", async () => {
+    // AGENT_SPENDING_LIMIT is 1000; 2 × 600 = 1200 > 1000
+    const payments = [
+      { destination: DEST1, amount: "600", assetCode: "XLM" },
+      { destination: DEST2, amount: "600", assetCode: "XLM" },
+    ];
+    await expect(tool.execute({ payments })).rejects.toThrow(/exceeds AGENT_SPENDING_LIMIT/);
+  });
+
   it("accepts a batch where the total exactly equals the spending limit", async () => {
     // 100 × 10 = 1000, which equals the limit
     const payments = Array.from({ length: 100 }, () => ({

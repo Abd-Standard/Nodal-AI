@@ -97,6 +97,32 @@ describe("MultiSigPaymentTool", () => {
     expect(result.unsignedXDR!.length).toBeGreaterThan(50);
   });
 
+  it("does not call submitTransaction when returning unsignedXDR", async () => {
+    await tool.execute({
+      destination: DEST,
+      amount: "100",
+      assetCode: "XLM",
+      additionalSigners: [SIGNER2],
+      minSignatures: 2,
+    });
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("returns unsignedXDR when signatures are insufficient (1 provided, 2 required)", async () => {
+    const result = await tool.execute({
+      destination: DEST,
+      amount: "100",
+      assetCode: "XLM",
+      additionalSigners: [SIGNER2],
+      minSignatures: 2,
+      signatures: ["sig1"], // Only 1 signature, but minSignatures is 2
+    });
+    expect(result.unsignedXDR).toBeDefined();
+    expect(typeof result.unsignedXDR).toBe("string");
+    expect(result.txHash).toBeUndefined();
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
   it("submits and returns txHash when sufficient signatures provided", async () => {
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({ hash: "multisig_hash", ledger: 10 } as any);
     const result = await tool.execute({
