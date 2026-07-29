@@ -11,12 +11,13 @@
  *   - The spending limit is enforced here before delegating to tools.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.PayFiAgent = void 0;
+exports.PayFiAgent = exports.spendingTracker = void 0;
 // Updated imports
 const events_1 = require("events");
 const config_1 = require("./config");
 const logger_1 = require("./logger");
 const persistence_1 = require("./persistence");
+const errors_1 = require("./errors");
 const StellarPaymentTool_1 = require("./tools/StellarPaymentTool");
 const SorobanInvokeTool_1 = require("./tools/SorobanInvokeTool");
 const X402PaymentTool_1 = require("./tools/X402PaymentTool");
@@ -35,7 +36,7 @@ const logger_2 = require("./utils/logger");
 const spending_tracker_1 = require("./spending_tracker");
 const webhook_1 = require("./webhook");
 // Instantiate a singleton tracker
-const spendingTracker = new spending_tracker_1.SpendingTracker();
+exports.spendingTracker = new spending_tracker_1.SpendingTracker();
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 /**
  * Check that a payment amount does not exceed the configured spending limit.
@@ -44,8 +45,6 @@ const spendingTracker = new spending_tracker_1.SpendingTracker();
 function assertWithinSpendingLimit(amount) {
     if (typeof amount !== "string")
         return; // let the tool's own schema catch this
-    // Record cumulative spending
-    spendingTracker.record(amount);
     const parsed = parseFloat(amount);
     const limit = parseFloat(config_1.config.AGENT_SPENDING_LIMIT);
     if (!isNaN(parsed) && parsed > limit) {
@@ -56,6 +55,8 @@ function assertWithinSpendingLimit(amount) {
         throw new Error(`Payment amount ${amount} ${config_1.config.X402_ASSET_CODE} exceeds ` +
             `mainnet spending cap of ${config_1.MAINNET_SPENDING_CAP}`);
     }
+    // Record cumulative spending (after individual checks pass)
+    exports.spendingTracker.record(amount);
 }
 const log = (0, logger_2.createLogger)("orchestrator");
 // ─── Payload sanitisation ─────────────────────────────────────────────────────
@@ -73,7 +74,7 @@ function sanitizePayload(payload) {
         const key = rawKey.trim();
         if (/secret|key|seed|mnemonic|private/i.test(key))
             continue;
-        sanitized[key] = rawValue;
+        sanitized[key] = sanitizePayload(rawValue);
     }
     return sanitized;
 }
@@ -98,6 +99,8 @@ class PayFiAgent extends events_1.EventEmitter {
     // Bound handler references kept so destroy() can call .off() with the exact same function
     // reference — EventEmitter requires identity equality for removal.
     _boundHandlers = new Map();
+    // Middleware array for pre/post task execution hooks
+    middlewares = [];
     constructor() {
         super();
         // config.agentKeypair().secret() is the canonical way to obtain the signing secret.
@@ -239,6 +242,21 @@ class PayFiAgent extends events_1.EventEmitter {
         this.isDraining = true;
         logger_1.logger.info("Agent draining — rejecting new tasks");
     }
+    /**
+     * Register a middleware function for pre/post task execution hooks.
+     *
+     * Middleware functions are executed in registration order before the task
+     * is dispatched to the appropriate tool. Each middleware can:
+     * - Inspect and modify the task
+     * - Short-circuit execution by returning a result without calling next()
+     * - Call next() to continue to the next middleware or actual task execution
+     *
+     * @param middleware - Middleware function to register
+     */
+    use(middleware) {
+        this.middlewares.push(middleware);
+        logger_1.logger.info("Middleware registered", { totalMiddlewares: this.middlewares.length });
+    }
     async waitForPendingTasks() {
         if (this.activeTasks === 0)
             return;
@@ -304,71 +322,94 @@ class PayFiAgent extends events_1.EventEmitter {
         }
         this.activeTasks++;
         taskLog.info({ taskType: task.type }, "Running task");
-        try {
-            let data;
-            switch (task.type) {
-                case "stellar_payment": {
-                    const p = task.payload;
-                    assertWithinSpendingLimit(p?.amount);
-                    data = await this.paymentTool.execute(task.payload);
-                    break;
+        // ── Compose middleware chain ────────────────────────────────────────────────
+        const executeTask = async () => {
+            try {
+                let data;
+                switch (task.type) {
+                    case "stellar_payment": {
+                        const p = task.payload;
+                        assertWithinSpendingLimit(p?.amount);
+                        const paymentResult = await this.paymentTool.execute(task.payload);
+                        data = {
+                            ...paymentResult,
+                            network: config_1.config.STELLAR_NETWORK,
+                        };
+                        break;
+                    }
+                    case "soroban_invoke": {
+                        data = await this.sorobanTool.execute(task.payload);
+                        break;
+                    }
+                    case "soroban_query":
+                        data = await this.sorobanQueryTool.query(task.payload);
+                        break;
+                    case "x402_respond": {
+                        const p = task.payload;
+                        assertWithinSpendingLimit(p?.amount);
+                        data = await this.x402Tool.respond(task.payload);
+                        break;
+                    }
+                    case "account_info":
+                        data = await this.accountInfoTool.fetch();
+                        break;
+                    case "change_trust":
+                        data = await this.trustlineTool.execute(task.payload);
+                        break;
+                    case "multisig_payment":
+                        data = await this.multiSigTool.execute(task.payload);
+                        break;
+                    case "batch_payment":
+                        data = await this.batchPaymentTool.execute(task.payload);
+                        break;
+                    case "balance_check":
+                        data = await this.balanceCheckTool.getBalance(task.payload);
+                        break;
+                    case "path_payment":
+                        data = await this.pathPaymentTool.execute(task.payload);
+                        break;
+                    case "fee_bump":
+                        data = await this.feeBumpTool.execute(task.payload);
+                        break;
+                    case "dex_offer":
+                        data = await this.dexOfferTool.execute(task.payload);
+                        break;
+                    default:
+                        throw new Error(`Unknown task type: ${task.type}`);
                 }
-                case "soroban_invoke": {
-                    data = await this.sorobanTool.execute(task.payload);
-                    break;
-                }
-                case "soroban_query":
-                    data = await this.sorobanQueryTool.query(task.payload);
-                    break;
-                case "x402_respond": {
-                    const p = task.payload;
-                    assertWithinSpendingLimit(p?.amount);
-                    data = await this.x402Tool.respond(task.payload);
-                    break;
-                }
-                case "account_info":
-                    data = await this.accountInfoTool.fetch();
-                    break;
-                case "change_trust":
-                    data = await this.trustlineTool.execute(task.payload);
-                    break;
-                case "multisig_payment":
-                    data = await this.multiSigTool.execute(task.payload);
-                    break;
-                case "batch_payment":
-                    data = await this.batchPaymentTool.execute(task.payload);
-                    break;
-                case "balance_check":
-                    data = await this.balanceCheckTool.getBalance(task.payload);
-                    break;
-                case "path_payment":
-                    data = await this.pathPaymentTool.execute(task.payload);
-                    break;
-                case "fee_bump":
-                    data = await this.feeBumpTool.execute(task.payload);
-                    break;
-                case "dex_offer":
-                    data = await this.dexOfferTool.execute(task.payload);
-                    break;
-                default:
-                    throw new Error(`Unknown task type: ${task.type}`);
+                taskLog.info({ taskType: task.type }, "Task completed");
+                const result = { success: true, taskType: task.type, data, correlationId };
+                this.emit("task:complete", result);
+                (0, persistence_1.saveResult)({ ...result, timestamp: new Date().toISOString() });
+                void (0, webhook_1.dispatchWebhook)(result);
+                return result;
             }
-            taskLog.info({ taskType: task.type }, "Task completed");
-            const result = { success: true, taskType: task.type, data, correlationId };
-            this.emit("task:complete", result);
-            (0, persistence_1.saveResult)({ ...result, timestamp: new Date().toISOString() });
-            void (0, webhook_1.dispatchWebhook)(result);
-            return result;
+            catch (err) {
+                const message = err instanceof Error ? err.message : String(err);
+                const safe = redactSecretString(message);
+                const sanitized = sanitizePayload(task.payload);
+                taskLog.error({ taskType: task.type, error: safe, sanitizedPayload: sanitized }, "Task failed");
+                const result = {
+                    success: false,
+                    taskType: task.type,
+                    error: safe,
+                    errorType: (0, errors_1.getErrorType)(err),
+                    correlationId,
+                };
+                this.emit("task:failed", result);
+                void (0, webhook_1.dispatchWebhook)(result);
+                return result;
+            }
+        };
+        // Build middleware chain: middleware[n] -> middleware[n-1] -> ... -> executeTask
+        let chain = executeTask;
+        for (let i = this.middlewares.length - 1; i >= 0; i--) {
+            const middleware = this.middlewares[i];
+            const next = chain;
+            chain = () => middleware(task, next);
         }
-        catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            const safe = redactSecretString(message);
-            const sanitized = sanitizePayload(task.payload);
-            taskLog.error({ taskType: task.type, error: safe, sanitizedPayload: sanitized }, "Task failed");
-            const result = { success: false, taskType: task.type, error: safe, correlationId };
-            this.emit("task:failed", result);
-            void (0, webhook_1.dispatchWebhook)(result);
-            return result;
+        try {
+            return await chain();
         }
         finally {
             this.activeTasks--;

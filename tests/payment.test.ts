@@ -216,6 +216,172 @@ describe("StellarPaymentTool", () => {
     });
   });
 
+  describe("memo type support", () => {
+    beforeEach(() => {
+      vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+        hash: "memo_type_hash",
+        ledger: 1,
+      } as any);
+    });
+
+    it("accepts memo type 'id' with numeric value", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "id",
+        memo: 123456789,
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("accepts memo type 'id' with max 64-bit unsigned integer", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "id",
+        memo: 18446744073709551615, // 2^64 - 1
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("rejects memo type 'id' with negative number", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "id",
+          memo: -1,
+        })
+      ).rejects.toThrow(/Memo ID must be a 64-bit unsigned integer/);
+    });
+
+    it("rejects memo type 'id' with string value", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "id",
+          memo: "123456",
+        })
+      ).rejects.toThrow(/Memo ID must be a number/);
+    });
+
+    it("accepts memo type 'hash' with 32-byte hex string", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "hash",
+        memo: "a".repeat(64),
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("accepts memo type 'hash' with 0x prefix", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "hash",
+        memo: "0x" + "a".repeat(64),
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("rejects memo type 'hash' with invalid length", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "hash",
+          memo: "abc123",
+        })
+      ).rejects.toThrow(/Memo hash must be a 32-byte hex string/);
+    });
+
+    it("rejects memo type 'hash' with non-hex characters", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "hash",
+          memo: "g".repeat(64),
+        })
+      ).rejects.toThrow(/Memo hash must contain only valid hex characters/);
+    });
+
+    it("accepts memo type 'return' with 32-byte hex string", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "return",
+        memo: "f".repeat(64),
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("accepts memo type 'return' with 0x prefix", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "return",
+        memo: "0x" + "f".repeat(64),
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("rejects memo type 'return' with invalid length", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "return",
+          memo: "abc123",
+        })
+      ).rejects.toThrow(/Memo return must be a 32-byte hex string/);
+    });
+
+    it("defaults to 'text' memo type when not specified", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memo: "default text memo",
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("accepts memo type 'text' explicitly", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "text",
+        memo: "explicit text memo",
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("handles undefined memo value", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "id",
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+  });
+
   // ── Happy path ──────────────────────────────────────────────────────────────
 
   describe("Happy path", () => {

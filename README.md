@@ -199,6 +199,22 @@ Places a manage-sell offer on the Stellar DEX. This example creates an offer to 
 npx ts-node scripts/examples/place_dex_offer.ts
 ```
 
+### `query_contract.ts` — soroban_query
+
+Performs a read-only query on a Soroban contract without broadcasting. This example calls `get_state` on a deployed escrow contract to verify state after deployment. Pass the contract address via `CONTRACT_ID`:
+
+```bash
+CONTRACT_ID=C... npx ts-node scripts/examples/query_contract.ts
+```
+
+### `fee_bump.ts` — fee_bump
+
+Wraps a transaction in a fee-bump envelope for sponsored retry flows. This is useful when the agent needs to pay fees on behalf of a transaction signed by a different account. Pass the inner transaction XDR via `INNER_TX_XDR`:
+
+```bash
+INNER_TX_XDR=AAAA... npx ts-node scripts/examples/fee_bump.ts
+```
+
 ---
 
 ## E2E Tests
