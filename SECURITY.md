@@ -102,6 +102,132 @@ const cfg: AgentConfig = {
 
 ---
 
+## Key Rotation (Stellar Agent Keypair)
+
+If `AGENT_SECRET_KEY` is suspected to be compromised or needs rotation for operational reasons, follow this step-by-step procedure. **Stellar's account model requires careful sequencing — a mistake can lock the agent account permanently.**
+
+### Prerequisites
+
+- Access to the current `AGENT_SECRET_KEY`
+- Write access to your environment variable store (e.g., `.env`, secrets manager, CI platform)
+- Confirmation that the current keypair is listed as a signer on the Stellar account
+
+### Rotation Procedure
+
+#### Step 1: Generate a New Keypair
+
+Generate a new keypair locally. Do not commit it to version control.
+
+```bash
+node -e "const { Keypair } = require('js-stellar-sdk'); const kp = Keypair.random(); console.log('Public:', kp.publicKey()); console.log('Secret:', kp.secret());"
+```
+
+Save the output securely (e.g., in your secrets manager or encrypted note).
+
+#### Step 2: Add the New Key as a Signer (While Old Key is Still Active)
+
+Using the **current** `AGENT_SECRET_KEY`, submit a `setOptions` transaction to add the new public key as an additional signer:
+
+```typescript
+import { Keypair, TransactionBuilder, Networks, Operation } from 'js-stellar-sdk';
+import { config } from './backend/config';
+
+const server = new Horizon.Server('https://horizon.stellar.org');
+const currentKeypair = config.agentKeypair();
+const newPublicKey = 'G...'; // The new keypair's public key
+
+const account = await server.loadAccount(currentKeypair.publicKey());
+const tx = new TransactionBuilder(account, {
+  fee: BASE_FEE,
+  networkPassphrase: Networks.PUBLIC_NETWORK_PASSPHRASE,
+})
+  .addOperation(
+    Operation.setOptions({
+      signer: {
+        ed25519PublicKey: newPublicKey,
+        weight: 1, // Same weight as the current key
+      },
+    })
+  )
+  .setTimeout(180)
+  .build();
+
+tx.sign(currentKeypair);
+const txResult = await server.submitTransaction(tx);
+console.log('✅ New signer added:', txResult.id);
+```
+
+**Do NOT proceed to the next step until this transaction confirms on-chain.** Verify via:
+```bash
+curl https://horizon.stellar.org/accounts/<AGENT_PUBLIC_KEY>
+# Look for the new public key in the response's signers array
+```
+
+#### Step 3: Update `AGENT_SECRET_KEY` to the New Key
+
+Once the new signer is confirmed on-chain, update your environment:
+```bash
+export AGENT_SECRET_KEY="S..." # Use the new keypair's secret key
+```
+
+Restart any running agent processes so they pick up the new key.
+
+#### Step 4: Verify the New Key Works
+
+Test that the agent can sign transactions with the new key:
+
+```typescript
+const newKeypair = config.agentKeypair();
+const testTx = new TransactionBuilder(account, {
+  fee: BASE_FEE,
+  networkPassphrase: Networks.PUBLIC_NETWORK_PASSPHRASE,
+})
+  .addOperation(Operation.bumpSequence({ bumpTo: account.sequenceNumber() }))
+  .setTimeout(180)
+  .build();
+
+testTx.sign(newKeypair);
+const result = await server.submitTransaction(testTx);
+console.log('✅ New key can sign transactions:', result.id);
+```
+
+#### Step 5: Remove the Old Key as a Signer
+
+Once the new key is confirmed working and the old key is no longer needed, remove it from the signers list:
+
+```typescript
+const oldPublicKey = '...'; // The old keypair's public key
+
+const tx = new TransactionBuilder(account, {
+  fee: BASE_FEE,
+  networkPassphrase: Networks.PUBLIC_NETWORK_PASSPHRASE,
+})
+  .addOperation(
+    Operation.setOptions({
+      signer: {
+        ed25519PublicKey: oldPublicKey,
+        weight: 0, // Weight of 0 removes the signer
+      },
+    })
+  )
+  .setTimeout(180)
+  .build();
+
+tx.sign(newKeypair); // Sign with the NEW key
+const txResult = await server.submitTransaction(tx);
+console.log('✅ Old signer removed:', txResult.id);
+```
+
+### Critical Warnings
+
+⚠️ **Do not remove the old key until the new key is confirmed working.** If you remove the old key before verifying the new one works, the account will have no active signers and become permanently inaccessible.
+
+⚠️ **Do not update `AGENT_SECRET_KEY` in production until the new signer is confirmed on-chain.** Mismatched signers and active keys will cause transaction signing failures.
+
+⚠️ **Keep a secure offline backup of the old key** until you are certain it is no longer needed, in case recovery is necessary.
+
+---
+
 ## Additional Hardening Notes
 
 - **Mainnet spending cap:** `AGENT_SPENDING_LIMIT` is rejected at startup if it exceeds `10,000` on `mainnet`, preventing runaway agent spend.
