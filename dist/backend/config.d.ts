@@ -137,6 +137,11 @@ export interface AgentConfig {
      */
     readonly MAX_CONCURRENT_TASKS: number;
     /**
+     * Bounded FIFO queue capacity for tasks submitted while at MAX_CONCURRENT_TASKS.
+     * Defaults to 0 (no queuing — excess tasks are rejected immediately).
+     */
+    readonly QUEUE_CAPACITY: number;
+    /**
      * Port for the health-check HTTP server.
      * Validated by EnvSchema to be an integer between 1 and 65535.
      * Defaults to 3000.

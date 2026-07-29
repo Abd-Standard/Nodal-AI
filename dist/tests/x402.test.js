@@ -38,7 +38,7 @@ vitest_1.vi.mock("../backend/rpc_client", () => ({
 vitest_1.vi.mock("../backend/tools/StellarPaymentTool");
 vitest_1.vi.mock("../backend/config", () => {
     const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-    const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    const secret = "process.env.AGENT_SECRET_KEY";
     return {
         config: {
             STELLAR_NETWORK: "testnet",
@@ -58,7 +58,7 @@ vitest_1.vi.mock("../backend/config", () => {
     };
 });
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
 const VALID_PAY_TO = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const VALID_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 function futureIso(offsetMs = 60_000) {

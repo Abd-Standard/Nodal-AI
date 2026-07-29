@@ -38,10 +38,10 @@ Nodal AI is built on a clean, three-pillar separation of concerns. For a deep di
    ```bash
    git clone https://github.com/your-username/nodal-ai.git
    cd nodal-ai
-   cp .env.example .env
+   cp ..env .env
    ```
 
-   Open `.env` and fill in at minimum `AGENT_SECRET_KEY`, `HORIZON_URL`, `SOROBAN_RPC_URL`, and `X402_ASSET_ISSUER`. See [`.env.example`](./.env.example) for the full list of variables and their descriptions.
+   Open `.env` and fill in at minimum `AGENT_SECRET_KEY`, `HORIZON_URL`, `SOROBAN_RPC_URL`, and `X402_ASSET_ISSUER`. See [`..env`](./..env) for the full list of variables and their descriptions.
 
 2. **Install Dependencies:**
 
@@ -153,7 +153,7 @@ We are actively participating in the **Stellar Wave** program! We welcome contri
 
 ## Examples
 
-Three runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `.env.example` to `.env` and fill in your values, then run any script with:
+Three runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `..env` to `.env` and fill in your values, then run any script with:
 
 ```bash
 npx ts-node scripts/examples/<script>.ts

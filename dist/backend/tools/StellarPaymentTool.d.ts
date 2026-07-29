@@ -29,7 +29,7 @@ export type SubmitResult = z.infer<typeof SubmitResultSchema>;
  * @property memo - Optional memo value (string for text/return/hash, number for id)
  */
 export declare const PaymentInputSchema: z.ZodObject<{
-    destination: z.ZodString;
+    destination: z.ZodEffects<z.ZodString, string, string>;
     amount: z.ZodEffects<z.ZodString, string, string>;
     assetCode: z.ZodDefault<z.ZodString>;
     assetIssuer: z.ZodOptional<z.ZodString>;

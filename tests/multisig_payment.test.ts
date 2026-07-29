@@ -20,7 +20,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "process.env.AGENT_SECRET_KEY";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -37,7 +37,7 @@ vi.mock("../backend/config", () => {
   };
 });
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
 const DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const SIGNER2 = "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZUK9AI4WDCBAHD9HTPFE7";
 const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
@@ -95,6 +95,32 @@ describe("MultiSigPaymentTool", () => {
     // Valid XDR can be decoded from base64
     expect(() => Buffer.from(result.unsignedXDR!, "base64")).not.toThrow();
     expect(result.unsignedXDR!.length).toBeGreaterThan(50);
+  });
+
+  it("does not call submitTransaction when returning unsignedXDR", async () => {
+    await tool.execute({
+      destination: DEST,
+      amount: "100",
+      assetCode: "XLM",
+      additionalSigners: [SIGNER2],
+      minSignatures: 2,
+    });
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("returns unsignedXDR when signatures are insufficient (1 provided, 2 required)", async () => {
+    const result = await tool.execute({
+      destination: DEST,
+      amount: "100",
+      assetCode: "XLM",
+      additionalSigners: [SIGNER2],
+      minSignatures: 2,
+      signatures: ["sig1"], // Only 1 signature, but minSignatures is 2
+    });
+    expect(result.unsignedXDR).toBeDefined();
+    expect(typeof result.unsignedXDR).toBe("string");
+    expect(result.txHash).toBeUndefined();
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
   });
 
   it("submits and returns txHash when sufficient signatures provided", async () => {

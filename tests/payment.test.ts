@@ -23,11 +23,6 @@ vi.mock("../backend/rpc_client", () => ({
   sorobanServer: {},
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
-  resolveNetworkPassphrase: vi.fn((network: string) => {
-    if (network === "mainnet") return "Public Global Stellar Network ; September 2015";
-    if (network === "futurenet") return "Test SDF Future Network ; October 2022";
-    return "Test SDF Network ; September 2015";
-  }),
   resolveNetworkPassphrase: (_network: string) => {
     const { Networks } = require("@stellar/stellar-sdk");
     if (_network === "mainnet") return Networks.PUBLIC;
@@ -40,7 +35,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "process.env.AGENT_SECRET_KEY";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -58,7 +53,7 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
 // Valid 56-char G-address for destination
 const VALID_DEST   = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const VALID_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
@@ -110,6 +105,12 @@ describe("StellarPaymentTool", () => {
       await expect(
         tool.execute({ destination: "G".padEnd(57, "A"), amount: "10", assetCode: "XLM" })
       ).rejects.toThrow(/Invalid Stellar public key/);
+    });
+
+    it("rejects a syntactically invalid 56-character destination key", async () => {
+      await expect(
+        tool.execute({ destination: "G" + "A".repeat(55), amount: "10", assetCode: "XLM" })
+      ).rejects.toThrow(/Destination must be a valid Stellar public key/);
     });
 
     it("rejects a negative amount", async () => {
@@ -597,7 +598,7 @@ describe("StellarPaymentTool", () => {
       vi.resetModules();
       vi.mock("../backend/config", () => {
         const { Keypair: KP } = require("@stellar/stellar-sdk");
-        const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+        const secret = "process.env.AGENT_SECRET_KEY";
         return {
           config: {
             STELLAR_NETWORK: "mainnet",
@@ -645,7 +646,7 @@ describe("StellarPaymentTool", () => {
       vi.resetModules();
       vi.mock("../backend/config", () => {
         const { Keypair: KP } = require("@stellar/stellar-sdk");
-        const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+        const secret = "process.env.AGENT_SECRET_KEY";
         return {
           config: {
             STELLAR_NETWORK: "futurenet",

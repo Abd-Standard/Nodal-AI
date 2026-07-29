@@ -125,6 +125,8 @@ export interface AgentResult {
    * unless the caller supplies one on the task.
    */
   correlationId?: string;
+  /** Wall-clock time in milliseconds spent executing the task (from dispatch to completion/failure). */
+  durationMs?: number;
 }
 
 // ─── Middleware types ─────────────────────────────────────────────────────────────
@@ -488,6 +490,7 @@ export class PayFiAgent extends EventEmitter {
     taskLog: ReturnType<typeof createLogger>
   ): Promise<AgentResult> {
     this.activeTasks++;
+    const startMs = Date.now();
     taskLog.info({ taskType: task.type }, "Running task");
 
     // ── Compose middleware chain ────────────────────────────────────────────────
@@ -593,26 +596,20 @@ export class PayFiAgent extends EventEmitter {
     let chain: () => Promise<AgentResult> = executeTask;
     for (let i = this.middlewares.length - 1; i >= 0; i--) {
       const middleware = this.middlewares[i];
+      if (!middleware) continue;
       const next: () => Promise<AgentResult> = chain;
       chain = () => middleware(task, next);
     }
 
     try {
       return await chain();
-      taskLog.info({ taskType: task.type }, "Task completed");
-      const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
-      this.emit("task:complete", result);
-
-      saveResult({ ...result, timestamp: new Date().toISOString() });
-      void dispatchWebhook(result);
-
-      return result;
     } catch (err) {
+      const durationMs = Date.now() - startMs;
       const message = err instanceof Error ? err.message : String(err);
       const safe = redactSecretString(message);
       const sanitized = sanitizePayload(task.payload);
       taskLog.error(
-        { taskType: task.type, error: safe, sanitizedPayload: sanitized },
+        { taskType: task.type, error: safe, sanitizedPayload: sanitized, durationMs },
         "Task failed"
       );
       if (err instanceof StellarRPCError) {
@@ -624,6 +621,7 @@ export class PayFiAgent extends EventEmitter {
         error: safe,
         errorType: getErrorType(err),
         correlationId,
+        durationMs,
       };
       this.emit("task:failed", result);
       void dispatchWebhook(result);

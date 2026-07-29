@@ -45,17 +45,6 @@ import * as rpcClient from "../backend/rpc_client";
  * critical for the polling mechanism that confirms transaction settlement.
  */
 
-vi.mock("../backend/rpc_client", () => ({
-  loadAccount: vi.fn(),
-  submitTransaction: vi.fn(),
-  simulateSorobanTx: vi.fn(),
-  prepareSorobanTx: vi.fn(),
-  horizonServer: {},
-  sorobanServer: {
-    sendTransaction: vi.fn(),
-    getTransaction: vi.fn(),
-  },
-  resolveNetworkPassphrase: vi.fn(() => "Test SDF Network ; September 2015"),
 vi.mock("../backend/rpc_client", async () => {
   const { Networks } = await import("@stellar/stellar-sdk");
   return {
@@ -63,7 +52,6 @@ vi.mock("../backend/rpc_client", async () => {
     submitTransaction: vi.fn(),
     simulateSorobanTx: vi.fn(),
     prepareSorobanTx: vi.fn(),
-    // Use a plain function (not vi.fn) to ensure the passphrase is always a string
     resolveNetworkPassphrase: (_network: string) => Networks.TESTNET,
     horizonServer: {},
     sorobanServer: {
@@ -95,7 +83,7 @@ vi.mock("../backend/utils/logger", () => ({
 
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "process.env.AGENT_SECRET_KEY";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -120,7 +108,7 @@ vi.mock("../backend/config", () => {
  * Test fixtures: reusable constants and helper functions.
  */
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
 const VALID_CONTRACT =
   "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH";
 
@@ -683,7 +671,6 @@ describe("SorobanInvokeTool", () => {
 
     it("accepts multiple xdr.ScVal instances", () => {
       const arg1 = nativeToScVal(100n, { type: "i128" });
-      const arg2 = nativeToScVal("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", { type: "address" });
       // Use a real 56-char G-address; "GABC" is not a valid Stellar address
       const arg2 = nativeToScVal(
         "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",

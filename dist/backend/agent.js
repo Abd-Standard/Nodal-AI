@@ -94,6 +94,7 @@ class PayFiAgent extends events_1.EventEmitter {
     dexOfferTool;
     activeTasks = 0;
     isDraining = false;
+    taskQueue = [];
     _streamStop = null;
     _contractListenerStop = null;
     // Bound handler references kept so destroy() can call .off() with the exact same function
@@ -258,12 +259,15 @@ class PayFiAgent extends events_1.EventEmitter {
         logger_1.logger.info("Middleware registered", { totalMiddlewares: this.middlewares.length });
     }
     async waitForPendingTasks() {
-        if (this.activeTasks === 0)
+        if (this.activeTasks === 0 && this.taskQueue.length === 0)
             return;
-        logger_1.logger.info("Waiting for pending tasks to finish", { activeTasks: this.activeTasks });
+        logger_1.logger.info("Waiting for pending tasks to finish", {
+            activeTasks: this.activeTasks,
+            queuedTasks: this.taskQueue.length,
+        });
         return new Promise((resolve) => {
             const interval = setInterval(() => {
-                if (this.activeTasks === 0) {
+                if (this.activeTasks === 0 && this.taskQueue.length === 0) {
                     clearInterval(interval);
                     resolve();
                 }
@@ -305,8 +309,19 @@ class PayFiAgent extends events_1.EventEmitter {
                 correlationId,
             };
         }
-        // ── Concurrency rate limit — reject rather than queue when saturated ──
+        // ── Concurrency rate limit — queue when saturated if queueCapacity allows,
+        // otherwise reject ──
         if (this.activeTasks >= config_1.config.MAX_CONCURRENT_TASKS) {
+            if (config_1.config.QUEUE_CAPACITY > 0 && this.taskQueue.length < config_1.config.QUEUE_CAPACITY) {
+                taskLog.info({
+                    taskType: task.type,
+                    activeTasks: this.activeTasks,
+                    queueLength: this.taskQueue.length + 1,
+                }, "Agent at capacity — task queued");
+                return new Promise((resolve) => {
+                    this.taskQueue.push({ task, correlationId, resolve });
+                });
+            }
             taskLog.warn({
                 taskType: task.type,
                 activeTasks: this.activeTasks,
@@ -320,6 +335,24 @@ class PayFiAgent extends events_1.EventEmitter {
                 correlationId,
             };
         }
+        return this.executeTask(task, correlationId, taskLog);
+    }
+    /**
+     * Pull the next queued task (if any) and dispatch it once a concurrency
+     * slot frees up. Called from executeTask()'s `finally` block.
+     */
+    dispatchQueued() {
+        if (this.taskQueue.length === 0)
+            return;
+        if (this.activeTasks >= config_1.config.MAX_CONCURRENT_TASKS)
+            return;
+        const next = this.taskQueue.shift();
+        if (!next)
+            return;
+        void this.executeTask(next.task, next.correlationId, (0, logger_2.createLogger)("orchestrator", next.correlationId)).then(next.resolve);
+    }
+    /** Run a task's tool logic — assumes the concurrency slot has already been reserved. */
+    async executeTask(task, correlationId, taskLog) {
         this.activeTasks++;
         taskLog.info({ taskType: task.type }, "Running task");
         // ── Compose middleware chain ────────────────────────────────────────────────
@@ -405,14 +438,36 @@ class PayFiAgent extends events_1.EventEmitter {
         let chain = executeTask;
         for (let i = this.middlewares.length - 1; i >= 0; i--) {
             const middleware = this.middlewares[i];
+            if (!middleware)
+                continue;
             const next = chain;
             chain = () => middleware(task, next);
         }
         try {
             return await chain();
         }
+        catch (err) {
+            const message = err instanceof Error ? err.message : String(err);
+            const safe = redactSecretString(message);
+            const sanitized = sanitizePayload(task.payload);
+            taskLog.error({ taskType: task.type, error: safe, sanitizedPayload: sanitized }, "Task failed");
+            if (err instanceof rpc_client_1.StellarRPCError) {
+                this.emit("task:retry_exhausted", { taskType: task.type, attempts: config_1.config.MAX_RETRIES });
+            }
+            const result = {
+                success: false,
+                taskType: task.type,
+                error: safe,
+                errorType: (0, errors_1.getErrorType)(err),
+                correlationId,
+            };
+            this.emit("task:failed", result);
+            void (0, webhook_1.dispatchWebhook)(result);
+            return result;
+        }
         finally {
             this.activeTasks--;
+            this.dispatchQueued();
         }
     }
 }

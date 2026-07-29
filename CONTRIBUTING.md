@@ -190,7 +190,7 @@ To check for vulnerabilities in dependencies:
 
 ## Code of Conduct
 
-We are committed to providing a welcoming and inclusive environment for all contributors. Please:
+We are committed to providing a welcoming and inclusive environment for all contributors. Please refer to [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md) for our full expectations. In summary:
 - Be respectful and considerate of others
 - Use inclusive language
 - Accept constructive feedback gracefully

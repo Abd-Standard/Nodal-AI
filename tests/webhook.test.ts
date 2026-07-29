@@ -80,6 +80,33 @@ describe("verifyWebhookSignature", () => {
     const sig = signPayload(payload, "wrongsecret");
     expect(verifyWebhookSignature(payload, sig, "mysecret")).toBe(false);
   });
+
+  it("returns false for a tampered payload", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const sig = signPayload(payload, secret);
+    const tamperedPayload = '{"foo":"baz"}';
+    expect(verifyWebhookSignature(tamperedPayload, sig, secret)).toBe(false);
+  });
+
+  it("returns false for a wrong secret", () => {
+    const payload = '{"foo":"bar"}';
+    const correctSecret = "mysecret";
+    const wrongSecret = "incorrectsecret";
+    const sig = signPayload(payload, correctSecret);
+    expect(verifyWebhookSignature(payload, sig, wrongSecret)).toBe(false);
+  });
+
+  it("returns false for signatures of different lengths without throwing", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const shortSig = "short";
+    const longSig = signPayload(payload, secret) + "extra";
+    expect(() => verifyWebhookSignature(payload, shortSig, secret)).not.toThrow();
+    expect(verifyWebhookSignature(payload, shortSig, secret)).toBe(false);
+    expect(() => verifyWebhookSignature(payload, longSig, secret)).not.toThrow();
+    expect(verifyWebhookSignature(payload, longSig, secret)).toBe(false);
+  });
 });
 
 describe("dispatchWebhook", () => {
