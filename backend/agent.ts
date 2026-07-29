@@ -31,7 +31,7 @@ import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
-import { horizonServer } from "./rpc_client";
+import { horizonServer, StellarRPCError } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
 import { dispatchWebhook } from "./webhook";
@@ -186,6 +186,11 @@ export class PayFiAgent extends EventEmitter {
 
   private activeTasks = 0;
   private isDraining = false;
+  private readonly taskQueue: Array<{
+    task: AgentTask;
+    correlationId: string;
+    resolve: (result: AgentResult) => void;
+  }> = [];
   private _streamStop: (() => void) | null = null;
   private _contractListenerStop: (() => void) | null = null;
 
@@ -372,11 +377,14 @@ export class PayFiAgent extends EventEmitter {
   }
 
   async waitForPendingTasks(): Promise<void> {
-    if (this.activeTasks === 0) return;
-    logger.info("Waiting for pending tasks to finish", { activeTasks: this.activeTasks });
+    if (this.activeTasks === 0 && this.taskQueue.length === 0) return;
+    logger.info("Waiting for pending tasks to finish", {
+      activeTasks: this.activeTasks,
+      queuedTasks: this.taskQueue.length,
+    });
     return new Promise<void>((resolve) => {
       const interval = setInterval(() => {
-        if (this.activeTasks === 0) {
+        if (this.activeTasks === 0 && this.taskQueue.length === 0) {
           clearInterval(interval);
           resolve();
         }
@@ -421,8 +429,23 @@ export class PayFiAgent extends EventEmitter {
       };
     }
 
-    // ── Concurrency rate limit — reject rather than queue when saturated ──
+    // ── Concurrency rate limit — queue when saturated if queueCapacity allows,
+    // otherwise reject ──
     if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) {
+      if (config.QUEUE_CAPACITY > 0 && this.taskQueue.length < config.QUEUE_CAPACITY) {
+        taskLog.info(
+          {
+            taskType: task.type,
+            activeTasks: this.activeTasks,
+            queueLength: this.taskQueue.length + 1,
+          },
+          "Agent at capacity — task queued"
+        );
+        return new Promise<AgentResult>((resolve) => {
+          this.taskQueue.push({ task, correlationId, resolve });
+        });
+      }
+
       taskLog.warn(
         {
           taskType: task.type,
@@ -441,6 +464,29 @@ export class PayFiAgent extends EventEmitter {
       };
     }
 
+    return this.executeTask(task, correlationId, taskLog);
+  }
+
+  /**
+   * Pull the next queued task (if any) and dispatch it once a concurrency
+   * slot frees up. Called from executeTask()'s `finally` block.
+   */
+  private dispatchQueued(): void {
+    if (this.taskQueue.length === 0) return;
+    if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) return;
+    const next = this.taskQueue.shift();
+    if (!next) return;
+    void this.executeTask(next.task, next.correlationId, createLogger("orchestrator", next.correlationId)).then(
+      next.resolve
+    );
+  }
+
+  /** Run a task's tool logic — assumes the concurrency slot has already been reserved. */
+  private async executeTask(
+    task: AgentTask,
+    correlationId: string,
+    taskLog: ReturnType<typeof createLogger>
+  ): Promise<AgentResult> {
     this.activeTasks++;
     taskLog.info({ taskType: task.type }, "Running task");
 
@@ -553,8 +599,38 @@ export class PayFiAgent extends EventEmitter {
 
     try {
       return await chain();
+      taskLog.info({ taskType: task.type }, "Task completed");
+      const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
+      this.emit("task:complete", result);
+
+      saveResult({ ...result, timestamp: new Date().toISOString() });
+      void dispatchWebhook(result);
+
+      return result;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const safe = redactSecretString(message);
+      const sanitized = sanitizePayload(task.payload);
+      taskLog.error(
+        { taskType: task.type, error: safe, sanitizedPayload: sanitized },
+        "Task failed"
+      );
+      if (err instanceof StellarRPCError) {
+        this.emit("task:retry_exhausted", { taskType: task.type, attempts: config.MAX_RETRIES });
+      }
+      const result: AgentResult = {
+        success: false,
+        taskType: task.type,
+        error: safe,
+        errorType: getErrorType(err),
+        correlationId,
+      };
+      this.emit("task:failed", result);
+      void dispatchWebhook(result);
+      return result;
     } finally {
       this.activeTasks--;
+      this.dispatchQueued();
     }
   }
 }

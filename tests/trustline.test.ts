@@ -110,6 +110,15 @@ describe("TrustlineTool", () => {
     expect(exists).toBe(false);
   });
 
+  it("checkTrustline returns false for native XLM (no trustline needed)", async () => {
+    // The native balance entry has asset_type "native", which the check filters
+    // out via `b.asset_type !== "native"`. Passing any issuer for XLM must
+    // still return false — XLM is always spendable and never requires a trustline.
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(false) as any);
+    const exists = await tool.checkTrustline("XLM", ISSUER);
+    expect(exists).toBe(false);
+  });
+
   it("rejects invalid assetIssuer length", async () => {
     await expect(
       tool.execute({ assetCode: "USDC", assetIssuer: "SHORT", action: "add" })
