@@ -107,3 +107,25 @@ const cfg: AgentConfig = {
 - **Mainnet spending cap:** `AGENT_SPENDING_LIMIT` is rejected at startup if it exceeds `10,000` on `mainnet`, preventing runaway agent spend.
 - **Exponential back-off:** All RPC calls use retry logic with jitter to reduce the attack surface of timing-based denial-of-service against the agent.
 - **Dependency pinning:** Keep `package.json` dependencies pinned to exact versions and audit regularly with `npm audit`.
+
+---
+
+## Known Limitations
+
+Users should be aware of the following limitations when deploying Nodal AI:
+
+### 1. In-Memory Nonce Store
+
+The x402 nonce store is in-memory and not persisted to disk. If the agent process restarts, previously-seen nonces are cleared. This creates a window where replayed x402 challenges could be accepted until the agent is re-initialized with fresh state. See [#207](https://github.com/Nodal-stellar/Nodal-AI/issues/207) for persistent nonce store implementation.
+
+### 2. Soroban Simulation Disabled for Payment Estimates
+
+`StellarPaymentTool` does not use Soroban simulation to estimate transaction fees. Fee estimates are calculated as base-fee only, without accounting for transaction complexity or network congestion. Production deployments should verify fee estimates through a secondary mechanism or use a higher fee buffer.
+
+### 3. AWS Secret Fetch Pattern
+
+`config.ts` uses `execSync` to fetch `AGENT_SECRET_KEY` from AWS Secrets Manager. This pattern has inherent security risks including exposing command output in error logs and blocking the event loop during secret retrieval. See [#210](https://github.com/Nodal-stellar/Nodal-AI/issues/210) for a planned non-blocking alternative.
+
+### 4. Webhook Delivery Retry Limits
+
+Webhook delivery has no retry mechanism for non-2xx responses beyond the initial `withRetry` attempts configured in the deployment. If a webhook consumer is temporarily unavailable, events may be silently dropped without re-queueing or manual intervention capability.
