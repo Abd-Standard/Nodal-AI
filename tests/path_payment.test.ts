@@ -123,6 +123,48 @@ describe("PathPaymentTool", () => {
     expect(result.txHash).toBe("path_tx_hash");
   });
 
+  it("accepts memo type 'id' with numeric value", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "5",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "4",
+      memoType: "id",
+      memo: 987654321,
+    });
+
+    expect(result.txHash).toBe("path_tx_hash");
+  });
+
+  it("accepts memo type 'hash' with 32-byte hex string", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "5",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "4",
+      memoType: "hash",
+      memo: "b".repeat(64),
+    });
+
+    expect(result.txHash).toBe("path_tx_hash");
+  });
+
+  it("accepts memo type 'return' with 32-byte hex string", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "5",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "4",
+      memoType: "return",
+      memo: "c".repeat(64),
+    });
+
+    expect(result.txHash).toBe("path_tx_hash");
+  });
+
   // ── Input validation ────────────────────────────────────────────────────────
 
   it("rejects missing destination", async () => {

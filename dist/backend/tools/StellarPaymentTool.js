@@ -29,7 +29,8 @@ exports.SubmitResultSchema = SubmitResultSchema;
  * @property amount - Positive decimal string with up to 7 decimal places (Stellar network limit)
  * @property assetCode - Asset code (default: "XLM")
  * @property assetIssuer - Asset issuer public key (required for non-XLM assets)
- * @property memo - Optional memo text, max 28 characters (Stellar network limit)
+ * @property memoType - Type of memo: "text", "id", "hash", or "return" (default: "text")
+ * @property memo - Optional memo value (string for text/return/hash, number for id)
  */
 exports.PaymentInputSchema = zod_1.z.object({
     destination: zod_1.z.string()
@@ -43,11 +44,69 @@ exports.PaymentInputSchema = zod_1.z.object({
         .refine((v) => parseFloat(v) > 0, "Amount must be greater than zero"),
     assetCode: zod_1.z.string().default("XLM"),
     assetIssuer: zod_1.z.string().optional(),
-    memo: zod_1.z
-        .string()
-        .refine((v) => Buffer.byteLength(v, "utf8") <= 28, "Memo must be at most 28 bytes")
-        .optional(),
+    memoType: zod_1.z.enum(["text", "id", "hash", "return"]).optional().default("text"),
+    memo: zod_1.z.union([zod_1.z.string(), zod_1.z.number()]).optional(),
 });
+// ─── Helper: build memo based on type ───────────────────────────────────────────
+/**
+ * Build a Stellar Memo object based on memoType and value.
+ *
+ * @param memoType - Type of memo: "text", "id", "hash", or "return"
+ * @param memoValue - Memo value (string for text/return/hash, number for id)
+ * @returns Memo instance or null if memoValue is undefined
+ */
+function buildMemo(memoType, memoValue) {
+    if (memoValue === undefined) {
+        return null;
+    }
+    switch (memoType) {
+        case "id":
+            if (typeof memoValue !== "number") {
+                throw new Error("Memo ID must be a number");
+            }
+            // Convert to unsigned 64-bit integer
+            const id = BigInt(memoValue);
+            if (id < 0n || id > 18446744073709551615n) {
+                throw new Error("Memo ID must be a 64-bit unsigned integer (0 to 2^64-1)");
+            }
+            return stellar_sdk_1.Memo.id(id);
+        case "hash":
+            if (typeof memoValue !== "string") {
+                throw new Error("Memo hash must be a string");
+            }
+            // Remove 0x prefix if present and validate length
+            const hashHex = memoValue.replace(/^0x/, "");
+            if (hashHex.length !== 64) {
+                throw new Error("Memo hash must be a 32-byte hex string (64 hex characters)");
+            }
+            if (!/^[0-9a-fA-F]{64}$/.test(hashHex)) {
+                throw new Error("Memo hash must contain only valid hex characters");
+            }
+            return stellar_sdk_1.Memo.hash(hashHex);
+        case "return":
+            if (typeof memoValue !== "string") {
+                throw new Error("Memo return must be a string");
+            }
+            // Remove 0x prefix if present and validate length
+            const returnHex = memoValue.replace(/^0x/, "");
+            if (returnHex.length !== 64) {
+                throw new Error("Memo return must be a 32-byte hex string (64 hex characters)");
+            }
+            if (!/^[0-9a-fA-F]{64}$/.test(returnHex)) {
+                throw new Error("Memo return must contain only valid hex characters");
+            }
+            return stellar_sdk_1.Memo.return(returnHex);
+        case "text":
+        default:
+            if (typeof memoValue !== "string") {
+                throw new Error("Memo text must be a string");
+            }
+            if (Buffer.byteLength(memoValue, "utf8") > 28) {
+                throw new Error("Memo text must be at most 28 bytes");
+            }
+            return stellar_sdk_1.Memo.text(memoValue);
+    }
+}
 // ─── Tool implementation ──────────────────────────────────────────────────────
 class StellarPaymentTool {
     keypair;
@@ -108,8 +167,11 @@ class StellarPaymentTool {
                 asset,
                 amount: input.amount,
             }));
-            if (input.memo) {
-                builder.addMemo(stellar_sdk_1.Memo.text(input.memo));
+            if (input.memo !== undefined) {
+                const memo = buildMemo(input.memoType, input.memo);
+                if (memo) {
+                    builder.addMemo(memo);
+                }
             }
             return builder.setTimeout(SorobanInvokeTool_1.SOROBAN_TX_TIMEOUT).build();
         };

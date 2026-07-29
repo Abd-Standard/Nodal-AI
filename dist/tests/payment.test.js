@@ -54,6 +54,13 @@ vitest_1.vi.mock("../backend/rpc_client", () => ({
     sorobanServer: {},
     simulateSorobanTx: vitest_1.vi.fn(),
     prepareSorobanTx: vitest_1.vi.fn(),
+    resolveNetworkPassphrase: vitest_1.vi.fn((network) => {
+        if (network === "mainnet")
+            return "Public Global Stellar Network ; September 2015";
+        if (network === "futurenet")
+            return "Test SDF Future Network ; October 2022";
+        return "Test SDF Network ; September 2015";
+    }),
     resolveNetworkPassphrase: (_network) => {
         const { Networks } = require("@stellar/stellar-sdk");
         if (_network === "mainnet")
@@ -202,6 +209,147 @@ function makeMockAccount(publicKey) {
             (0, vitest_1.expect)(result.txHash).toBe("boundary_hash");
         });
     });
+    (0, vitest_1.describe)("memo type support", () => {
+        (0, vitest_1.beforeEach)(() => {
+            vitest_1.vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+                hash: "memo_type_hash",
+                ledger: 1,
+            });
+        });
+        (0, vitest_1.it)("accepts memo type 'id' with numeric value", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "id",
+                memo: 123456789,
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+        (0, vitest_1.it)("accepts memo type 'id' with max 64-bit unsigned integer", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "id",
+                memo: 18446744073709551615, // 2^64 - 1
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+        (0, vitest_1.it)("rejects memo type 'id' with negative number", async () => {
+            await (0, vitest_1.expect)(tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "id",
+                memo: -1,
+            })).rejects.toThrow(/Memo ID must be a 64-bit unsigned integer/);
+        });
+        (0, vitest_1.it)("rejects memo type 'id' with string value", async () => {
+            await (0, vitest_1.expect)(tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "id",
+                memo: "123456",
+            })).rejects.toThrow(/Memo ID must be a number/);
+        });
+        (0, vitest_1.it)("accepts memo type 'hash' with 32-byte hex string", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "hash",
+                memo: "a".repeat(64),
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+        (0, vitest_1.it)("accepts memo type 'hash' with 0x prefix", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "hash",
+                memo: "0x" + "a".repeat(64),
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+        (0, vitest_1.it)("rejects memo type 'hash' with invalid length", async () => {
+            await (0, vitest_1.expect)(tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "hash",
+                memo: "abc123",
+            })).rejects.toThrow(/Memo hash must be a 32-byte hex string/);
+        });
+        (0, vitest_1.it)("rejects memo type 'hash' with non-hex characters", async () => {
+            await (0, vitest_1.expect)(tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "hash",
+                memo: "g".repeat(64),
+            })).rejects.toThrow(/Memo hash must contain only valid hex characters/);
+        });
+        (0, vitest_1.it)("accepts memo type 'return' with 32-byte hex string", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "return",
+                memo: "f".repeat(64),
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+        (0, vitest_1.it)("accepts memo type 'return' with 0x prefix", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "return",
+                memo: "0x" + "f".repeat(64),
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+        (0, vitest_1.it)("rejects memo type 'return' with invalid length", async () => {
+            await (0, vitest_1.expect)(tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "return",
+                memo: "abc123",
+            })).rejects.toThrow(/Memo return must be a 32-byte hex string/);
+        });
+        (0, vitest_1.it)("defaults to 'text' memo type when not specified", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memo: "default text memo",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+        (0, vitest_1.it)("accepts memo type 'text' explicitly", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "text",
+                memo: "explicit text memo",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+        (0, vitest_1.it)("handles undefined memo value", async () => {
+            const result = await tool.execute({
+                destination: VALID_DEST,
+                amount: "1",
+                assetCode: "XLM",
+                memoType: "id",
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("memo_type_hash");
+        });
+    });
     // ── Happy path ──────────────────────────────────────────────────────────────
     (0, vitest_1.describe)("Happy path", () => {
         (0, vitest_1.beforeEach)(() => {
@@ -337,7 +485,7 @@ function makeMockAccount(publicKey) {
             vitest_1.vi.resetModules();
             vitest_1.vi.mock("../backend/config", () => {
                 const { Keypair: KP } = require("@stellar/stellar-sdk");
-                const secret = "process.env.AGENT_SECRET_KEY";
+                const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
                 return {
                     config: {
                         STELLAR_NETWORK: "mainnet",
@@ -377,7 +525,7 @@ function makeMockAccount(publicKey) {
             vitest_1.vi.resetModules();
             vitest_1.vi.mock("../backend/config", () => {
                 const { Keypair: KP } = require("@stellar/stellar-sdk");
-                const secret = "process.env.AGENT_SECRET_KEY";
+                const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
                 return {
                     config: {
                         STELLAR_NETWORK: "futurenet",

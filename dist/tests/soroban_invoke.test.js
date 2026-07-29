@@ -77,76 +77,90 @@ const rpcClient = __importStar(require("../backend/rpc_client"));
  * The sorobanServer object contains sendTransaction and getTransaction, which are
  * critical for the polling mechanism that confirms transaction settlement.
  */
-vitest_1.vi.mock("../backend/rpc_client", async () => {
-    const { Networks } = await Promise.resolve().then(() => __importStar(require("@stellar/stellar-sdk")));
-    return {
-        loadAccount: vitest_1.vi.fn(),
-        submitTransaction: vitest_1.vi.fn(),
-        simulateSorobanTx: vitest_1.vi.fn(),
-        prepareSorobanTx: vitest_1.vi.fn(),
-        resolveNetworkPassphrase: (_network) => Networks.TESTNET,
-        horizonServer: {},
-        sorobanServer: {
-            sendTransaction: vitest_1.vi.fn(),
-            getTransaction: vitest_1.vi.fn(),
-        },
-    };
-});
-vitest_1.vi.mock("../backend/logger", () => ({
-    logger: { info: vitest_1.vi.fn(), warn: vitest_1.vi.fn(), error: vitest_1.vi.fn(), debug: vitest_1.vi.fn() },
-}));
-vitest_1.vi.mock("../backend/utils/logger", () => ({
-    createLogger: vitest_1.vi.fn(() => ({ info: vitest_1.vi.fn(), warn: vitest_1.vi.fn(), error: vitest_1.vi.fn(), debug: vitest_1.vi.fn() })),
-    generateCorrelationId: vitest_1.vi.fn(() => "mock-correlation-id"),
-}));
-/**
- * Mock the config module to provide a predictable environment.
- *
- * In real use, config.ts reads from process.env or .env files.
- * Here, we statically return test credentials and thresholds.
- *
- * Note: The AGENT_SECRET_KEY is a Stellar secret key used in tests only.
- * It is never used in actual signed transactions in this test suite
- * because all RPC calls are mocked.
- */
-vitest_1.vi.mock("../backend/config", () => {
-    const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-    const secret = "process.env.AGENT_SECRET_KEY";
-    return {
-        config: {
-            STELLAR_NETWORK: "testnet",
-            HORIZON_URL: "https://horizon-testnet.stellar.org",
-            SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
-            AGENT_SECRET_KEY: secret,
-            AGENT_PUBLIC_KEY: Keypair.fromSecret(secret).publicKey(),
-            agentKeypair: () => Keypair.fromSecret(secret),
-            X402_ASSET_CODE: "USDC",
-            X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-            MAX_RETRIES: 3,
-            RETRY_DELAY_MS: 100,
-            MAX_X402_PAYMENTS_PER_MINUTE: 10,
-            MAX_SOROBAN_FEE_STROOPS: 1_000_000,
-        },
-    };
-});
-// ─── Fixtures ─────────────────────────────────────────────────────────────────
-/**
- * Test fixtures: reusable constants and helper functions.
- */
-const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
-const VALID_CONTRACT = "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH";
-/**
- * makeMockAccount(publicKey): Constructs a mock Stellar account object.
- *
- * SorobanInvokeTool calls rpcClient.loadAccount() to fetch the agent's
- * current account details from Horizon. This mock account satisfies
- * that interface without hitting the network.
- *
- * Fields like sequenceNumber, thresholds, and signers are required
- * by the Stellar SDK's transaction building logic.
- */
-function makeMockAccount(publicKey) {
-    return {
+vitest_1.vi.mock("../backend/rpc_client", () => ({
+    loadAccount: vitest_1.vi.fn(),
+    submitTransaction: vitest_1.vi.fn(),
+    simulateSorobanTx: vitest_1.vi.fn(),
+    prepareSorobanTx: vitest_1.vi.fn(),
+    horizonServer: {},
+    sorobanServer: {
+        sendTransaction: vitest_1.vi.fn(),
+        getTransaction: vitest_1.vi.fn(),
+    },
+    resolveNetworkPassphrase: vitest_1.vi.fn(() => "Test SDF Network ; September 2015"),
+    vi: vitest_1.vi, : .mock("../backend/rpc_client", async () => {
+        const { Networks } = await Promise.resolve().then(() => __importStar(require("@stellar/stellar-sdk")));
+        return {
+            loadAccount: vitest_1.vi.fn(),
+            submitTransaction: vitest_1.vi.fn(),
+            simulateSorobanTx: vitest_1.vi.fn(),
+            prepareSorobanTx: vitest_1.vi.fn(),
+            // Use a plain function (not vi.fn) to ensure the passphrase is always a string
+            resolveNetworkPassphrase: (_network) => Networks.TESTNET,
+            horizonServer: {},
+            sorobanServer: {
+                sendTransaction: vitest_1.vi.fn(),
+                getTransaction: vitest_1.vi.fn(),
+            },
+        };
+    }),
+    vi: vitest_1.vi, : .mock("../backend/logger", () => ({
+        logger: { info: vitest_1.vi.fn(), warn: vitest_1.vi.fn(), error: vitest_1.vi.fn(), debug: vitest_1.vi.fn() },
+    })),
+    vi: vitest_1.vi, : .mock("../backend/utils/logger", () => ({
+        createLogger: vitest_1.vi.fn(() => ({ info: vitest_1.vi.fn(), warn: vitest_1.vi.fn(), error: vitest_1.vi.fn(), debug: vitest_1.vi.fn() })),
+        generateCorrelationId: vitest_1.vi.fn(() => "mock-correlation-id"),
+    })),
+    /**
+     * Mock the config module to provide a predictable environment.
+     *
+     * In real use, config.ts reads from process.env or .env files.
+     * Here, we statically return test credentials and thresholds.
+     *
+     * Note: The AGENT_SECRET_KEY is a Stellar secret key used in tests only.
+     * It is never used in actual signed transactions in this test suite
+     * because all RPC calls are mocked.
+     */
+    vi: vitest_1.vi, : .mock("../backend/config", () => {
+        const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
+        const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+        return {
+            config: {
+                STELLAR_NETWORK: "testnet",
+                HORIZON_URL: "https://horizon-testnet.stellar.org",
+                SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
+                AGENT_SECRET_KEY: secret,
+                AGENT_PUBLIC_KEY: Keypair.fromSecret(secret).publicKey(),
+                agentKeypair: () => Keypair.fromSecret(secret),
+                X402_ASSET_CODE: "USDC",
+                X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+                MAX_RETRIES: 3,
+                RETRY_DELAY_MS: 100,
+                MAX_X402_PAYMENTS_PER_MINUTE: 10,
+                MAX_SOROBAN_FEE_STROOPS: 1_000_000,
+            },
+        };
+    }),
+    // ─── Fixtures ─────────────────────────────────────────────────────────────────
+    /**
+     * Test fixtures: reusable constants and helper functions.
+     */
+    const: TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73",
+    const: VALID_CONTRACT =
+        "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH",
+    /**
+     * makeMockAccount(publicKey): Constructs a mock Stellar account object.
+     *
+     * SorobanInvokeTool calls rpcClient.loadAccount() to fetch the agent's
+     * current account details from Horizon. This mock account satisfies
+     * that interface without hitting the network.
+     *
+     * Fields like sequenceNumber, thresholds, and signers are required
+     * by the Stellar SDK's transaction building logic.
+     */
+    function: makeMockAccount(publicKey, string)
+}), {
+    return: {
         id: publicKey,
         accountId: () => publicKey,
         sequenceNumber: () => "100",
@@ -163,8 +177,13 @@ function makeMockAccount(publicKey) {
         signers: [],
         data_attr: {},
         subentry_count: 0,
-    };
+    }
 }
+/**
+ * Creates a mock prepared transaction that satisfies the post-sign signature guard.
+ * sign() mutates `signatures` in place (matching real Stellar SDK behaviour).
+ */
+, 
 /**
  * Creates a mock prepared transaction that satisfies the post-sign signature guard.
  * sign() mutates `signatures` in place (matching real Stellar SDK behaviour).
@@ -176,6 +195,8 @@ function makeMockPreparedTx(fee = 500_000) {
     });
     return obj;
 }
+// ─── Tests ────────────────────────────────────────────────────────────────────
+, 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 (0, vitest_1.describe)("SorobanInvokeTool", () => {
     let tool;
@@ -548,6 +569,7 @@ function makeMockPreparedTx(fee = 500_000) {
         });
         (0, vitest_1.it)("accepts multiple xdr.ScVal instances", () => {
             const arg1 = (0, stellar_sdk_1.nativeToScVal)(100n, { type: "i128" });
+            const arg2 = (0, stellar_sdk_1.nativeToScVal)("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", { type: "address" });
             // Use a real 56-char G-address; "GABC" is not a valid Stellar address
             const arg2 = (0, stellar_sdk_1.nativeToScVal)("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", { type: "address" });
             const result = SorobanInvokeTool_1.SorobanInvokeInputSchema.safeParse({
@@ -559,5 +581,5 @@ function makeMockPreparedTx(fee = 500_000) {
             (0, vitest_1.expect)(result.data?.args).toHaveLength(2);
         });
     });
-});
+}));
 //# sourceMappingURL=soroban_invoke.test.js.map
