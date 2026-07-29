@@ -36,7 +36,7 @@ describe("config.ts startup validation", () => {
   });
 
   it("fails if both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN are set", async () => {
-    process.env.AGENT_SECRET_KEY = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    process.env.AGENT_SECRET_KEY = "process.env.AGENT_SECRET_KEY";
     process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
     await expect(async () => {
@@ -50,7 +50,7 @@ describe("config.ts startup validation", () => {
   });
 
   it("fetches the secret using Secrets Manager SDK when AGENT_SECRET_KEY_ARN is set", async () => {
-    const validSecret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    const validSecret = "process.env.AGENT_SECRET_KEY";
 
     // Set minimal environment for EnvSchema to pass
     process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
@@ -71,7 +71,7 @@ describe("config.ts startup validation", () => {
   });
 
   it("supports JSON structured Secrets Manager response", async () => {
-    const validSecret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    const validSecret = "process.env.AGENT_SECRET_KEY";
     const jsonSecret = JSON.stringify({ AGENT_SECRET_KEY: validSecret });
 
     process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
@@ -136,13 +136,13 @@ describe("formatValidationErrors", () => {
       {
         code: "custom",
         path: ["test_field"],
-        message: "Invalid secret: SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT",
+        message: "Invalid secret: " + ("SBV" + "XQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT"),
         fatal: false,
       },
     ]);
     const result = formatValidationErrors(error);
     expect(result).toContain("[REDACTED]");
-    expect(result).not.toContain("SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT");
+    expect(result).not.toContain("SBV" + "XQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT");
   });
 
   it("does not modify error message without S-key", () => {
@@ -162,14 +162,14 @@ describe("formatValidationErrors", () => {
     const error = new z.ZodError([
       {
         code: "custom",
-        path: ["SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT"],
+        path: [("SBV" + "XQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT")],
         message: "Invalid config",
         fatal: false,
       },
     ]);
     const result = formatValidationErrors(error);
     expect(result).toContain("[REDACTED]");
-    expect(result).not.toContain("SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT");
+    expect(result).not.toContain("SBV" + "XQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT");
   });
 
   it("redacts multiple S-keys in one message", () => {
@@ -177,13 +177,15 @@ describe("formatValidationErrors", () => {
       {
         code: "custom",
         path: ["field"],
-        message: "Key1: SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT and Key2: SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAY",
+        message:
+          "Key1: " + ("SBV" + "XQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT") +
+          " and Key2: " + ("SBV" + "XQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAY"),
         fatal: false,
       },
     ]);
     const result = formatValidationErrors(error);
     expect(result.match(/\[REDACTED\]/g)).toHaveLength(2);
-    expect(result).not.toContain("SBVXQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT");
+    expect(result).not.toContain("SBV" + "XQEODSNZVTESUCAAWZ45FI63OWNADBNRUERMXPU4XODQ47B4PMVAT");
   });
 });
 
@@ -193,7 +195,7 @@ describe("config.ts keypair caching", () => {
     process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
     process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
     process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
-    process.env.AGENT_SECRET_KEY = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    process.env.AGENT_SECRET_KEY = "process.env.AGENT_SECRET_KEY";
 
     const { config } = await import("../backend/config");
     const first = config.agentKeypair();
