@@ -1,13 +1,20 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { execSync } from "child_process";
+import { Keypair } from "@stellar/stellar-sdk";
 import { z } from "zod";
 
 // A single shared send mock — all SecretsManagerClient instances use it.
 // This must be declared before vi.mock() because vi.mock() is hoisted.
 const mockSend = vi.fn();
+const VALID_SECRET = Keypair.random().secret();
+const VALID_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+
+class MockSecretsManagerClient {
+  send = mockSend;
+}
 
 vi.mock("@aws-sdk/client-secrets-manager", () => ({
-  SecretsManagerClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
+  SecretsManagerClient: vi.fn().mockImplementation(() => new MockSecretsManagerClient()),
   GetSecretValueCommand: vi.fn().mockImplementation((args: any) => args),
 }));
 
@@ -36,7 +43,7 @@ describe("config.ts startup validation", () => {
   });
 
   it("fails if both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN are set", async () => {
-    process.env.AGENT_SECRET_KEY = "process.env.AGENT_SECRET_KEY";
+    process.env.AGENT_SECRET_KEY = VALID_SECRET;
     process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
     await expect(async () => {
@@ -50,33 +57,30 @@ describe("config.ts startup validation", () => {
   });
 
   it("fetches the secret using Secrets Manager SDK when AGENT_SECRET_KEY_ARN is set", async () => {
-    const validSecret = "process.env.AGENT_SECRET_KEY";
-
     // Set minimal environment for EnvSchema to pass
     process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
     process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
-    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+    process.env.X402_ASSET_ISSUER = VALID_ISSUER;
     delete process.env.AGENT_SECRET_KEY;
     process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
     // mockSend is shared across all SecretsManagerClient instances
-    mockSend.mockResolvedValueOnce({ SecretString: validSecret });
+    mockSend.mockResolvedValueOnce({ SecretString: VALID_SECRET });
 
     const { configPromise } = await import("../backend/config");
     const config = await configPromise;
 
     expect(mockSend).toHaveBeenCalled();
-    expect(config.AGENT_PUBLIC_KEY).toBe("GDRIFTCEWUMA5IM6NUQPLA27YPHDMUNMPDXCQWCD3BRPVKMPX5KEM5F5");
-    expect(config.agentKeypair().secret()).toBe(validSecret);
+    expect(config.AGENT_PUBLIC_KEY).toBe(Keypair.fromSecret(VALID_SECRET).publicKey());
+    expect(config.agentKeypair().secret()).toBe(VALID_SECRET);
   });
 
   it("supports JSON structured Secrets Manager response", async () => {
-    const validSecret = "process.env.AGENT_SECRET_KEY";
-    const jsonSecret = JSON.stringify({ AGENT_SECRET_KEY: validSecret });
+    const jsonSecret = JSON.stringify({ AGENT_SECRET_KEY: VALID_SECRET });
 
     process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
     process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
-    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+    process.env.X402_ASSET_ISSUER = VALID_ISSUER;
     delete process.env.AGENT_SECRET_KEY;
     process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
@@ -85,7 +89,22 @@ describe("config.ts startup validation", () => {
     const { configPromise } = await import("../backend/config");
     const config = await configPromise;
 
-    expect(config.agentKeypair().secret()).toBe(validSecret);
+    expect(config.agentKeypair().secret()).toBe(VALID_SECRET);
+  });
+
+  it("rejects an invalid AGENT_PUBLIC_KEY before comparing it to the derived key", async () => {
+    process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
+    process.env.X402_ASSET_ISSUER = VALID_ISSUER;
+    process.env.AGENT_SECRET_KEY = VALID_SECRET;
+    process.env.AGENT_PUBLIC_KEY = "G0000000000000000000000000000000000000000000000000000000";
+
+    await expect(async () => {
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
+    }).rejects.toThrow("process.exit: 1");
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("valid Stellar public key"));
   });
 
   it("fails validation if fetched secret is not a valid Stellar key", async () => {
@@ -194,8 +213,8 @@ describe("config.ts keypair caching", () => {
     vi.resetModules();
     process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
     process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
-    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
-    process.env.AGENT_SECRET_KEY = "process.env.AGENT_SECRET_KEY";
+    process.env.X402_ASSET_ISSUER = VALID_ISSUER;
+    process.env.AGENT_SECRET_KEY = VALID_SECRET;
 
     const { config } = await import("../backend/config");
     const first = config.agentKeypair();
