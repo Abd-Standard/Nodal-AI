@@ -10,6 +10,7 @@ import {
   Asset,
   BASE_FEE,
   Memo,
+  StrKey,
   xdr,
 } from "@stellar/stellar-sdk";
 import { z } from "zod";
@@ -29,7 +30,12 @@ export const MultiSigInputSchema = z.object({
     .string()
     .refine((v) => Buffer.byteLength(v, "utf8") <= 28, "Memo must be at most 28 bytes")
     .optional(),
-  additionalSigners: z.array(z.string().length(56, "Invalid signer public key")),
+  additionalSigners: z.array(
+    z
+      .string()
+      .length(56, "Invalid signer public key")
+      .refine((value) => StrKey.isValidEd25519PublicKey(value), "Invalid signer public key")
+  ),
   minSignatures: z.number().int().min(1),
   signatures: z.array(z.string()).optional(),
 });
