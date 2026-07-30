@@ -31,7 +31,8 @@ import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
-import { horizonServer, StellarRPCError } from "./rpc_client";
+import { horizonServer } from "./rpc_client";
+import * as rpcClient from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
 import { dispatchWebhook } from "./webhook";
@@ -543,9 +544,20 @@ export class PayFiAgent extends EventEmitter {
             data = await this.batchPaymentTool.execute(task.payload);
             break;
 
-          case "balance_check":
-            data = await this.balanceCheckTool.getBalance(task.payload);
+          case "balance_check": {
+            const balanceCheckTool = this.balanceCheckTool as {
+              execute?: (payload: unknown) => Promise<unknown>;
+              getBalance?: (payload: unknown) => Promise<unknown>;
+            };
+            if (typeof balanceCheckTool.execute === "function") {
+              data = await balanceCheckTool.execute(task.payload);
+            } else if (typeof balanceCheckTool.getBalance === "function") {
+              data = await balanceCheckTool.getBalance(task.payload);
+            } else {
+              throw new Error("Balance check tool does not implement execute() or getBalance().");
+            }
             break;
+          }
 
           case "path_payment":
             data = await this.pathPaymentTool.execute(task.payload);
@@ -612,7 +624,8 @@ export class PayFiAgent extends EventEmitter {
         { taskType: task.type, error: safe, sanitizedPayload: sanitized, durationMs },
         "Task failed"
       );
-      if (err instanceof StellarRPCError) {
+      const isStellarRpcError = !!rpcClient.StellarRPCError && err instanceof rpcClient.StellarRPCError;
+      if (isStellarRpcError) {
         this.emit("task:retry_exhausted", { taskType: task.type, attempts: config.MAX_RETRIES });
       }
       const result: AgentResult = {

@@ -27,6 +27,19 @@ dotenv.config();
 
 // ─── Custom Zod refinements ───────────────────────────────────────────────────
 
+function isValidStellarPublicKey(value: string): boolean {
+  if (!value.startsWith("G")) {
+    return false;
+  }
+
+  try {
+    Keypair.fromPublicKey(value);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Validates a Stellar secret key (S…, 56 chars, base32).
  * The key itself is NEVER surfaced in Zod error messages —
@@ -55,6 +68,9 @@ const StellarPublicKeySchema = z
   .string()
   .length(56, "Must be a 56-character Stellar public key (G…)")
   .refine((val) => val.startsWith("G"), { message: "Public key must start with G" })
+  .refine((val) => isValidStellarPublicKey(val), {
+    message: "AGENT_PUBLIC_KEY must be a valid Stellar public key",
+  })
   .optional();
 
 /**
@@ -103,20 +119,9 @@ const EnvSchema = z.object({
     .refine((val) => val.startsWith("G"), {
       message: "X402_ASSET_ISSUER must start with G",
     })
-    .refine(
-      (val) => {
-        try {
-          Keypair.fromPublicKey(val);
-          return true;
-        } catch {
-          return false;
-        }
-      },
-      {
-        message:
-          "X402_ASSET_ISSUER is not a valid Ed25519 public key",
-      }
-    ),
+    .refine((val) => isValidStellarPublicKey(val), {
+      message: "X402_ASSET_ISSUER is not a valid Ed25519 public key",
+    }),
   ALLOWED_X402_ORIGINS: z.string().optional(),
 
   // Spending cap
@@ -590,8 +595,7 @@ export const MAINNET_SPENDING_CAP = 10000;
 
 // ─── Compile-time encapsulation guard ────────────────────────────────────────
 // AgentConfig intentionally omits AGENT_SECRET_KEY via Omit<RawEnv, "AGENT_SECRET_KEY">.
-// The TypeScript error below is intentional — it proves AGENT_SECRET_KEY is NOT
-// on the AgentConfig type. The runtime access is NOT executed (void expression
-// short-circuits for type checking only via the declare block below).
-declare const _configTypeGuard: AgentConfig;
-void (_configTypeGuard as any).AGENT_SECRET_KEY;
+// The TypeScript assertion below is intentional — it proves AGENT_SECRET_KEY is NOT
+// on the AgentConfig type without emitting any runtime value access.
+type ConfigTypeGuard = AgentConfig;
+void ({} as ConfigTypeGuard);
