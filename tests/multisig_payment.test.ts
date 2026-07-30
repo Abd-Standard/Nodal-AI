@@ -7,6 +7,9 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { MultiSigPaymentTool } from "../backend/tools/MultiSigPaymentTool";
 import * as rpcClient from "../backend/rpc_client";
 
+const { Keypair } = require("@stellar/stellar-sdk");
+const TEST_SECRET = Keypair.random().secret();
+
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
   submitTransaction: vi.fn(),
@@ -18,9 +21,7 @@ vi.mock("../backend/rpc_client", () => ({
 }));
 
 vi.mock("../backend/config", () => {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "process.env.AGENT_SECRET_KEY";
+  const secret = TEST_SECRET;
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -37,7 +38,6 @@ vi.mock("../backend/config", () => {
   };
 });
 
-const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
 const DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const SIGNER2 = "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZUK9AI4WDCBAHD9HTPFE7";
 const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
@@ -82,6 +82,19 @@ describe("MultiSigPaymentTool", () => {
     expect(result.unsignedXDR).toBeDefined();
     expect(typeof result.unsignedXDR).toBe("string");
     expect(result.txHash).toBeUndefined();
+  });
+
+  it("rejects invalid additional signers before any network call", async () => {
+    await expect(
+      tool.execute({
+        destination: DEST,
+        amount: "100",
+        assetCode: "XLM",
+        additionalSigners: ["A".repeat(56)],
+        minSignatures: 2,
+      })
+    ).rejects.toThrow(/Invalid signer public key/);
+    expect(rpcClient.loadAccount).not.toHaveBeenCalled();
   });
 
   it("unsigned XDR is valid base64-encoded XDR (non-empty)", async () => {
