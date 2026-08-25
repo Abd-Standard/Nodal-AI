@@ -8,6 +8,7 @@
  */
 
 import { describe, it, expect } from "vitest";
+import pino from "pino";
 import { redactSecrets } from "../backend/logger";
 
 // A synthetic test value that matches the redaction regex S[A-Z2-7]{55}.
@@ -83,5 +84,57 @@ describe("redactSecrets", () => {
     expect(redactSecrets(42)).toBe(42);
     expect(redactSecrets(true)).toBe(true);
     expect(redactSecrets(false)).toBe(false);
+  });
+});
+
+// Mirrors the `redact.paths` wired into the pino instance in
+// backend/utils/logger.ts. Built directly with `pino` here (rather than
+// importing the module's singleton) to avoid spinning up its pino-pretty
+// transport as a side effect of the import.
+const REDACT_PATHS = ["*.memo", "payload.memo", "data.memo"];
+
+describe("pino memo redaction", () => {
+  function makeCapturingLogger() {
+    const lines: string[] = [];
+    const stream = { write: (chunk: string) => { lines.push(chunk); } };
+    const testLogger = pino({ redact: { paths: REDACT_PATHS, remove: true } }, stream as never);
+    return { testLogger, lines };
+  }
+
+  it("strips payload.memo from structured log output", () => {
+    const { testLogger, lines } = makeCapturingLogger();
+
+    testLogger.info({ payload: { memo: "sensitive" } }, "payment settled");
+
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.payload.memo).toBeUndefined();
+    expect(JSON.stringify(entry)).not.toContain("sensitive");
+  });
+
+  it("strips data.memo from structured log output", () => {
+    const { testLogger, lines } = makeCapturingLogger();
+
+    testLogger.info({ data: { memo: "user-identifiable" } }, "tx logged");
+
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.data.memo).toBeUndefined();
+  });
+
+  it("strips memo one level deep via the wildcard path", () => {
+    const { testLogger, lines } = makeCapturingLogger();
+
+    testLogger.info({ challenge: { memo: "nonce-slice" } }, "challenge issued");
+
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.challenge.memo).toBeUndefined();
+  });
+
+  it("leaves unrelated fields untouched", () => {
+    const { testLogger, lines } = makeCapturingLogger();
+
+    testLogger.info({ payload: { memo: "sensitive", amount: "10" } }, "payment settled");
+
+    const entry = JSON.parse(lines[0]!);
+    expect(entry.payload.amount).toBe("10");
   });
 });
