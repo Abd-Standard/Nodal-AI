@@ -96,6 +96,13 @@ export class ConfigError extends StructuredError {
   }
 }
 
+export class SimulationBudgetError extends StructuredError {
+  constructor(message: string, cause?: unknown) {
+    super(message, ErrorType.ContractError, cause);
+    Object.setPrototypeOf(this, SimulationBudgetError.prototype);
+  }
+}
+
 function getErrorType(error: unknown): ErrorType {
   if (error instanceof StructuredError) {
     return error.errorType;
