@@ -104,3 +104,25 @@ function getErrorType(error: unknown): ErrorType {
 }
 
 export { getErrorType };
+
+const SENSITIVE_CAUSE_KEYS = new Set(["secretKey", "privateKey", "seed", "_secretKey"]);
+
+/**
+ * Recursively strips keys that may carry Stellar signing material (secretKey,
+ * privateKey, seed, _secretKey) from an error cause before it is attached to
+ * a thrown error, so it can't be exfiltrated via JSON-serialised logs/webhooks.
+ */
+export function sanitizeCause(cause: unknown): unknown {
+  if (Array.isArray(cause)) {
+    return cause.map(sanitizeCause);
+  }
+  if (cause !== null && typeof cause === "object") {
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(cause)) {
+      if (SENSITIVE_CAUSE_KEYS.has(key)) continue;
+      sanitized[key] = sanitizeCause(value);
+    }
+    return sanitized;
+  }
+  return cause;
+}

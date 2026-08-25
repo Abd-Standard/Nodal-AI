@@ -16,6 +16,7 @@ import { randomUUID } from "crypto";
 import CircuitBreaker from "opossum";
 import { ZodError } from "zod";
 import { config } from "./config";
+import { sanitizeCause } from "./errors";
 import { logger } from "./logger";
 import { validateXDR } from "./types/xdr";
 import { createLogger } from "./utils/logger";
@@ -110,7 +111,7 @@ export class StellarRPCError extends Error {
   constructor(message: string, cause: unknown) {
     super(message);
     this.name = "StellarRPCError";
-    this.cause = cause;
+    this.cause = sanitizeCause(cause);
   }
 }
 
