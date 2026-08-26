@@ -96,4 +96,49 @@ describe("withBackoffGuard queuing behaviour", () => {
 
     await expect(resultPromise).rejects.toThrow("queued callback failed");
   });
+
+  it("does not strand a queued callback when a stale auto-clear timer fires mid-enqueue (concurrent enqueue + expiry race)", async () => {
+    handleRateLimitResponse("5"); // generation 1, auto-clear timer fires at +5000ms
+
+    await vi.advanceTimersByTimeAsync(2000);
+
+    // A fresh 429 arrives before the first backoff expired — this activates
+    // generation 2 and reschedules the auto-clear, but the generation-1
+    // timer from above is still pending and will fire at the 5000ms mark.
+    handleRateLimitResponse("10"); // generation 2, auto-clear timer fires at +12000ms
+
+    const fn = vi.fn().mockResolvedValue("done");
+    const resultPromise = withBackoffGuard(fn);
+    expect(getBackoffStatus().queueSize).toBe(1);
+
+    // The stale generation-1 timer fires here. It must not clear the still
+    // active generation-2 backoff or strand/drop the queued callback.
+    await vi.advanceTimersByTimeAsync(3000); // total elapsed: 5000ms
+    expect(isThrottled()).toBe(true);
+    expect(getBackoffStatus().queueSize).toBe(1);
+    expect(fn).not.toHaveBeenCalled();
+
+    // The real generation-2 timer fires here and drains the queue.
+    await vi.advanceTimersByTimeAsync(7000); // total elapsed: 12000ms
+    await expect(resultPromise).resolves.toBe("done");
+    expect(getBackoffStatus().queueSize).toBe(0);
+    expect(isThrottled()).toBe(false);
+  });
+
+  it("rejects a callback enqueued in an earlier backoff generation once a later generation drains the queue", async () => {
+    handleRateLimitResponse("5"); // generation 1
+
+    const fn = vi.fn().mockResolvedValue("should not run");
+    const resultPromise = withBackoffGuard(fn);
+    resultPromise.catch(() => {});
+
+    // Superseded before its own timer fires.
+    handleRateLimitResponse("5"); // generation 2
+
+    await vi.advanceTimersByTimeAsync(5000);
+
+    await expect(resultPromise).rejects.toThrow(/superseded/i);
+    expect(fn).not.toHaveBeenCalled();
+    expect(getBackoffStatus().queueSize).toBe(0);
+  });
 });

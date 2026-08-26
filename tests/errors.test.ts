@@ -17,6 +17,7 @@ import {
   TransactionFailureError,
   ConfigError,
   getErrorType,
+  sanitizeCause,
 } from "../backend/errors";
 
 describe("Structured Error Types", () => {
@@ -98,5 +99,37 @@ describe("Structured Error Types", () => {
     expect(getErrorType("string error")).toBe(ErrorType.UnknownError);
     expect(getErrorType(null)).toBe(ErrorType.UnknownError);
     expect(getErrorType(undefined)).toBe(ErrorType.UnknownError);
+  });
+});
+
+describe("sanitizeCause", () => {
+  it("strips secretKey from a plain object", () => {
+    const cause = { secretKey: "SASECRET", accountId: "GABC" };
+    const result = sanitizeCause(cause) as Record<string, unknown>;
+    expect(result.secretKey).toBeUndefined();
+    expect(result.accountId).toBe("GABC");
+  });
+
+  it("strips privateKey, seed, and _secretKey", () => {
+    const cause = { privateKey: "a", seed: "b", _secretKey: "c", safe: "d" };
+    const result = sanitizeCause(cause) as Record<string, unknown>;
+    expect(result.privateKey).toBeUndefined();
+    expect(result.seed).toBeUndefined();
+    expect(result._secretKey).toBeUndefined();
+    expect(result.safe).toBe("d");
+  });
+
+  it("strips sensitive keys nested inside objects and arrays", () => {
+    const cause = { nested: { secretKey: "x" }, list: [{ seed: "y" }] };
+    const result = sanitizeCause(cause) as { nested: { secretKey?: string }; list: Array<{ seed?: string }> };
+    expect(result.nested.secretKey).toBeUndefined();
+    expect(result.list[0]!.seed).toBeUndefined();
+  });
+
+  it("passes through primitives and non-object causes unchanged", () => {
+    expect(sanitizeCause("plain string")).toBe("plain string");
+    expect(sanitizeCause(null)).toBeNull();
+    expect(sanitizeCause(undefined)).toBeUndefined();
+    expect(sanitizeCause(42)).toBe(42);
   });
 });

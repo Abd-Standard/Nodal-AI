@@ -16,6 +16,7 @@ import { randomUUID } from "crypto";
 import CircuitBreaker from "opossum";
 import { ZodError } from "zod";
 import { config } from "./config";
+import { sanitizeCause, SimulationBudgetError } from "./errors";
 import { logger } from "./logger";
 import { validateXDR } from "./types/xdr";
 import { createLogger } from "./utils/logger";
@@ -141,7 +142,7 @@ export class StellarRPCError extends Error {
   constructor(message: string, cause: unknown) {
     super(message);
     this.name = "StellarRPCError";
-    this.cause = cause;
+    this.cause = sanitizeCause(cause);
   }
 }
 
@@ -160,6 +161,12 @@ export function DEFAULT_IS_RETRYABLE(err: unknown): boolean {
   if (err instanceof ZodError) return false;
   if (err instanceof TypeError) return false;
   if (err instanceof RateLimitError) return true;
+  if (
+    err instanceof Error &&
+    (err.message.includes("budget_exceeded") || err.message.includes("simulation failed"))
+  ) {
+    return false;
+  }
   return true;
 }
 
@@ -350,6 +357,10 @@ function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Arr
 export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
   const simResult = await simulateSorobanTx(tx);
   if (rpc.Api.isSimulationError(simResult)) {
+    const simError = (simResult as { error?: string }).error ?? "";
+    if (simError.includes("budget_exceeded")) {
+      throw new SimulationBudgetError(`Soroban simulation failed: ${simError}`);
+    }
     throw new Error("Soroban simulation failed: ");
   }
 

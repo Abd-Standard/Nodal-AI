@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ZodError, z } from "zod";
 import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, horizonServer, sorobanServer } from "../backend/rpc_client";
+import { SimulationBudgetError } from "../backend/errors";
 import { Networks, rpc, xdr, StrKey, Keypair } from "@stellar/stellar-sdk";
 
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
@@ -113,6 +114,14 @@ describe("DEFAULT_IS_RETRYABLE", () => {
 
   it("returns true for a plain string error", () => {
     expect(DEFAULT_IS_RETRYABLE("network failure")).toBe(true);
+  });
+
+  it("returns false for a budget_exceeded simulation error", () => {
+    expect(DEFAULT_IS_RETRYABLE(new Error("HostError: budget_exceeded"))).toBe(false);
+  });
+
+  it("returns false for a simulation failed error", () => {
+    expect(DEFAULT_IS_RETRYABLE(new Error("Soroban simulation failed: some reason"))).toBe(false);
   });
 });
 
@@ -353,6 +362,34 @@ describe("prepareSorobanTx auth checks", () => {
 
     const dummyTx = {} as any;
     await expect(prepareSorobanTx(dummyTx)).resolves.toBeDefined();
+  });
+});
+
+// ─── prepareSorobanTx budget_exceeded handling ─────────────────────────────
+
+describe("prepareSorobanTx budget_exceeded handling", () => {
+  it("throws SimulationBudgetError when simulation reports budget_exceeded", async () => {
+    vi.spyOn(sorobanServer, "simulateTransaction").mockResolvedValue({
+      error: "HostError: Error(Budget, #0) budget_exceeded",
+    } as any);
+
+    const dummyTx = {} as any;
+    const err = await prepareSorobanTx(dummyTx).catch((e) => e);
+
+    expect(err).toBeInstanceOf(SimulationBudgetError);
+    expect(err.message).toContain("budget_exceeded");
+  });
+
+  it("throws a plain Error for non-budget simulation failures", async () => {
+    vi.spyOn(sorobanServer, "simulateTransaction").mockResolvedValue({
+      error: "HostError: unrelated simulation problem",
+    } as any);
+
+    const dummyTx = {} as any;
+    const err = await prepareSorobanTx(dummyTx).catch((e) => e);
+
+    expect(err).not.toBeInstanceOf(SimulationBudgetError);
+    expect(err.message).toContain("Soroban simulation failed");
   });
 });
 
