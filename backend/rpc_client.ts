@@ -47,6 +47,36 @@ type SorobanSimulationResult = Awaited<ReturnType<rpc.Server["simulateTransactio
 
 const accountCache = new Map<string, HorizonAccount>();
 
+// opossum's Status class exposes no public API to clear its rolling stats
+// window, so a closed breaker keeps stale failure counts that can trip it
+// back open on the very next request. Zero the buckets directly.
+function resetBreakerStats<TArgs extends unknown[], TResult>(
+  breaker: CircuitBreaker<TArgs, TResult>
+): void {
+  const status = breaker.status as unknown as Record<string | symbol, unknown>;
+  const windowSymbol = Object.getOwnPropertySymbols(status).find(
+    (s) => s.toString() === "Symbol(window)"
+  );
+  if (!windowSymbol) return;
+
+  const window = status[windowSymbol] as Array<Record<string, unknown>> | undefined;
+  if (!window) return;
+
+  for (const bucket of window) {
+    bucket.failures = 0;
+    bucket.fallbacks = 0;
+    bucket.successes = 0;
+    bucket.rejects = 0;
+    bucket.fires = 0;
+    bucket.timeouts = 0;
+    bucket.cacheHits = 0;
+    bucket.cacheMisses = 0;
+    bucket.semaphoreRejections = 0;
+    bucket.percentiles = {};
+    bucket.latencyTimes = [];
+  }
+}
+
 export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   breaker: CircuitBreaker<TArgs, TResult>,
   name: string
@@ -68,6 +98,7 @@ export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   });
 
   breaker.on("close", () => {
+    resetBreakerStats(breaker);
     log.info({
       circuit: name,
       failures: breaker.stats.failures,
@@ -132,6 +163,13 @@ export function DEFAULT_IS_RETRYABLE(err: unknown): boolean {
   return true;
 }
 
+// Horizon/Soroban clients surface the underlying HTTP response as an
+// axios-style `response.headers` object on the thrown error.
+function extractRetryAfterHeader(err: Error): string | null {
+  const response = (err as { response?: { headers?: Record<string, string> } }).response;
+  return response?.headers?.["retry-after"] ?? null;
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   retries = config.MAX_RETRIES,
@@ -154,7 +192,7 @@ export async function withRetry<T>(
         } catch (err) {
           // Detect 429 from Horizon/Soroban responses
           if (err instanceof Error && err.message.includes("429")) {
-            handleRateLimitResponse(null);
+            handleRateLimitResponse(extractRetryAfterHeader(err));
             lastErr = new RateLimitError(30);
           } else {
             lastErr = err;
