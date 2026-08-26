@@ -160,6 +160,16 @@ const EnvSchema = z.object({
     .min(100)
     .default(1500),
 
+  // How long a cached Horizon account stays fresh. Sequence numbers and
+  // balances change on every transaction the account takes part in, so this is
+  // deliberately short: it exists to collapse bursts of reads, not to avoid
+  // round trips generally.
+  ACCOUNT_CACHE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .default(30_000),
+
   // Per-call RPC timeout in milliseconds.
   // Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2, computed post-parse.
   RPC_TIMEOUT_MS: z.coerce
@@ -321,6 +331,11 @@ export interface AgentConfig {
    * Defaults to 60,000 (1 minute).
    */
   readonly SPENDING_WINDOW_MS: number;
+  /**
+   * Time-to-live, in milliseconds, for a cached Horizon account record.
+   * Defaults to 30,000. Set to 0 to disable caching entirely.
+   */
+  readonly ACCOUNT_CACHE_TTL_MS: number;
   /**
    * Per-call RPC timeout in milliseconds.
    * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.

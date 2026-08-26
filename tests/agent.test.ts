@@ -12,7 +12,7 @@ import { BalanceCheckTool } from "../backend/tools/BalanceCheckTool";
 import { PathPaymentTool } from "../backend/tools/PathPaymentTool";
 import { FeeBumpTool } from "../backend/tools/FeeBumpTool";
 import { DexOfferTool } from "../backend/tools/DexOfferTool";
-import { ValidationError } from "../backend/errors";
+import { ValidationError, UnauthorizedError, ErrorType } from "../backend/errors";
 
 vi.mock("../backend/tools/StellarPaymentTool", () => ({
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
@@ -172,6 +172,56 @@ describe("PayFiAgent — runSequence", () => {
     expect(mockInstance.execute).toHaveBeenCalledTimes(2);
   });
 
+  // ── #370: positional context on sequence results ──────────────────────────
+
+  it("stamps sequenceIndex on every result, including the one that failed", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    mockInstance.execute
+      .mockResolvedValueOnce({ txHash: "hash1", ledger: 1 })
+      .mockRejectedValueOnce(new Error("Network failure"));
+
+    const task = {
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    };
+    const results = await agent.runSequence([task, task, task]);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]!.sequenceIndex).toBe(0);
+    // The failing task is index 1 of the original three, and says so without
+    // the caller having to infer it from the truncated array.
+    expect(results[1]!.sequenceIndex).toBe(1);
+    expect(results[1]!.success).toBe(false);
+  });
+
+  it("keeps sequenceIndex correct after the results array is filtered", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    mockInstance.execute
+      .mockResolvedValueOnce({ txHash: "hash1", ledger: 1 })
+      .mockResolvedValueOnce({ txHash: "hash2", ledger: 2 })
+      .mockRejectedValueOnce(new Error("Network failure"));
+
+    const task = {
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    };
+    const results = await agent.runSequence([task, task, task]);
+
+    // This is the case array position cannot answer: once the successes are
+    // dropped, position 0 of the filtered array is task 2 of the sequence.
+    const failures = results.filter((r) => !r.success);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.sequenceIndex).toBe(2);
+  });
+
+  it("does not set sequenceIndex on a single run()", async () => {
+    const result = await agent.run({
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    expect(result.sequenceIndex).toBeUndefined();
+  });
+
   it("rejects mid-sequence when a task exceeds the mainnet spending cap", async () => {
     const okTask = {
       type: "stellar_payment" as const,
@@ -186,6 +236,76 @@ describe("PayFiAgent — runSequence", () => {
     expect(results[0]!.success).toBe(true);
     expect(results[1]!.success).toBe(false);
     expect(results[1]!.error).toMatch(/mainnet spending cap/);
+  });
+});
+
+// ── #368: structured auth context reaches AgentResult.error ─────────────────
+
+describe("PayFiAgent — structured error context", () => {
+  let agent: PayFiAgent;
+  const ROGUE_SIGNER = "GCVJ4Z6TI6Z2SOGENSPXDQ2U4RKH3CNQKYUHNSSQ5HDIWEVI6V6VOSWZ";
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    agent = new PayFiAgent();
+  });
+
+  it("serialises UnauthorizedError context, including the signer, into error", async () => {
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockRejectedValue(
+        new UnauthorizedError(`Unexpected Soroban auth signer: ${ROGUE_SIGNER}`, {
+          signer: ROGUE_SIGNER,
+          expected: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        })
+      ),
+    } as any));
+    agent = new PayFiAgent();
+
+    const result = await agent.run({
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe(ErrorType.UnauthorizedError);
+    // The signer must survive into the string field, because that is all the
+    // persisted result and the webhook payload carry.
+    expect(result.error).toContain(ROGUE_SIGNER);
+    expect(result.error).toContain("expected");
+  });
+
+  it("leaves the message untouched for an error with no structured cause", async () => {
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockRejectedValue(new Error("plain failure")),
+    } as any));
+    agent = new PayFiAgent();
+
+    const result = await agent.run({
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    expect(result.error).toBe("plain failure");
+    expect(result.error).not.toContain("context:");
+  });
+
+  it("does not serialise signing material out of an error cause", async () => {
+    const SECRET = "SCVJ4Z6TI6Z2SOGENSPXDQ2U4RKH3CNQKYUHNSSQ5HDIWEVI6V6VOAAA";
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockRejectedValue(
+        new UnauthorizedError("bad signer", { signer: ROGUE_SIGNER, secretKey: SECRET })
+      ),
+    } as any));
+    agent = new PayFiAgent();
+
+    const result = await agent.run({
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    expect(result.error).toContain(ROGUE_SIGNER);
+    expect(result.error).not.toContain(SECRET);
   });
 });
 

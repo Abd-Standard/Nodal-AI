@@ -306,10 +306,25 @@ interface AgentResult {
   taskType: TaskType;
   data?: unknown;
   error?: string;
+  errorType?: string;
+  correlationId?: string;
+  durationMs?: number;
+  sequenceIndex?: number;
 }
 ```
 
 Task execution result. On success, `data` contains the tool's output. On failure, `error` is populated.
+
+| Field | Present | Meaning |
+|---|---|---|
+| `success` | always | Whether the task completed. |
+| `taskType` | always | The task type that was dispatched. |
+| `data` | on success | The tool's output. |
+| `error` | on failure | Failure message. For a `StructuredError` carrying context, the context is appended as `\| context: {...}` JSON — an auth rejection, for example, reports the signer that was presented and the one expected. Signing material is stripped before serialisation. |
+| `errorType` | on failure | Machine-readable category (`UNAUTHORIZED_ERROR`, `TRANSACTION_FAILURE`, …) so callers can branch without string matching. |
+| `correlationId` | always | Ties together every log line, persisted result, and webhook for this execution. |
+| `durationMs` | usually | Wall-clock execution time. |
+| `sequenceIndex` | `runSequence` only | Zero-based position of the task within the `runSequence` call. Since the sequence stops at the first failure, the last entry's `sequenceIndex` is the index of the task that failed — and it stays correct after the results are filtered or sorted, which array position does not. Absent on `run()`. |
 
 ### Usage Example
 

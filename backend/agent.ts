@@ -16,7 +16,7 @@ import { rpc } from "@stellar/stellar-sdk";
 import { config, MAINNET_SPENDING_CAP } from "./config";
 import { logger } from "./logger";
 import { saveResult } from "./persistence";
-import { StructuredError, ErrorType, getErrorType } from "./errors";
+import { StructuredError, ErrorType, getErrorType, sanitizeCause } from "./errors";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
 import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
 import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from "./tools/X402PaymentTool";
@@ -128,6 +128,16 @@ export interface AgentResult {
   correlationId?: string;
   /** Wall-clock time in milliseconds spent executing the task (from dispatch to completion/failure). */
   durationMs?: number;
+  /**
+   * Zero-based position of the task within the {@link PayFiAgent.runSequence}
+   * call that produced this result. Because `runSequence` stops at the first
+   * failure, the last entry's `sequenceIndex` is the index of the task that
+   * failed — callers no longer have to infer it from array position, which
+   * breaks as soon as results are filtered, sorted, or merged.
+   *
+   * Absent on results from {@link PayFiAgent.run}, which has no sequence.
+   */
+  sequenceIndex?: number;
 }
 
 // ─── Middleware types ─────────────────────────────────────────────────────────────
@@ -156,6 +166,35 @@ const SECRET_KEY_RE = /^(?<prefix>.*?["':\s]?)(?<secret>S[ A-Z2-7]{55})(?<suffix
 
 function redactSecretString(value: string): string {
   return value.replace(SECRET_KEY_RE, "$<prefix>[REDACTED]$<suffix>");
+}
+
+/**
+ * Render an error as the string that goes into {@link AgentResult.error}.
+ *
+ * A {@link StructuredError} may carry a `cause` holding the context needed to
+ * act on the failure automatically — for an auth rejection, which signer was
+ * presented and which one was expected. That context is JSON-serialised onto
+ * the end of the message so it survives into persisted results and webhook
+ * payloads, both of which only carry the string.
+ *
+ * The cause is passed through `sanitizeCause` first, so signing material can
+ * never be serialised out this way, and the whole string is redacted by the
+ * caller afterwards as a second line of defence.
+ */
+function describeError(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  if (!(err instanceof StructuredError) || err.cause === undefined) {
+    return message;
+  }
+  try {
+    const context = JSON.stringify(sanitizeCause(err.cause));
+    // `undefined` and functions serialise to undefined rather than a string.
+    return context === undefined ? message : `${message} | context: ${context}`;
+  } catch {
+    // Circular or otherwise unserialisable cause: the message alone still has
+    // to get through, so a failure here must not lose the error entirely.
+    return message;
+  }
 }
 
 function sanitizePayload(payload: unknown): unknown {
@@ -408,9 +447,11 @@ export class PayFiAgent extends EventEmitter {
    */
   async runSequence(tasks: AgentTask[]): Promise<AgentResult[]> {
     const results: AgentResult[] = [];
-    for (const task of tasks) {
+    for (const [index, task] of tasks.entries()) {
       const result = await this.run(task);
-      results.push(result);
+      // Stamped on a copy rather than mutating the object `run` already handed
+      // to the "task:failed" listeners and the webhook dispatcher.
+      results.push({ ...result, sequenceIndex: index });
       if (!result.success) break;
     }
     return results;
@@ -584,8 +625,7 @@ export class PayFiAgent extends EventEmitter {
 
         return result;
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const safe = redactSecretString(message);
+        const safe = redactSecretString(describeError(err));
         const sanitized = sanitizePayload(task.payload);
         taskLog.error(
           { taskType: task.type, error: safe, sanitizedPayload: sanitized },
@@ -617,8 +657,7 @@ export class PayFiAgent extends EventEmitter {
       return await chain();
     } catch (err) {
       const durationMs = Date.now() - startMs;
-      const message = err instanceof Error ? err.message : String(err);
-      const safe = redactSecretString(message);
+      const safe = redactSecretString(describeError(err));
       const sanitized = sanitizePayload(task.payload);
       taskLog.error(
         { taskType: task.type, error: safe, sanitizedPayload: sanitized, durationMs },
