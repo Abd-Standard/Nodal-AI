@@ -293,6 +293,26 @@ mod tests {
         });
     }
 
+    // ── Double-initialize guard (issue #309) ─────────────────────────────────
+
+    // 10b. calling initialize twice panics with AlreadyInitialized
+    #[test]
+    #[should_panic]
+    fn test_double_initialize_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let expiry = env.ledger().timestamp() + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+    }
+
     // 11. zero amount panics
     #[test]
     #[should_panic]
