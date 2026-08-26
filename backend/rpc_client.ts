@@ -132,6 +132,13 @@ export function DEFAULT_IS_RETRYABLE(err: unknown): boolean {
   return true;
 }
 
+// Horizon/Soroban clients surface the underlying HTTP response as an
+// axios-style `response.headers` object on the thrown error.
+function extractRetryAfterHeader(err: Error): string | null {
+  const response = (err as { response?: { headers?: Record<string, string> } }).response;
+  return response?.headers?.["retry-after"] ?? null;
+}
+
 export async function withRetry<T>(
   fn: () => Promise<T>,
   retries = config.MAX_RETRIES,
@@ -154,7 +161,7 @@ export async function withRetry<T>(
         } catch (err) {
           // Detect 429 from Horizon/Soroban responses
           if (err instanceof Error && err.message.includes("429")) {
-            handleRateLimitResponse(null);
+            handleRateLimitResponse(extractRetryAfterHeader(err));
             lastErr = new RateLimitError(30);
           } else {
             lastErr = err;
