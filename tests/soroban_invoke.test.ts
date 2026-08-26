@@ -83,7 +83,7 @@ vi.mock("../backend/utils/logger", () => ({
 
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "process.env.AGENT_SECRET_KEY";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -108,7 +108,7 @@ vi.mock("../backend/config", () => {
  * Test fixtures: reusable constants and helper functions.
  */
 
-const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
+const TEST_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const VALID_CONTRACT =
   "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH";
 

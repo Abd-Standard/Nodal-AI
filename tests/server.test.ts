@@ -36,6 +36,10 @@ vi.mock("../backend/config", () => ({
     STELLAR_NETWORK: "testnet",
     AGENT_PUBLIC_KEY: "GTEST1234567890123456789012345678901234567890123456",
     HEALTH_PORT: 3000,
+    // server.ts pulls in rpc_client, which builds a Horizon.Server at import
+    // time; without these the URI constructor throws and the suite cannot load.
+    HORIZON_URL: "https://horizon-testnet.stellar.org",
+    SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
   },
 }));
 
