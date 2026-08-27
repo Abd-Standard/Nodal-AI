@@ -20,7 +20,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -37,7 +37,7 @@ vi.mock("../backend/config", () => {
   };
 });
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
 function makeMockAccount(hasUsdc = false) {
@@ -110,10 +110,29 @@ describe("TrustlineTool", () => {
     expect(exists).toBe(false);
   });
 
+  it("checkTrustline returns false for native XLM (no trustline needed)", async () => {
+    // The native balance entry has asset_type "native", which the check filters
+    // out via `b.asset_type !== "native"`. Passing any issuer for XLM must
+    // still return false — XLM is always spendable and never requires a trustline.
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(false) as any);
+    const exists = await tool.checkTrustline("XLM", ISSUER);
+    expect(exists).toBe(false);
+  });
+
   it("rejects invalid assetIssuer length", async () => {
     await expect(
       tool.execute({ assetCode: "USDC", assetIssuer: "SHORT", action: "add" })
     ).rejects.toThrow(/Invalid asset issuer/);
+  });
+
+  it("rejects a syntactically invalid 56-character assetIssuer", async () => {
+    await expect(
+      tool.execute({
+        assetCode: "USDC",
+        assetIssuer: "G" + "A".repeat(55),
+        action: "add",
+      })
+    ).rejects.toThrow(/valid Stellar public key/i);
   });
 
   it("propagates submission error", async () => {

@@ -6,6 +6,18 @@
  * Never broadcasts without a prior simulation pass.
  */
 import { z } from "zod";
+declare const SubmitResultSchema: z.ZodObject<{
+    hash: z.ZodString;
+    ledger: z.ZodNumber;
+}, "strip", z.ZodTypeAny, {
+    hash: string;
+    ledger: number;
+}, {
+    hash: string;
+    ledger: number;
+}>;
+export { SubmitResultSchema };
+export type SubmitResult = z.infer<typeof SubmitResultSchema>;
 /**
  * Zod schema for payment input validation.
  *
@@ -13,26 +25,30 @@ import { z } from "zod";
  * @property amount - Positive decimal string with up to 7 decimal places (Stellar network limit)
  * @property assetCode - Asset code (default: "XLM")
  * @property assetIssuer - Asset issuer public key (required for non-XLM assets)
- * @property memo - Optional memo text, max 28 characters (Stellar network limit)
+ * @property memoType - Type of memo: "text", "id", "hash", or "return" (default: "text")
+ * @property memo - Optional memo value (string for text/return/hash, number for id)
  */
 export declare const PaymentInputSchema: z.ZodObject<{
-    destination: z.ZodString;
+    destination: z.ZodEffects<z.ZodString, string, string>;
     amount: z.ZodEffects<z.ZodString, string, string>;
     assetCode: z.ZodDefault<z.ZodString>;
     assetIssuer: z.ZodOptional<z.ZodString>;
-    memo: z.ZodOptional<z.ZodEffects<z.ZodString, string, string>>;
+    memoType: z.ZodDefault<z.ZodOptional<z.ZodEnum<["text", "id", "hash", "return"]>>>;
+    memo: z.ZodOptional<z.ZodUnion<[z.ZodString, z.ZodNumber]>>;
 }, "strip", z.ZodTypeAny, {
     destination: string;
     amount: string;
     assetCode: string;
+    memoType: "id" | "text" | "hash" | "return";
     assetIssuer?: string | undefined;
-    memo?: string | undefined;
+    memo?: string | number | undefined;
 }, {
     destination: string;
     amount: string;
     assetCode?: string | undefined;
     assetIssuer?: string | undefined;
-    memo?: string | undefined;
+    memoType?: "id" | "text" | "hash" | "return" | undefined;
+    memo?: string | number | undefined;
 }>;
 export type PaymentInput = z.infer<typeof PaymentInputSchema>;
 export declare class StellarPaymentTool {

@@ -25,6 +25,9 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      - name: Type-check test files
+        run: npx tsc --project tsconfig.test.json --noEmit
+
   lint:
     runs-on: ubuntu-latest
 

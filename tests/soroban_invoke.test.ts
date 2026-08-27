@@ -33,6 +33,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { SorobanInvokeTool, SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT } from "../backend/tools/SorobanInvokeTool";
 import * as rpcClient from "../backend/rpc_client";
+import { ContractError } from "../backend/errors";
 
 // ─── Module mock ──────────────────────────────────────────────────────────────
 /**
@@ -52,7 +53,6 @@ vi.mock("../backend/rpc_client", async () => {
     submitTransaction: vi.fn(),
     simulateSorobanTx: vi.fn(),
     prepareSorobanTx: vi.fn(),
-    // Use a plain function (not vi.fn) to ensure the passphrase is always a string
     resolveNetworkPassphrase: (_network: string) => Networks.TESTNET,
     horizonServer: {},
     sorobanServer: {
@@ -84,7 +84,7 @@ vi.mock("../backend/utils/logger", () => ({
 
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -109,7 +109,7 @@ vi.mock("../backend/config", () => {
  * Test fixtures: reusable constants and helper functions.
  */
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const VALID_CONTRACT =
   "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH";
 
@@ -148,8 +148,8 @@ function makeMockAccount(publicKey: string) {
  * Creates a mock prepared transaction that satisfies the post-sign signature guard.
  * sign() mutates `signatures` in place (matching real Stellar SDK behaviour).
  */
-function makeMockPreparedTx(): any {
-  const obj: any = { signatures: [] };
+function makeMockPreparedTx(fee = 500_000): any {
+  const obj: any = { signatures: [], fee, timeBounds: {} };
   obj.sign = vi.fn().mockImplementation(() => {
     obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
   });
@@ -293,6 +293,21 @@ describe("SorobanInvokeTool", () => {
       ).rejects.toThrow(/simulation failed/);
     });
 
+    it("preserves simulation error detail in ContractError message when simulation fails", async () => {
+      const errorDetail = "HostError: Error(Contract, #123) custom_revert_reason";
+      vi.mocked(rpcClient.prepareSorobanTx).mockRejectedValue(
+        new ContractError(`Soroban simulation failed: ${errorDetail}`, undefined, errorDetail)
+      );
+
+      await expect(
+        tool.execute({
+          contractId: VALID_CONTRACT,
+          method: "release",
+          args: [],
+        }),
+      ).rejects.toThrow(`Soroban simulation failed: ${errorDetail}`);
+    });
+
     it("throws when Soroban fee exceeds MAX_SOROBAN_FEE_STROOPS", async () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
         sign: vi.fn(),
@@ -310,11 +325,27 @@ describe("SorobanInvokeTool", () => {
       expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
     });
 
-    it("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
+    it("rejects when the prepared fee is not numeric", async () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
         sign: vi.fn(),
-        fee: 500_000,
+        fee: "not-a-number",
       } as any);
+
+      await expect(
+        tool.execute({
+          contractId: VALID_CONTRACT,
+          method: "release",
+          args: [],
+        }),
+      ).rejects.toThrow(/invalid Soroban fee/i);
+
+      expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+    });
+
+    it("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(
+        makeMockPreparedTx(500_000)
+      );
       vi.mocked(
         rpcClient.sorobanServer.sendTransaction as any,
       ).mockResolvedValue({
@@ -574,6 +605,8 @@ describe("SorobanInvokeTool", () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
         sign: vi.fn(), // no-op — does NOT push to signatures
         signatures: [], // empty signatures list — guard must catch this
+        fee: 500_000,
+        timeBounds: {},
       } as any);
 
       await expect(

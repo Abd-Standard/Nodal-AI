@@ -18,6 +18,7 @@ import { horizonServer, sorobanServer } from "./rpc_client";
 import { db } from "./db/client";
 import { handleError } from "./middleware/error_handler";
 import { createLogger } from "./utils/logger";
+import { spendingTracker } from "./agent";
 
 const log = createLogger("health-server");
 
@@ -113,6 +114,7 @@ function isAuthenticated(req: http.IncomingMessage): boolean {
 
 const HEALTH_PATH = "/health";
 const STATUS_PATH = "/status";
+const SPENDING_PATH = "/spending";
 
 /**
  * Creates and returns the health-check HTTP server.
@@ -149,15 +151,44 @@ export function createHealthServer(): http.Server {
         });
         res.end(body);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const body = JSON.stringify({ error: message });
+        // Route through the shared handler so a StructuredError gets the status
+        // code that describes it instead of a blanket 500 - and so an internal
+        // fault's message is not echoed to an unauthenticated caller.
+        const errorResponse = handleError(err);
+        const body = JSON.stringify(errorResponse);
 
-        res.writeHead(500, {
+        res.writeHead(errorResponse.status, {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
+          ...errorResponse.headers,
         });
         res.end(body);
       }
+      return;
+    }
+
+    // ── GET /spending ──────────────────────────────────────────────────────
+    if (req.method === "GET" && req.url === SPENDING_PATH) {
+      if (!isAuthenticated(req)) {
+        res.writeHead(401, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Unauthorized" }));
+        return;
+      }
+
+      const total = spendingTracker.total();
+      const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
+      const body = JSON.stringify({
+        total,
+        limit,
+        windowMs: config.SPENDING_WINDOW_MS,
+        percentUsed: total / limit * 100,
+      });
+
+      res.writeHead(200, {
+        "Content-Type": "application/json",
+        "Content-Length": Buffer.byteLength(body),
+      });
+      res.end(body);
       return;
     }
 
@@ -223,6 +254,8 @@ async function handleHealth(
     res.writeHead(errorResponse.status, {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(payload),
+      // e.g. Retry-After on a 429 from RateLimitError
+      ...errorResponse.headers,
     });
     res.end(payload);
   }
@@ -261,6 +294,8 @@ async function handleResults(
     res.writeHead(errorResponse.status, {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(payload),
+      // e.g. Retry-After on a 429 from RateLimitError
+      ...errorResponse.headers,
     });
     res.end(payload);
   }

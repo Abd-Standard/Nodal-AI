@@ -4,8 +4,11 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { MultiSigPaymentTool } from "../backend/tools/MultiSigPaymentTool";
+import { MultiSigPaymentTool, MultiSigInputSchema } from "../backend/tools/MultiSigPaymentTool";
 import * as rpcClient from "../backend/rpc_client";
+import { ValidationError } from "../backend/errors";
+
+const TEST_SECRET = Keypair.random().secret();
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
@@ -20,7 +23,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = Keypair.random().secret();
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -37,9 +40,8 @@ vi.mock("../backend/config", () => {
   };
 });
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
 const DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-const SIGNER2 = "GCEZWKCA5VLDNRLN3RPRJMRZOX3Z6G5CHCGZUK9AI4WDCBAHD9HTPFE7";
+const SIGNER2 = "GBN52ISCBRJIVLVH554CGMITR3ZJURROF75FWSZ2H2HRDPFWSZXVPYFN";
 const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
 function makeMockAccount() {
@@ -84,6 +86,19 @@ describe("MultiSigPaymentTool", () => {
     expect(result.txHash).toBeUndefined();
   });
 
+  it("rejects invalid additional signers before any network call", async () => {
+    await expect(
+      tool.execute({
+        destination: DEST,
+        amount: "100",
+        assetCode: "XLM",
+        additionalSigners: ["A".repeat(56)],
+        minSignatures: 2,
+      })
+    ).rejects.toThrow(/Invalid signer public key/);
+    expect(rpcClient.loadAccount).not.toHaveBeenCalled();
+  });
+
   it("unsigned XDR is valid base64-encoded XDR (non-empty)", async () => {
     const result = await tool.execute({
       destination: DEST,
@@ -97,21 +112,48 @@ describe("MultiSigPaymentTool", () => {
     expect(result.unsignedXDR!.length).toBeGreaterThan(50);
   });
 
+  it("does not call submitTransaction when returning unsignedXDR", async () => {
+    await tool.execute({
+      destination: DEST,
+      amount: "100",
+      assetCode: "XLM",
+      additionalSigners: [SIGNER2],
+      minSignatures: 2,
+    });
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("returns unsignedXDR when signatures are insufficient (1 provided, 2 required)", async () => {
+    const result = await tool.execute({
+      destination: DEST,
+      amount: "100",
+      assetCode: "XLM",
+      additionalSigners: [SIGNER2],
+      minSignatures: 2,
+      signatures: ["sig1"], // Only 1 signature, but minSignatures is 2
+    });
+    expect(result.unsignedXDR).toBeDefined();
+    expect(typeof result.unsignedXDR).toBe("string");
+    expect(result.txHash).toBeUndefined();
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
   it("submits and returns txHash when sufficient signatures provided", async () => {
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({ hash: "multisig_hash", ledger: 10 } as any);
+    const validSigXdr = "AAAAAAAAAEAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     const result = await tool.execute({
       destination: DEST,
       amount: "100",
       assetCode: "XLM",
       additionalSigners: [SIGNER2],
       minSignatures: 1,
-      signatures: ["sig1"],
+      signatures: [validSigXdr],
     });
     expect(result.txHash).toBe("multisig_hash");
     expect(result.ledger).toBe(10);
   });
 
-  it("throws when minSignatures exceeds total available signers", async () => {
+  it("throws ValidationError when minSignatures exceeds total available signers", async () => {
     await expect(
       tool.execute({
         destination: DEST,
@@ -120,7 +162,31 @@ describe("MultiSigPaymentTool", () => {
         additionalSigners: [SIGNER2],
         minSignatures: 5, // only 2 signers (agent + SIGNER2)
       })
+    ).rejects.toThrow(ValidationError);
+
+    await expect(
+      tool.execute({
+        destination: DEST,
+        amount: "100",
+        assetCode: "XLM",
+        additionalSigners: [SIGNER2],
+        minSignatures: 5,
+      })
     ).rejects.toThrow(/minSignatures.*exceeds total available signers/);
+  });
+
+  it("fails schema validation when minSignatures exceeds total signers count", () => {
+    const parseResult = MultiSigInputSchema.safeParse({
+      destination: DEST,
+      amount: "100",
+      assetCode: "XLM",
+      additionalSigners: [SIGNER2],
+      minSignatures: 3, // only 2 available: agent + SIGNER2
+    });
+    expect(parseResult.success).toBe(false);
+    if (!parseResult.success) {
+      expect(parseResult.error.issues[0]?.message).toContain("minSignatures exceeds total available signers");
+    }
   });
 
   it("throws when non-XLM asset has no issuer", async () => {

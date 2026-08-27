@@ -116,6 +116,27 @@ All jobs **must pass** before your PR can be merged.
 
 ---
 
+## Local Git Hooks
+
+This repository uses **Husky** to enforce code quality through local git hooks. These hooks run automatically before key git operations:
+
+### Pre-Commit Hook (`.husky/pre-commit`)
+
+Runs `scan-secrets.sh` to prevent accidental commits of sensitive data (API keys, private keys, etc.).
+
+### Pre-Push Hook (`.husky/pre-push`)
+
+**NEW**: Runs `npm test` automatically before allowing pushes to the remote repository.
+
+This prevents broken tests from being pushed and failing only during CI checks. If your tests fail locally, the push is blocked with output showing which tests failed. Fix the failing tests and try pushing again.
+
+**To bypass** (not recommended):
+```bash
+git push --no-verify
+```
+
+---
+
 ## Branch Protection Rules
 
 Repository maintainers should enable the following branch protection rules on `main`:
@@ -169,7 +190,7 @@ To check for vulnerabilities in dependencies:
 
 ## Code of Conduct
 
-We are committed to providing a welcoming and inclusive environment for all contributors. Please:
+We are committed to providing a welcoming and inclusive environment for all contributors. Please refer to [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md) for our full expectations. In summary:
 - Be respectful and considerate of others
 - Use inclusive language
 - Accept constructive feedback gracefully

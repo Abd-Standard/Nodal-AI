@@ -6,12 +6,18 @@
  * MANDATORY simulation step enforced before any broadcast.
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SorobanInvokeTool = exports.SorobanInvokeInputSchema = void 0;
+exports.SorobanInvokeTool = exports.SorobanInvokeInputSchema = exports.SOROBAN_TX_TIMEOUT = void 0;
+exports.isSorobanSimulationResult = isSorobanSimulationResult;
 const stellar_sdk_1 = require("@stellar/stellar-sdk");
 const zod_1 = require("zod");
 const config_1 = require("../config");
 const logger_1 = require("../logger");
 const rpc_client_1 = require("../rpc_client");
+// ─── Constants ─────────────────────────────────────────────────────────────────
+// SAFETY: Timeout in seconds for Soroban broadcast transactions.
+// Must ALWAYS be a positive integer. setTimeout(0) produces transactions
+// without time bounds that can be replayed indefinitely on the network.
+exports.SOROBAN_TX_TIMEOUT = 30;
 // ─── Input schema ─────────────────────────────────────────────────────────────
 /**
  * Zod schema for {@link SorobanInvokeTool.execute} inputs.
@@ -61,11 +67,28 @@ exports.SorobanInvokeInputSchema = zod_1.z.object({
      */
     simulateOnly: zod_1.z.boolean().default(false),
 });
+/**
+ * Type guard: narrows a `SorobanInvokeResult` to the simulation-only variant.
+ *
+ * @example
+ * ```ts
+ * const result = await tool.execute({ ..., simulateOnly: true });
+ * if (isSorobanSimulationResult(result)) {
+ *   console.log(result.simulationResult); // Transaction
+ * }
+ * ```
+ */
+function isSorobanSimulationResult(result) {
+    return result.simulationResult !== undefined;
+}
 // ─── Tool implementation ──────────────────────────────────────────────────────
 class SorobanInvokeTool {
     keypair;
     networkPassphrase;
     constructor(secretKey = config_1.config.agentKeypair().secret()) {
+        if (exports.SOROBAN_TX_TIMEOUT <= 0 || exports.SOROBAN_TX_TIMEOUT > 300) {
+            throw new Error(`SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${exports.SOROBAN_TX_TIMEOUT}`);
+        }
         this.keypair = stellar_sdk_1.Keypair.fromSecret(secretKey);
         this.networkPassphrase = (0, rpc_client_1.resolveNetworkPassphrase)(config_1.config.STELLAR_NETWORK);
     }
@@ -130,11 +153,11 @@ class SorobanInvokeTool {
         const sourceAccount = await (0, rpc_client_1.loadAccount)(this.keypair.publicKey());
         // 3. Build invocation transaction
         const tx = new stellar_sdk_1.TransactionBuilder(sourceAccount, {
-            fee: stellar_sdk_1.BASE_FEE,
+            fee: "0", // Fee is overwritten by prepareSorobanTx — initial value is irrelevant
             networkPassphrase: this.networkPassphrase,
         })
             .addOperation(contract.call(input.method, ...input.args))
-            .setTimeout(30)
+            .setTimeout(exports.SOROBAN_TX_TIMEOUT)
             .build();
         logger_1.logger.info("Simulating Soroban transaction", {
             method: input.method,
@@ -142,18 +165,50 @@ class SorobanInvokeTool {
         });
         // 4. MANDATORY simulate step — throws on simulation failure
         const preparedTx = await (0, rpc_client_1.prepareSorobanTx)(tx);
+        const feeValue = preparedTx?.fee;
+        const parsedFee = feeValue === undefined || feeValue === null || feeValue === ""
+            ? undefined
+            : Number.isFinite(feeValue)
+                ? Number(feeValue)
+                : Number.parseInt(String(feeValue), 10);
+        if (parsedFee !== undefined && Number.isNaN(parsedFee)) {
+            throw new Error(`Invalid Soroban fee: ${feeValue}`);
+        }
+        if (parsedFee !== undefined && parsedFee > config_1.config.MAX_SOROBAN_FEE_STROOPS) {
+            throw new Error(`Soroban fee ${preparedTx.fee} exceeds MAX_SOROBAN_FEE_STROOPS ${config_1.config.MAX_SOROBAN_FEE_STROOPS}`);
+        }
         if (input.simulateOnly) {
             logger_1.logger.info("Simulation passed (dry-run, not broadcasting)");
             return { simulationResult: preparedTx };
         }
-        // 5. Sign prepared transaction
-        preparedTx.sign(this.keypair);
-        // 6. Submit
-        const result = await rpc_client_1.sorobanServer.sendTransaction(preparedTx);
+        // 5. Timeout safety guard: reject transactions with no time bounds
+        //    setTimeout(0) produces transactions replayable indefinitely.
+        if (!preparedTx.timeBounds) {
+            throw new Error("Broadcast aborted: transaction has no time bounds (setTimeout(0)). " +
+                "Use a positive timeout to prevent indefinite replay.");
+        }
+        // 6. Sign prepared transaction.
+        // NOTE: Transaction.sign() mutates the transaction in place — the reference
+        // `signedTx` intentionally aliases `preparedTx` so the post-sign assertion
+        // verifies the same object that will be submitted. If the transaction is ever
+        // rebuilt (e.g., after a fee bump), this alias must be updated accordingly.
+        const signedTx = preparedTx;
+        signedTx.sign(this.keypair);
+        // Guard: ensure at least one signature was attached. A no-op sign() call
+        // (e.g., bad Keypair or future SDK changes) would produce zero signatures,
+        // causing the network to reject the transaction immediately.
+        // Use optional chaining so tests using plain mock objects without a
+        // `signatures` array still get a meaningful error rather than a
+        // TypeError on `.length`.
+        if (!signedTx.signatures?.length) {
+            throw new Error("Transaction signing produced no signatures");
+        }
+        // 7. Submit
+        const result = await rpc_client_1.sorobanServer.sendTransaction(signedTx);
         if (result.status === "ERROR") {
             throw new Error(`Soroban submit failed: ${result.errorResult?.toXDR("base64")}`);
         }
-        // 7. Poll for confirmation
+        // 8. Poll for confirmation
         const confirmed = await this.pollForConfirmation(result.hash);
         return { txHash: confirmed.txHash };
     }

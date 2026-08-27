@@ -18,7 +18,7 @@ contracts/escrow/test_snapshots/
 # Environment secrets — never commit real .env files
 .env
 .env.*
-!.env.example
+!..env
 
 # Cryptographic key files
 *.key

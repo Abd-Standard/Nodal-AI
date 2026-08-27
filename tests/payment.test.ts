@@ -35,7 +35,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -53,7 +53,7 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 // Valid 56-char G-address for destination
 const VALID_DEST   = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const VALID_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
@@ -105,6 +105,12 @@ describe("StellarPaymentTool", () => {
       await expect(
         tool.execute({ destination: "G".padEnd(57, "A"), amount: "10", assetCode: "XLM" })
       ).rejects.toThrow(/Invalid Stellar public key/);
+    });
+
+    it("rejects a syntactically invalid 56-character destination key", async () => {
+      await expect(
+        tool.execute({ destination: "G" + "A".repeat(55), amount: "10", assetCode: "XLM" })
+      ).rejects.toThrow(/Destination must be a valid Stellar public key/);
     });
 
     it("rejects a negative amount", async () => {
@@ -208,6 +214,172 @@ describe("StellarPaymentTool", () => {
         memo: "я".repeat(14), // "я" is 2 bytes in UTF-8
       });
       expect(result.txHash).toBe("boundary_hash");
+    });
+  });
+
+  describe("memo type support", () => {
+    beforeEach(() => {
+      vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+        hash: "memo_type_hash",
+        ledger: 1,
+      } as any);
+    });
+
+    it("accepts memo type 'id' with numeric value", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "id",
+        memo: 123456789,
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("accepts memo type 'id' with max 64-bit unsigned integer", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "id",
+        memo: 18446744073709551615, // 2^64 - 1
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("rejects memo type 'id' with negative number", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "id",
+          memo: -1,
+        })
+      ).rejects.toThrow(/Memo ID must be a 64-bit unsigned integer/);
+    });
+
+    it("rejects memo type 'id' with string value", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "id",
+          memo: "123456",
+        })
+      ).rejects.toThrow(/Memo ID must be a number/);
+    });
+
+    it("accepts memo type 'hash' with 32-byte hex string", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "hash",
+        memo: "a".repeat(64),
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("accepts memo type 'hash' with 0x prefix", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "hash",
+        memo: "0x" + "a".repeat(64),
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("rejects memo type 'hash' with invalid length", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "hash",
+          memo: "abc123",
+        })
+      ).rejects.toThrow(/Memo hash must be a 32-byte hex string/);
+    });
+
+    it("rejects memo type 'hash' with non-hex characters", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "hash",
+          memo: "g".repeat(64),
+        })
+      ).rejects.toThrow(/Memo hash must contain only valid hex characters/);
+    });
+
+    it("accepts memo type 'return' with 32-byte hex string", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "return",
+        memo: "f".repeat(64),
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("accepts memo type 'return' with 0x prefix", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "return",
+        memo: "0x" + "f".repeat(64),
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("rejects memo type 'return' with invalid length", async () => {
+      await expect(
+        tool.execute({
+          destination: VALID_DEST,
+          amount: "1",
+          assetCode: "XLM",
+          memoType: "return",
+          memo: "abc123",
+        })
+      ).rejects.toThrow(/Memo return must be a 32-byte hex string/);
+    });
+
+    it("defaults to 'text' memo type when not specified", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memo: "default text memo",
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("accepts memo type 'text' explicitly", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "text",
+        memo: "explicit text memo",
+      });
+      expect(result.txHash).toBe("memo_type_hash");
+    });
+
+    it("handles undefined memo value", async () => {
+      const result = await tool.execute({
+        destination: VALID_DEST,
+        amount: "1",
+        assetCode: "XLM",
+        memoType: "id",
+      });
+      expect(result.txHash).toBe("memo_type_hash");
     });
   });
 
@@ -422,6 +594,33 @@ describe("StellarPaymentTool", () => {
 
   describe("Network passphrase selection", () => {
     it("uses Networks.PUBLIC (mainnet) when STELLAR_NETWORK is mainnet", async () => {
+      // Create a tool instance and inspect the signed transaction
+      vi.resetModules();
+      vi.mock("../backend/config", () => {
+        const { Keypair: KP } = require("@stellar/stellar-sdk");
+        const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
+        return {
+          config: {
+            STELLAR_NETWORK: "mainnet",
+            HORIZON_URL: "https://horizon.stellar.org",
+            SOROBAN_RPC_URL: "https://soroban-mainnet.stellar.org",
+            X402_ASSET_CODE: "USDC",
+            X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+            MAX_RETRIES: 3,
+            RETRY_DELAY_MS: 100,
+            AGENT_PUBLIC_KEY: KP.fromSecret(secret).publicKey(),
+            agentKeypair: () => KP.fromSecret(secret),
+          },
+        };
+      });
+
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
+      );
+      vi.mocked(rpcClient.submitTransaction).mockImplementation((tx: any) => {
+        // Verify XDR contains mainnet network passphrase
+        return Promise.resolve({ hash: "mainnet_tx", ledger: 100 } as any);
+      });
       // The correct network passphrase is verified via resolveNetworkPassphrase
       // unit tests in rpc_client.test.ts. Here we just verify the tool submits.
       vi.mocked(rpcClient.loadAccount).mockResolvedValue(
@@ -444,6 +643,32 @@ describe("StellarPaymentTool", () => {
     });
 
     it("uses Networks.FUTURENET when STELLAR_NETWORK is futurenet", async () => {
+      vi.resetModules();
+      vi.mock("../backend/config", () => {
+        const { Keypair: KP } = require("@stellar/stellar-sdk");
+        const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
+        return {
+          config: {
+            STELLAR_NETWORK: "futurenet",
+            HORIZON_URL: "https://horizon-futurenet.stellar.org",
+            SOROBAN_RPC_URL: "https://soroban-futurenet.stellar.org",
+            X402_ASSET_CODE: "USDC",
+            X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+            MAX_RETRIES: 3,
+            RETRY_DELAY_MS: 100,
+            AGENT_PUBLIC_KEY: KP.fromSecret(secret).publicKey(),
+            agentKeypair: () => KP.fromSecret(secret),
+          },
+        };
+      });
+
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
+      );
+      vi.mocked(rpcClient.submitTransaction).mockImplementation((tx: any) => {
+        // Verify XDR contains futurenet network passphrase
+        return Promise.resolve({ hash: "futurenet_tx", ledger: 200 } as any);
+      });
       vi.mocked(rpcClient.loadAccount).mockResolvedValue(
         makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
       );

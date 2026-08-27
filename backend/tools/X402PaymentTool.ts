@@ -6,11 +6,45 @@
 import { Keypair, Horizon } from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { createHash } from "crypto";
+import Database from "better-sqlite3";
 import { config } from "../config";
 import { horizonServer } from "../rpc_client";
 import { StellarPaymentTool } from "./StellarPaymentTool";
 import { buildMemo } from "./MemoAttachmentTool";
 import { logger } from "../logger";
+import {
+  INonceStore,
+  SqliteNonceStore,
+  MAX_NONCE_TTL_MS,
+} from "../nonce_store";
+import { TransactionFailureError } from "../errors";
+
+/**
+ * Best-effort recovery of a transaction hash from a submission error.
+ *
+ * A hash is only present when the transaction actually reached Horizon and was
+ * rejected — a failure during building, signing, or a network timeout has none.
+ * `TransactionFailureError.txHash` is therefore optional, and this returns
+ * `undefined` rather than inventing a value.
+ */
+function extractTxHash(err: unknown): string | undefined {
+  if (err === null || typeof err !== "object") return undefined;
+
+  const candidate = err as {
+    txHash?: unknown;
+    hash?: unknown;
+    response?: { data?: { hash?: unknown } };
+  };
+
+  for (const value of [
+    candidate.txHash,
+    candidate.hash,
+    candidate.response?.data?.hash,
+  ]) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
 
 // ─── x402 schemas ────────────────────────────────────────────────────────────
 
@@ -43,20 +77,57 @@ export interface X402PaymentProof {
 const RATE_LIMIT_WINDOW_MS = 60_000;
 
 export class X402PaymentTool {
-  // TODO: persist to Redis for multi-instance deployments
-  private usedNonces = new Set<string>();
+  private nonceStore: INonceStore;
   private paymentTool: StellarPaymentTool;
   private keypair: Keypair;
   private horizonServer: Horizon.Server;
   private paymentCount = 0;
   private windowStart = Date.now();
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
+  /**
+   * @param secretKey   - Stellar secret key for signing payments.
+   * @param nonceStore  - Pluggable nonce store.  Defaults to SqliteNonceStore
+   *                      backed by the shared agent.db file.  Inject an
+   *                      InMemoryNonceStore (or a custom Redis/DynamoDB
+   *                      implementation of INonceStore) in tests or for
+   *                      multi-instance deployments.
+   */
+  constructor(
+    secretKey: string = config.agentKeypair().secret(),
+    nonceStore?: INonceStore
+  ) {
     this.keypair = Keypair.fromSecret(secretKey);
     this.paymentTool = new StellarPaymentTool(secretKey);
     this.horizonServer = horizonServer;
+    this.nonceStore =
+      nonceStore ??
+      new SqliteNonceStore(new Database(config.DB_PATH));
   }
 
+  /**
+   * Respond to an x402 `402 Payment Required` challenge by executing a
+   * Stellar payment and returning a signed proof of payment.
+   *
+   * ### Processing steps
+   * 1. Parse and validate `rawChallenge` against {@link X402ChallengeSchema}.
+   * 2. Guard against self-payment (payTo must not equal the agent's public key).
+   * 3. If `ALLOWED_X402_ORIGINS` is configured, verify the challenge resource
+   *    hostname is in the allow-list.
+   * 4. Reject expired challenges (`expiresAt` < now).
+   * 5. Delegate to {@link StellarPaymentTool.execute} to sign and submit
+   *    the payment, using `SHA-256(nonce)[0:28 hex]` as the transaction memo.
+   * 6. Return an {@link X402PaymentProof} with the settled `txHash`.
+   *
+   * @param rawChallenge - Raw (unvalidated) challenge object, typically the
+   *   parsed JSON body of a `402 Payment Required` HTTP response.
+   * @returns A resolved {@link X402PaymentProof} containing the `txHash`,
+   *   original `nonce`, agent `payer` address, and `signedAt` timestamp.
+   * @throws {z.ZodError} If `rawChallenge` does not conform to
+   *   {@link X402ChallengeSchema} (missing fields, bad UUID, expired datetime, etc.).
+   * @throws {Error} If the challenge has expired, the resource origin is not
+   *   allowed, the destination equals the agent's own address, or the underlying
+   *   Stellar payment fails.
+   */
   async respond(rawChallenge: unknown): Promise<X402PaymentProof> {
     const now = Date.now();
     if (now - this.windowStart >= RATE_LIMIT_WINDOW_MS) {
@@ -89,7 +160,7 @@ export class X402PaymentTool {
       throw new Error(`x402 challenge expired at ${challenge.expiresAt}`);
     }
 
-    if (this.usedNonces.has(challenge.nonce)) {
+    if (await this.nonceStore.has(challenge.nonce)) {
       throw new Error("x402: nonce already used");
     }
 
@@ -106,7 +177,12 @@ export class X402PaymentTool {
       }).value as string,
     });
 
-    this.usedNonces.add(challenge.nonce);
+    await this.nonceStore.add(challenge.nonce);
+    // Opportunistic pruning: evict nonces older than the max challenge TTL.
+    // Fire-and-forget — a pruning failure must not abort a successful payment.
+    this.nonceStore.prune(MAX_NONCE_TTL_MS).catch((err) =>
+      logger.warn("x402: nonce pruning failed (non-fatal)", { error: String(err) })
+    );
 
     let signedAt: string;
     try {
@@ -129,6 +205,25 @@ export class X402PaymentTool {
     };
   }
 
+  /**
+   * Verify that an {@link X402PaymentProof} corresponds to a settled Stellar
+   * transaction that satisfies the original challenge's requirements.
+   *
+   * Fetches the transaction and its first operation from Horizon and checks:
+   * - destination matches `originalChallenge.payTo`
+   * - amount matches `originalChallenge.amount`
+   * - asset code matches `originalChallenge.assetCode`
+   * - transaction memo equals `originalChallenge.nonce.slice(0, 28)`
+   * - source account matches `proof.payer`
+   *
+   * @param proof - The {@link X402PaymentProof} returned by {@link respond}.
+   * @param originalChallenge - The parsed {@link X402Challenge} that was used
+   *   to produce `proof`. Must be the same challenge passed to {@link respond}.
+   * @returns Resolves with `void` when all checks pass.
+   * @throws {Error} If the transaction cannot be found on Horizon, if the
+   *   transaction has no payment operation, or if any of the verification
+   *   checks (destination, amount, asset, memo, payer) fail.
+   */
   async verify(
     proof: X402PaymentProof,
     originalChallenge: X402Challenge

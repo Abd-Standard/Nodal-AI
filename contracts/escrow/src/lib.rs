@@ -19,7 +19,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error,
-    token::Client as TokenClient, Address, Env, Symbol,
+    token::Client as TokenClient, Address, BytesN, Env, Symbol,
 };
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
@@ -33,6 +33,9 @@ pub enum DataKey {
     Amount,
     Expiry,
     Released,
+    InitializedAt,
+    PendingArbiter,
+    PendingArbiterTime,
 }
 
 // ─── Escrow State ─────────────────────────────────────────────────────────────
@@ -46,6 +49,7 @@ pub struct EscrowState {
     pub amount: i128,
     pub expiry: u64,
     pub released: bool,
+    pub initialized_at: u64,
 }
 
 // ─── Contract Errors ──────────────────────────────────────────────────────────
@@ -72,6 +76,10 @@ pub enum EscrowError {
     NotInitialized = 8,
     /// depositor, recipient, and arbiter must all be distinct addresses.
     InvalidParties = 9,
+    /// The arbiter rotation time-lock has not yet expired.
+    RotationLocked = 10,
+    /// No pending arbiter rotation proposal.
+    NoPendingRotation = 11,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
@@ -88,7 +96,11 @@ impl EscrowContract {
     /// * `depositor` - Party locking the funds.
     /// * `recipient` - Party who receives funds on release.
     /// * `arbiter`   - Trusted party who authorises release.
-    /// * `token`     - SAC token contract address.
+    /// * `token`     - SAC token contract address. **Only Stellar Asset Contract (SAC) tokens
+    ///                 conforming to the Stellar token interface are supported.** Non-SAC tokens
+    ///                 with incompatible interfaces will cause a panic. Verify the token address
+    ///                 is a SAC before calling initialize() by checking the token's contract code
+    ///                 or attempting to read its decimals().
     /// * `amount`    - Token amount (stroop-equivalent units).
     /// * `expiry`    - Unix timestamp after which depositor may refund.
     ///
@@ -148,6 +160,7 @@ impl EscrowContract {
         );
 
         // Persist state
+        let now = env.ledger().timestamp();
         env.storage()
             .instance()
             .set(&DataKey::Depositor, &depositor);
@@ -159,6 +172,9 @@ impl EscrowContract {
         env.storage().instance().set(&DataKey::Amount, &amount);
         env.storage().instance().set(&DataKey::Expiry, &expiry);
         env.storage().instance().set(&DataKey::Released, &false);
+        env.storage()
+            .instance()
+            .set(&DataKey::InitializedAt, &now);
 
         env.events().publish(
             (
@@ -343,6 +359,11 @@ impl EscrowContract {
                 .instance()
                 .get(&DataKey::Released)
                 .unwrap_or(false),
+            initialized_at: env
+                .storage()
+                .instance()
+                .get(&DataKey::InitializedAt)
+                .expect("escrow: state corrupted"),
         }
     }
 
@@ -491,6 +512,99 @@ impl EscrowContract {
                 Symbol::new(&env, "cancelled"),
             ),
             (stored_depositor, amount),
+        );
+    }
+
+    /// Propose a new arbiter. Only callable by the stored depositor.
+    ///
+    /// Initiates a time-locked arbiter rotation to prevent instant hostile takeover.
+    /// After the 24-hour time-lock, `accept_arbiter_rotation` must be called to finalize.
+    ///
+    /// # Arguments
+    /// * `env`        - The execution environment.
+    /// * `depositor`  - Must match the depositor recorded at initialisation.
+    /// * `new_arbiter` - The proposed new arbiter address.
+    ///
+    /// # Panics
+    /// * `NotDepositor` - If the caller is not the stored depositor.
+    /// * `NotInitialized` - If the escrow has not been initialized.
+    ///
+    /// # Return Value
+    /// None.
+    pub fn propose_new_arbiter(env: Env, depositor: Address, new_arbiter: Address) {
+        let stored_depositor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Depositor)
+            .expect("escrow: state corrupted");
+        stored_depositor.require_auth();
+        if depositor != stored_depositor {
+            panic_with_error!(&env, EscrowError::NotDepositor);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingArbiter, &new_arbiter);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingArbiterTime, &now);
+
+        env.events().publish(
+            (Symbol::new(&env, "arbiter_rotation_proposed"),),
+            (depositor, new_arbiter, now),
+        );
+    }
+
+    /// Accept the pending arbiter rotation after the 24-hour time-lock.
+    ///
+    /// Finalizes the arbiter change if 24 hours have passed since `propose_new_arbiter` was called.
+    /// Can be called by anyone once the time-lock has expired.
+    ///
+    /// # Arguments
+    /// * `env` - The execution environment.
+    ///
+    /// # Panics
+    /// * `NoPendingRotation` - If no arbiter rotation has been proposed.
+    /// * `RotationLocked` - If the 24-hour time-lock has not yet elapsed.
+    ///
+    /// # Return Value
+    /// None.
+    pub fn accept_arbiter_rotation(env: Env) {
+        const ROTATION_DELAY: u64 = 86_400; // 24 hours in seconds
+
+        if !env.storage().instance().has(&DataKey::PendingArbiter) {
+            panic_with_error!(&env, EscrowError::NoPendingRotation);
+        }
+
+        let pending_time: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingArbiterTime)
+            .expect("escrow: state corrupted");
+        let now = env.ledger().timestamp();
+
+        if now < pending_time + ROTATION_DELAY {
+            panic_with_error!(&env, EscrowError::RotationLocked);
+        }
+
+        let new_arbiter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingArbiter)
+            .expect("escrow: state corrupted");
+
+        env.storage().instance().set(&DataKey::Arbiter, &new_arbiter);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingArbiter);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingArbiterTime);
+
+        env.events().publish(
+            (Symbol::new(&env, "arbiter_rotation_accepted"),),
+            (new_arbiter, now),
         );
     }
 

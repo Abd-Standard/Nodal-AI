@@ -13,12 +13,13 @@ function makeInMemoryDb(): Database.Database {
   const db = new Database(":memory:");
   db.exec(`
     CREATE TABLE IF NOT EXISTS agent_results (
-      id        INTEGER PRIMARY KEY AUTOINCREMENT,
-      timestamp TEXT    NOT NULL,
-      taskType  TEXT    NOT NULL,
-      success   INTEGER NOT NULL,
-      data      TEXT,
-      error     TEXT
+      id            INTEGER PRIMARY KEY AUTOINCREMENT,
+      timestamp     TEXT    NOT NULL,
+      taskType      TEXT    NOT NULL,
+      success       INTEGER NOT NULL,
+      data          TEXT,
+      error         TEXT,
+      correlationId TEXT
     )
   `);
   return db;
@@ -30,7 +31,7 @@ beforeEach(() => {
 
 const TIMESTAMP = "2026-06-25T22:00:00.000Z";
 
-function makeResult(overrides: Partial<AgentResult> = {}): AgentResult & { timestamp: string } {
+function makeResult(overrides: Partial<AgentResult & { timestamp: string }> = {}): AgentResult & { timestamp: string } {
   return {
     success: true,
     taskType: "stellar_payment",
@@ -45,19 +46,25 @@ describe("persistence", () => {
     saveResult(makeResult());
     const results = getResults();
     expect(results).toHaveLength(1);
-    expect(results[0].success).toBe(true);
-    expect(results[0].taskType).toBe("stellar_payment");
-    expect(results[0].timestamp).toBe(TIMESTAMP);
-    expect((results[0].data as any).txHash).toBe("abc123");
+    const result = results[0];
+    expect(result).toBeDefined();
+    if (!result) return;
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe("stellar_payment");
+    expect(result.timestamp).toBe(TIMESTAMP);
+    expect((result.data as any).txHash).toBe("abc123");
   });
 
   it("saves a failed result and retrieves the error", () => {
     saveResult(makeResult({ success: false, data: undefined, error: "Network failure" }));
     const results = getResults();
     expect(results).toHaveLength(1);
-    expect(results[0].success).toBe(false);
-    expect(results[0].error).toBe("Network failure");
-    expect(results[0].data).toBeUndefined();
+    const result = results[0];
+    expect(result).toBeDefined();
+    if (!result) return;
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Network failure");
+    expect(result.data).toBeUndefined();
   });
 
   it("respects the limit parameter and returns results newest-first", () => {
@@ -67,7 +74,11 @@ describe("persistence", () => {
     const results = getResults(3);
     expect(results).toHaveLength(3);
     // Newest first — last inserted has the highest id
-    expect((results[0].data as any).index).toBe(4);
+    const result = results[0];
+    expect(result).toBeDefined();
+    if (result) {
+      expect((result.data as any).index).toBe(4);
+    }
   });
 
   it("returns an empty array when no results have been saved", () => {

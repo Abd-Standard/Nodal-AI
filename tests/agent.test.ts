@@ -6,8 +6,13 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PayFiAgent } from "../backend/agent";
+import { PayFiAgent, spendingTracker } from "../backend/agent";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
+import { BalanceCheckTool } from "../backend/tools/BalanceCheckTool";
+import { PathPaymentTool } from "../backend/tools/PathPaymentTool";
+import { FeeBumpTool } from "../backend/tools/FeeBumpTool";
+import { DexOfferTool } from "../backend/tools/DexOfferTool";
+import { ValidationError, UnauthorizedError, ErrorType } from "../backend/errors";
 
 vi.mock("../backend/tools/StellarPaymentTool", () => ({
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
@@ -111,11 +116,10 @@ vi.mock("../backend/config", () => ({
     X402_ASSET_CODE: "USDC",
     X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
     MAX_RETRIES: 3,
-    RETRY_DELAY_MS: 100,
-    // Set above MAINNET_SPENDING_CAP to exercise the secondary runtime guard
+    RETRY_DELAY_MS: 100,    MAX_CONCURRENT_TASKS: 10,    // Set above MAINNET_SPENDING_CAP to exercise the secondary runtime guard
     AGENT_SPENDING_LIMIT: "15000",
     agentKeypair: () => ({
-      secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73",
+      secret: () => "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X",
     }),
   },
   MAINNET_SPENDING_CAP: 10_000,
@@ -130,6 +134,7 @@ describe("PayFiAgent — runSequence", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
     // Re-apply default mock implementation after clearAllMocks (clearMocks resets call history
     // but also clears mockReturnValue / mockResolvedValue set inside vi.mock factories).
@@ -167,6 +172,56 @@ describe("PayFiAgent — runSequence", () => {
     expect(mockInstance.execute).toHaveBeenCalledTimes(2);
   });
 
+  // ── #370: positional context on sequence results ──────────────────────────
+
+  it("stamps sequenceIndex on every result, including the one that failed", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    mockInstance.execute
+      .mockResolvedValueOnce({ txHash: "hash1", ledger: 1 })
+      .mockRejectedValueOnce(new Error("Network failure"));
+
+    const task = {
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    };
+    const results = await agent.runSequence([task, task, task]);
+
+    expect(results).toHaveLength(2);
+    expect(results[0]!.sequenceIndex).toBe(0);
+    // The failing task is index 1 of the original three, and says so without
+    // the caller having to infer it from the truncated array.
+    expect(results[1]!.sequenceIndex).toBe(1);
+    expect(results[1]!.success).toBe(false);
+  });
+
+  it("keeps sequenceIndex correct after the results array is filtered", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    mockInstance.execute
+      .mockResolvedValueOnce({ txHash: "hash1", ledger: 1 })
+      .mockResolvedValueOnce({ txHash: "hash2", ledger: 2 })
+      .mockRejectedValueOnce(new Error("Network failure"));
+
+    const task = {
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    };
+    const results = await agent.runSequence([task, task, task]);
+
+    // This is the case array position cannot answer: once the successes are
+    // dropped, position 0 of the filtered array is task 2 of the sequence.
+    const failures = results.filter((r) => !r.success);
+    expect(failures).toHaveLength(1);
+    expect(failures[0]!.sequenceIndex).toBe(2);
+  });
+
+  it("does not set sequenceIndex on a single run()", async () => {
+    const result = await agent.run({
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    expect(result.sequenceIndex).toBeUndefined();
+  });
+
   it("rejects mid-sequence when a task exceeds the mainnet spending cap", async () => {
     const okTask = {
       type: "stellar_payment" as const,
@@ -184,10 +239,81 @@ describe("PayFiAgent — runSequence", () => {
   });
 });
 
+// ── #368: structured auth context reaches AgentResult.error ─────────────────
+
+describe("PayFiAgent — structured error context", () => {
+  let agent: PayFiAgent;
+  const ROGUE_SIGNER = "GCVJ4Z6TI6Z2SOGENSPXDQ2U4RKH3CNQKYUHNSSQ5HDIWEVI6V6VOSWZ";
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    agent = new PayFiAgent();
+  });
+
+  it("serialises UnauthorizedError context, including the signer, into error", async () => {
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockRejectedValue(
+        new UnauthorizedError(`Unexpected Soroban auth signer: ${ROGUE_SIGNER}`, {
+          signer: ROGUE_SIGNER,
+          expected: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        })
+      ),
+    } as any));
+    agent = new PayFiAgent();
+
+    const result = await agent.run({
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe(ErrorType.UnauthorizedError);
+    // The signer must survive into the string field, because that is all the
+    // persisted result and the webhook payload carry.
+    expect(result.error).toContain(ROGUE_SIGNER);
+    expect(result.error).toContain("expected");
+  });
+
+  it("leaves the message untouched for an error with no structured cause", async () => {
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockRejectedValue(new Error("plain failure")),
+    } as any));
+    agent = new PayFiAgent();
+
+    const result = await agent.run({
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    expect(result.error).toBe("plain failure");
+    expect(result.error).not.toContain("context:");
+  });
+
+  it("does not serialise signing material out of an error cause", async () => {
+    const SECRET = "SCVJ4Z6TI6Z2SOGENSPXDQ2U4RKH3CNQKYUHNSSQ5HDIWEVI6V6VOAAA";
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockRejectedValue(
+        new UnauthorizedError("bad signer", { signer: ROGUE_SIGNER, secretKey: SECRET })
+      ),
+    } as any));
+    agent = new PayFiAgent();
+
+    const result = await agent.run({
+      type: "stellar_payment" as const,
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    expect(result.error).toContain(ROGUE_SIGNER);
+    expect(result.error).not.toContain(SECRET);
+  });
+});
+
 describe("PayFiAgent — mainnet spending cap", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
     vi.mocked(StellarPaymentTool).mockImplementation(() => ({
       execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
@@ -270,6 +396,8 @@ describe("PayFiAgent — mainnet spending cap", () => {
 
     expect(result1.success).toBe(true);
     expect(result2.success).toBe(true);
+    expect((result1.data as Record<string, unknown>)?.txHash).toBe("tx_hash_1");
+    expect((result2.data as Record<string, unknown>)?.txHash).toBe("tx_hash_2");
     expect((result1.data as any)?.txHash).toBe("tx_hash_1");
     expect((result2.data as any)?.txHash).toBe("tx_hash_2");
     expect(agent1).not.toBe(agent2);
@@ -280,6 +408,7 @@ describe("AgentResult snapshot", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
     vi.mocked(StellarPaymentTool).mockImplementation(() => ({
       execute: vi.fn().mockResolvedValue({ txHash: "success_tx_hash", ledger: 1 }),
@@ -296,12 +425,28 @@ describe("AgentResult snapshot", () => {
         assetCode: "USDC",
         assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
       },
+      correlationId: "fixed-test-id-success",
     });
 
     expect(result).toMatchSnapshot();
     expect(result).toHaveProperty("success", true);
     expect(result).toHaveProperty("taskType", "stellar_payment");
     expect(result).toHaveProperty("data");
+  });
+
+  it("adds network metadata to payment task results", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: {
+        destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        amount: "100",
+        assetCode: "USDC",
+        assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      },
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toMatchObject({ network: "mainnet" });
   });
 
   it("AgentResult has expected shape on failure", async () => {
@@ -316,6 +461,7 @@ describe("AgentResult snapshot", () => {
         assetCode: "USDC",
         assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
       },
+      correlationId: "fixed-test-id-failure",
     });
 
     expect(result).toMatchSnapshot();
@@ -329,9 +475,22 @@ describe("PayFiAgent — new task types", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
+    spendingTracker.clear();
     vi.clearAllMocks();
     vi.mocked(StellarPaymentTool).mockImplementation(() => ({
       execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
+    vi.mocked(BalanceCheckTool).mockImplementation(() => ({
+      getBalance: vi.fn().mockResolvedValue({ publicKey: DEST, balances: [] }),
+    } as any));
+    vi.mocked(PathPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "path_mock_hash", ledger: 1 }),
+    } as any));
+    vi.mocked(FeeBumpTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "fee_bump_mock_hash", ledger: 1 }),
+    } as any));
+    vi.mocked(DexOfferTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "dex_mock_hash", ledger: 1, offerId: "0" }),
     } as any));
     agent = new PayFiAgent();
   });
@@ -398,16 +557,222 @@ describe("PayFiAgent — new task types", () => {
   });
 });
 
-describe("PayFiAgent — payload sanitisation", () => {
+describe("PayFiAgent — drain / waitForPendingTasks", () => {
   let agent: PayFiAgent;
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
+    agent = new PayFiAgent();
+  });
+
+  it("rejects new tasks after drain() is called", async () => {
+    agent.drain();
+
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/shutting down/i);
+  });
+
+  it("waitForPendingTasks() resolves when activeTasks reaches 0", async () => {
+    let resolveExecute!: (value: unknown) => void;
+    const pending = new Promise((resolve) => {
+      resolveExecute = resolve;
+    });
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    mockInstance.execute.mockReturnValueOnce(pending);
+
+    const runPromise = agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+
+    // Let run() reach the `activeTasks++` before checking wait behaviour.
+    await Promise.resolve();
+
+    let waitResolved = false;
+    const waitPromise = agent.waitForPendingTasks().then(() => {
+      waitResolved = true;
+    });
+
+    // Task is still in flight — waitForPendingTasks() must still be pending.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(waitResolved).toBe(false);
+
+    resolveExecute({ txHash: "mock_hash", ledger: 1 });
+    await runPromise;
+    await waitPromise;
+
+    expect(waitResolved).toBe(true);
+  });
+
+  it("waitForPendingTasks() resolves immediately if no tasks are active", async () => {
+    const setIntervalSpy = vi.spyOn(global, "setInterval");
+
+    await agent.waitForPendingTasks();
+
+    expect(setIntervalSpy).not.toHaveBeenCalled();
+    setIntervalSpy.mockRestore();
+  });
+});
+
+describe("PayFiAgent — middleware system", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
+    agent = new PayFiAgent();
+  });
+
+  it("registers middleware via use() method", () => {
+    const middleware = vi.fn(async (task, next) => next());
+    agent.use(middleware);
+    // Middleware is registered - verified by internal state
+    expect(agent).toBeDefined();
+  });
+
+  it("executes middleware in registration order", async () => {
+    const executionOrder: string[] = [];
+    
+    agent.use(async (task, next) => {
+      executionOrder.push("middleware1");
+      return next();
+    });
+    
+    agent.use(async (task, next) => {
+      executionOrder.push("middleware2");
+      return next();
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(true);
+    expect(executionOrder).toEqual(["middleware1", "middleware2"]);
+  });
+
+  it("allows middleware to short-circuit task execution", async () => {
+    agent.use(async (task, next) => {
+      return {
+        success: false,
+        taskType: task.type,
+        error: "Short-circuited by middleware",
+        correlationId: task.correlationId ?? "test-correlation-id",
+      };
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("Short-circuited by middleware");
+    // Tool should not have been called
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (mockInstance) {
+      expect(mockInstance.execute).not.toHaveBeenCalled();
+    }
+  });
+
+  it("middleware can inspect and modify task before execution", async () => {
+    agent.use(async (task, next) => {
+      // Modify the task payload
+      if (task.type === "stellar_payment") {
+        (task.payload as Record<string, unknown>).amount = "50";
+      }
+      return next();
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(true);
+    // Verify the tool was called with modified payload
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (mockInstance) {
+      expect(mockInstance.execute).toHaveBeenCalledWith(
+        expect.objectContaining({ amount: "50" })
+      );
+    }
+  });
+
+  it("middleware handles errors thrown in middleware", async () => {
+    agent.use(async (task, next) => {
+      throw new Error("Middleware error");
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("Middleware error");
+  });
+
+  it("middleware executes after task completion (post-execution)", async () => {
+    const postExecutionLog: string[] = [];
+    
+    agent.use(async (task, next) => {
+      const result = await next();
+      postExecutionLog.push("after-execution");
+      return result;
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(true);
+    expect(postExecutionLog).toEqual(["after-execution"]);
+  });
+
+  it("pass-through middleware with no modifications", async () => {
+    agent.use(async (task, next) => {
+      // Just pass through without modification
+      return next();
+    });
+    
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "100", assetCode: "USDC", assetIssuer: ISSUER },
+    });
+    
+    expect(result.success).toBe(true);
+  });
+});
+
+describe("PayFiAgent — payload sanitisation", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 
   it("scrubs secretKey from payload before logging on failure", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (!mockInstance) throw new Error("Mock instance not found");
     mockInstance.execute.mockRejectedValueOnce(
       new Error("simulated payment failure")
     );
@@ -426,5 +791,58 @@ describe("PayFiAgent — payload sanitisation", () => {
     expect(result.success).toBe(false);
     expect(result.error).toBe("simulated payment failure");
     expect(result.error).not.toContain("SABCDEFGHIJKLMNOPQRSTUVWXYZ234567");
+  });
+
+  it("recursively redacts nested sensitive keys in deeply nested objects", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (!mockInstance) throw new Error("Mock instance not found");
+    mockInstance.execute.mockRejectedValueOnce(
+      new Error("simulated nested payload failure")
+    );
+
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: {
+        destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        amount: "100",
+        assetCode: "USDC",
+        assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+        signer: {
+          secretKey: "SABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+          address: "GXYZ",
+        },
+        nested: {
+          level2: {
+            privateKey: "SABCDEFGHIJKLMNOPQRSTUVWXYZ234567",
+            mnemonic: "word1 word2 word3",
+          },
+        },
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toBe("simulated nested payload failure");
+  });
+
+  it("includes errorType in AgentResult for structured errors", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
+    if (!mockInstance) throw new Error("Mock instance not found");
+    mockInstance.execute.mockRejectedValueOnce(
+      new ValidationError("Invalid payment parameters")
+    );
+
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: {
+        destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        amount: "100",
+        assetCode: "USDC",
+        assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe("VALIDATION_ERROR");
+    expect(result.error).toBe("Invalid payment parameters");
   });
 });

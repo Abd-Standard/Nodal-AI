@@ -38,6 +38,11 @@ export interface AgentConfig {
      */
     readonly SOROBAN_RPC_URL: string;
     /**
+     * Path to the SQLite database file used for audit persistence.
+     * Defaults to "./agent.db". Use ":memory:" for in-process tests.
+     */
+    readonly DB_PATH: string;
+    /**
      * The asset code for the x402 / PayFi asset.
      * Validated by EnvSchema to be a string between 1 and 12 characters.
      * Defaults to "USDC".
@@ -98,12 +103,57 @@ export interface AgentConfig {
     readonly ALLOWED_X402_ORIGINS?: string;
     readonly AGENT_SECRET_KEY_ARN?: string;
     /**
+     * OpenTelemetry collector endpoint.
+     * Optional — when set, the agent exports traces/spans to this OTLP-compatible endpoint.
+     * Validated by EnvSchema to be a valid URL string.
+     */
+    readonly OTLP_ENDPOINT?: string | undefined;
+    /**
+     * Spending window in milliseconds for rate/cap computation.
+     * Defines the time window over which spending is tracked and enforced.
+     * Validated by EnvSchema to be a positive integer.
+     * Defaults to 60,000 (1 minute).
+     */
+    readonly SPENDING_WINDOW_MS: number;
+    /**
      * Per-call RPC timeout in milliseconds.
      * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.
      */
     readonly RPC_TIMEOUT_MS: number;
+    /**
+     * Maximum number of x402 payments allowed per 60-second sliding window.
+     * Defaults to 10. Prevents rapid-fire calls from exhausting the agent balance.
+     */
+    readonly MAX_X402_PAYMENTS_PER_MINUTE: number;
+    /**
+     * Maximum Soroban transaction fee in stroops (1 stroop = 0.0000001 XLM).
+     * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
+     */
+    readonly MAX_SOROBAN_FEE_STROOPS: number;
+    /**
+     * Maximum number of tasks allowed to execute concurrently in agent.run().
+     * Additional tasks submitted while this many are in flight are rejected.
+     * Defaults to 10.
+     */
+    readonly MAX_CONCURRENT_TASKS: number;
+    /**
+     * Bounded FIFO queue capacity for tasks submitted while at MAX_CONCURRENT_TASKS.
+     * Defaults to 0 (no queuing — excess tasks are rejected immediately).
+     */
+    readonly QUEUE_CAPACITY: number;
+    /**
+     * Port for the health-check HTTP server.
+     * Validated by EnvSchema to be an integer between 1 and 65535.
+     * Defaults to 3000.
+     */
+    readonly HEALTH_PORT: number;
+    readonly CONTRACT_EVENT_POLL_MS?: number | undefined;
+    readonly WEBHOOK_URL?: string | undefined;
+    readonly WEBHOOK_SECRET?: string | undefined;
 }
 export declare function formatValidationErrors(errors: z.ZodError): string;
+export declare function loadConfig(): Promise<AgentConfig>;
+export declare const configPromise: Promise<AgentConfig>;
 export declare const config: AgentConfig;
 /**
  * Hardcoded spending limit (safety cap) for transactions on Stellar mainnet.

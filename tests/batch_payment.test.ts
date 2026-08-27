@@ -23,7 +23,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports, @typescript-eslint/no-var-requires
   const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -115,6 +115,15 @@ describe("BatchPaymentTool", () => {
     ).rejects.toThrow(/AGENT_SPENDING_LIMIT/);
   });
 
+  it("rejects a batch where total exceeds AGENT_SPENDING_LIMIT", async () => {
+    // AGENT_SPENDING_LIMIT is 1000; 2 × 600 = 1200 > 1000
+    const payments = [
+      { destination: DEST1, amount: "600", assetCode: "XLM" },
+      { destination: DEST2, amount: "600", assetCode: "XLM" },
+    ];
+    await expect(tool.execute({ payments })).rejects.toThrow(/exceeds AGENT_SPENDING_LIMIT/);
+  });
+
   it("accepts a batch where the total exactly equals the spending limit", async () => {
     // 100 × 10 = 1000, which equals the limit
     const payments = Array.from({ length: 100 }, () => ({
@@ -137,5 +146,72 @@ describe("BatchPaymentTool", () => {
         payments: [{ destination: DEST1, amount: "10", assetCode: "USDC" }],
       })
     ).rejects.toThrow(/Asset issuer is required/);
+  });
+
+  describe("failFast", () => {
+    const BAD = { destination: DEST2, amount: "10", assetCode: "USDC" };
+    const GOOD1 = { destination: DEST1, amount: "10", assetCode: "XLM" };
+    const GOOD2 = { destination: DEST3, amount: "10", assetCode: "XLM" };
+
+    it("defaults to false and reports every unusable payment at once", async () => {
+      await expect(
+        tool.execute({
+          payments: [GOOD1, BAD, { ...BAD, assetCode: "EURC" }],
+        })
+      ).rejects.toThrow(/USDC[\s\S]*EURC/);
+    });
+
+    it("reports nothing skipped when it checked the whole batch", async () => {
+      await tool
+        .execute({ payments: [GOOD1, BAD, GOOD2] })
+        .catch((err: any) => {
+          expect(err.skipped).toBe(0);
+        });
+      expect.assertions(1);
+    });
+
+    it("stops at the first unusable payment when failFast is set", async () => {
+      await expect(
+        tool.execute({
+          payments: [GOOD1, BAD, { ...BAD, assetCode: "EURC" }],
+          failFast: true,
+        })
+      ).rejects.toThrow(/payment 1[\s\S]*USDC/);
+    });
+
+    it("counts the payments behind the failure as skipped", async () => {
+      await tool
+        .execute({ payments: [GOOD1, BAD, GOOD2, GOOD2], failFast: true })
+        .catch((err: any) => {
+          // index 1 failed, so indexes 2 and 3 were never looked at
+          expect(err.skipped).toBe(2);
+        });
+      expect.assertions(1);
+    });
+
+    it("does not reach the network when a batch fails pre-flight", async () => {
+      await expect(
+        tool.execute({ payments: [BAD], failFast: true })
+      ).rejects.toThrow();
+
+      expect(rpcClient.loadAccount).not.toHaveBeenCalled();
+      expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+    });
+
+    it("submits normally with failFast set when every payment is usable", async () => {
+      const result = await tool.execute({
+        payments: [GOOD1, GOOD2],
+        failFast: true,
+      });
+
+      expect(result.txHash).toBe("batch_tx_hash");
+      expect(result.skipped).toBe(0);
+      expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+    });
+
+    it("reports skipped as 0 on a successful batch", async () => {
+      const result = await tool.execute({ payments: [GOOD1, GOOD2] });
+      expect(result.skipped).toBe(0);
+    });
   });
 });
