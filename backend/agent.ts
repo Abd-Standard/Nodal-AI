@@ -30,6 +30,7 @@ import { PathPaymentTool } from "./tools/PathPaymentTool";
 import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
 import { SetOptionsTool } from "./tools/SetOptionsTool";
+import { StellarIdentityTool } from "./tools/StellarIdentityTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -87,7 +88,8 @@ export type TaskType =
   | "path_payment"
   | "fee_bump"
   | "dex_offer"
-  | "set_options";
+  | "set_options"
+  | "web_auth";
 
 
 export interface AgentTask {
@@ -228,6 +230,7 @@ export class PayFiAgent extends EventEmitter {
   private feeBumpTool: FeeBumpTool;
   private dexOfferTool: DexOfferTool;
   private setOptionsTool: SetOptionsTool;
+  private stellarIdentityTool: StellarIdentityTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -265,6 +268,7 @@ export class PayFiAgent extends EventEmitter {
     this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
     this.setOptionsTool = new SetOptionsTool(config.agentKeypair().secret());
+    this.stellarIdentityTool = new StellarIdentityTool(config.agentKeypair().secret());
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -617,6 +621,10 @@ export class PayFiAgent extends EventEmitter {
 
           case "set_options":
             data = await this.setOptionsTool.execute(task.payload);
+            break;
+
+          case "web_auth":
+            data = await this.stellarIdentityTool.execute(task.payload);
             break;
 
           default:
