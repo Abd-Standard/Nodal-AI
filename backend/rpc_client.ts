@@ -16,7 +16,7 @@ import { randomUUID } from "crypto";
 import CircuitBreaker from "opossum";
 import { ZodError } from "zod";
 import { config } from "./config";
-import { sanitizeCause, SimulationBudgetError, UnauthorizedError } from "./errors";
+import { sanitizeCause, SimulationBudgetError, UnauthorizedError, ConfigError } from "./errors";
 import { logger } from "./logger";
 import { validateXDR } from "./types/xdr";
 import { createLogger } from "./utils/logger";
@@ -141,7 +141,7 @@ export function resolveNetworkPassphrase(network: string): string {
   if (network === "mainnet") return Networks.PUBLIC;
   if (network === "futurenet") return Networks.FUTURENET;
   if (network === "testnet") return Networks.TESTNET;
-  throw new Error(`Unsupported network: ${network}`);
+  throw new ConfigError(`Unsupported network: ${network}`);
 }
 
 export class TimeoutError extends Error {
