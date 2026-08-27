@@ -16,7 +16,7 @@ import { randomUUID } from "crypto";
 import CircuitBreaker from "opossum";
 import { ZodError } from "zod";
 import { config } from "./config";
-import { sanitizeCause, SimulationBudgetError, UnauthorizedError, ConfigError } from "./errors";
+import { sanitizeCause, SimulationBudgetError, UnauthorizedError, ConfigError, ContractError } from "./errors";
 import { logger } from "./logger";
 import { validateXDR } from "./types/xdr";
 import { createLogger } from "./utils/logger";
@@ -439,7 +439,7 @@ export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
     if (simError.includes("budget_exceeded")) {
       throw new SimulationBudgetError(`Soroban simulation failed: ${simError}`);
     }
-    throw new Error("Soroban simulation failed: ");
+    throw new ContractError(`Soroban simulation failed: ${simError}`, undefined, simError);
   }
 
   const builtTx = rpc.assembleTransaction(tx, simResult).build();

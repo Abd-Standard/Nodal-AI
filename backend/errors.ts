@@ -73,8 +73,12 @@ export class ContractError extends StructuredError {
   readonly contractId?: string | undefined;
 
   constructor(message: string, contractId?: string, cause?: unknown) {
-    super(message, ErrorType.ContractError, cause);
-    this.contractId = contractId;
+    const isContractId = typeof contractId === "string" && contractId.length === 56 && contractId.startsWith("C");
+    const actualContractId = isContractId ? contractId : (cause !== undefined ? contractId : undefined);
+    const actualCause = cause !== undefined ? cause : (isContractId ? undefined : contractId);
+
+    super(message, ErrorType.ContractError, actualCause);
+    this.contractId = actualContractId;
     Object.setPrototypeOf(this, ContractError.prototype);
   }
 }

@@ -16,7 +16,8 @@ import {
 import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
-import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { horizonServer, loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { ValidationError } from "../errors";
 import { createLogger } from "../utils/logger";
 import { SubmitResultSchema } from "./StellarPaymentTool";
 
@@ -144,7 +145,23 @@ export class PathPaymentTool {
 
     const sendAsset = toAsset(input.sendAsset);
     const destAsset = toAsset(input.destAsset);
-    const pathAssets = input.path.map(toAsset);
+    let pathAssets = input.path.map(toAsset);
+
+    if (pathAssets.length === 0 && typeof (horizonServer as any)?.strictSendPaths === "function") {
+      const paths = await horizonServer
+        .strictSendPaths(sendAsset, input.sendAmount, [destAsset])
+        .call();
+      if (!paths || !paths.records || paths.records.length === 0) {
+        throw new ValidationError("No path found between assets");
+      }
+      const bestRecord = paths.records[0];
+      if (bestRecord && Array.isArray(bestRecord.path)) {
+        pathAssets = bestRecord.path.map((p: any) => {
+          if (p.asset_type === "native" || p.code === "XLM") return Asset.native();
+          return new Asset(p.asset_code || p.code, p.asset_issuer || p.issuer);
+        });
+      }
+    }
 
     let sourceAccount = await loadAccount(this.keypair.publicKey());
 
