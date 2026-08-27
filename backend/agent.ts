@@ -31,6 +31,7 @@ import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
 import { SwapTool } from "./tools/SwapTool";
 import { AccountHistoryTool } from "./tools/AccountHistoryTool";
+import { SorobanDeployTool } from "./tools/SorobanDeployTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -89,7 +90,8 @@ export type TaskType =
   | "fee_bump"
   | "dex_offer"
   | "swap"
-  | "account_history";
+  | "account_history"
+  | "soroban_deploy";
 
 
 export interface AgentTask {
@@ -231,6 +233,7 @@ export class PayFiAgent extends EventEmitter {
   private dexOfferTool: DexOfferTool;
   private swapTool: SwapTool;
   private accountHistoryTool: AccountHistoryTool;
+  private sorobanDeployTool: SorobanDeployTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -269,6 +272,7 @@ export class PayFiAgent extends EventEmitter {
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
     this.swapTool = new SwapTool(config.agentKeypair().secret());
     this.accountHistoryTool = new AccountHistoryTool();
+    this.sorobanDeployTool = new SorobanDeployTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -626,6 +630,10 @@ export class PayFiAgent extends EventEmitter {
 
           case "account_history":
             data = await this.accountHistoryTool.fetch(task.payload);
+            break;
+
+          case "soroban_deploy":
+            data = await this.sorobanDeployTool.execute(task.payload);
             break;
 
           default:

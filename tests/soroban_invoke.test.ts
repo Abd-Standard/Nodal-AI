@@ -33,6 +33,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { SorobanInvokeTool, SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT } from "../backend/tools/SorobanInvokeTool";
 import * as rpcClient from "../backend/rpc_client";
+import { ContractError } from "../backend/errors";
 
 // ─── Module mock ──────────────────────────────────────────────────────────────
 /**
@@ -290,6 +291,21 @@ describe("SorobanInvokeTool", () => {
           args: [],
         }),
       ).rejects.toThrow(/simulation failed/);
+    });
+
+    it("preserves simulation error detail in ContractError message when simulation fails", async () => {
+      const errorDetail = "HostError: Error(Contract, #123) custom_revert_reason";
+      vi.mocked(rpcClient.prepareSorobanTx).mockRejectedValue(
+        new ContractError(`Soroban simulation failed: ${errorDetail}`, undefined, errorDetail)
+      );
+
+      await expect(
+        tool.execute({
+          contractId: VALID_CONTRACT,
+          method: "release",
+          args: [],
+        }),
+      ).rejects.toThrow(`Soroban simulation failed: ${errorDetail}`);
     });
 
     it("throws when Soroban fee exceeds MAX_SOROBAN_FEE_STROOPS", async () => {

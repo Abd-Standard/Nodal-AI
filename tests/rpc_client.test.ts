@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ZodError, z } from "zod";
 import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, horizonServer, sorobanServer, loadAccount, invalidateAccountCache } from "../backend/rpc_client";
-import { SimulationBudgetError, ConfigError } from "../backend/errors";
+import { SimulationBudgetError, ConfigError, ContractError } from "../backend/errors";
 import { Networks, rpc, xdr, StrKey, Keypair } from "@stellar/stellar-sdk";
 
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
@@ -402,7 +402,7 @@ describe("prepareSorobanTx budget_exceeded handling", () => {
     expect(err.message).toContain("budget_exceeded");
   });
 
-  it("throws a plain Error for non-budget simulation failures", async () => {
+  it("throws a ContractError with error detail for non-budget simulation failures", async () => {
     vi.spyOn(sorobanServer, "simulateTransaction").mockResolvedValue({
       error: "HostError: unrelated simulation problem",
     } as any);
@@ -411,7 +411,9 @@ describe("prepareSorobanTx budget_exceeded handling", () => {
     const err = await prepareSorobanTx(dummyTx).catch((e) => e);
 
     expect(err).not.toBeInstanceOf(SimulationBudgetError);
-    expect(err.message).toContain("Soroban simulation failed");
+    expect(err).toBeInstanceOf(ContractError);
+    expect(err.message).toBe("Soroban simulation failed: HostError: unrelated simulation problem");
+    expect(err.cause).toBe("HostError: unrelated simulation problem");
   });
 });
 
