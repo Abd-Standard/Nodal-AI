@@ -29,10 +29,8 @@ import { BalanceCheckTool } from "./tools/BalanceCheckTool";
 import { PathPaymentTool } from "./tools/PathPaymentTool";
 import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
-import { SetOptionsTool } from "./tools/SetOptionsTool";
-import { StellarIdentityTool } from "./tools/StellarIdentityTool";
-import { ClaimableBalanceTool } from "./tools/ClaimableBalanceTool";
-import { SorobanEventIndexerTool } from "./tools/SorobanEventIndexerTool";
+import { SwapTool } from "./tools/SwapTool";
+import { AccountHistoryTool } from "./tools/AccountHistoryTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -90,10 +88,8 @@ export type TaskType =
   | "path_payment"
   | "fee_bump"
   | "dex_offer"
-  | "set_options"
-  | "web_auth"
-  | "claimable_balance"
-  | "soroban_events";
+  | "swap"
+  | "account_history";
 
 
 export interface AgentTask {
@@ -233,10 +229,8 @@ export class PayFiAgent extends EventEmitter {
   private pathPaymentTool: PathPaymentTool;
   private feeBumpTool: FeeBumpTool;
   private dexOfferTool: DexOfferTool;
-  private setOptionsTool: SetOptionsTool;
-  private stellarIdentityTool: StellarIdentityTool;
-  private claimableBalanceTool: ClaimableBalanceTool;
-  private sorobanEventIndexerTool: SorobanEventIndexerTool;
+  private swapTool: SwapTool;
+  private accountHistoryTool: AccountHistoryTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -273,10 +267,9 @@ export class PayFiAgent extends EventEmitter {
     this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
     this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
-    this.setOptionsTool = new SetOptionsTool(config.agentKeypair().secret());
-    this.stellarIdentityTool = new StellarIdentityTool(config.agentKeypair().secret());
-    this.claimableBalanceTool = new ClaimableBalanceTool(config.agentKeypair().secret());
-    this.sorobanEventIndexerTool = new SorobanEventIndexerTool();
+    this.swapTool = new SwapTool(config.agentKeypair().secret());
+    this.accountHistoryTool = new AccountHistoryTool();
+
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -627,20 +620,12 @@ export class PayFiAgent extends EventEmitter {
             data = await this.dexOfferTool.execute(task.payload);
             break;
 
-          case "set_options":
-            data = await this.setOptionsTool.execute(task.payload);
+          case "swap":
+            data = await this.swapTool.execute(task.payload);
             break;
 
-          case "web_auth":
-            data = await this.stellarIdentityTool.execute(task.payload);
-            break;
-
-          case "claimable_balance":
-            data = await this.claimableBalanceTool.execute(task.payload);
-            break;
-
-          case "soroban_events":
-            data = await this.sorobanEventIndexerTool.query(task.payload);
+          case "account_history":
+            data = await this.accountHistoryTool.fetch(task.payload);
             break;
 
           default:
