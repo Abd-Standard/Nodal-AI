@@ -29,6 +29,8 @@ import { BalanceCheckTool } from "./tools/BalanceCheckTool";
 import { PathPaymentTool } from "./tools/PathPaymentTool";
 import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
+import { SwapTool } from "./tools/SwapTool";
+import { AccountHistoryTool } from "./tools/AccountHistoryTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -85,7 +87,8 @@ export type TaskType =
   | "balance_check"
   | "path_payment"
   | "fee_bump"
-  | "dex_offer";
+  | "dex_offer"
+  | "swap";
 
 
 export interface AgentTask {
@@ -225,6 +228,7 @@ export class PayFiAgent extends EventEmitter {
   private pathPaymentTool: PathPaymentTool;
   private feeBumpTool: FeeBumpTool;
   private dexOfferTool: DexOfferTool;
+  private swapTool: SwapTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -261,6 +265,7 @@ export class PayFiAgent extends EventEmitter {
     this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
     this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
+    this.swapTool = new SwapTool(config.agentKeypair().secret());
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -610,6 +615,10 @@ export class PayFiAgent extends EventEmitter {
 
           case "dex_offer":
             data = await this.dexOfferTool.execute(task.payload);
+            break;
+
+          case "swap":
+            data = await this.swapTool.execute(task.payload);
             break;
 
           default:
