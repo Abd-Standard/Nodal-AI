@@ -36,19 +36,33 @@ vi.mock("../backend/config", () => ({
     STELLAR_NETWORK: "testnet",
     AGENT_PUBLIC_KEY: "GTEST1234567890123456789012345678901234567890123456",
     HEALTH_PORT: 3000,
+    // server.ts pulls in rpc_client, which builds a Horizon.Server at import
+    // time; without these the URI constructor throws and the suite cannot load.
+    HORIZON_URL: "https://horizon-testnet.stellar.org",
+    SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
   },
 }));
 
-// Mock persistence module — getResults returns controlled data
+// Mock persistence module — getResults returns controlled data, or throws
+// when a test wants to exercise the error path.
 let mockResults: any[] = [];
+let mockResultsError: unknown = null;
 vi.mock("../backend/persistence", () => ({
   getResults: vi.fn((limit?: number) => {
+    if (mockResultsError) throw mockResultsError;
     return mockResults.slice(0, limit ?? 100);
   }),
 }));
 
 import type * as http from "http";
 import { createHealthServer } from "../backend/server";
+import {
+  ContractError,
+  NetworkTimeoutError,
+  RateLimitError,
+  UnauthorizedError,
+  ValidationError,
+} from "../backend/errors";
 import { getResults } from "../backend/persistence";
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -79,6 +93,7 @@ describe("backend/server.ts — health check HTTP server", () => {
   beforeEach(() => {
     capturedHandler = null;
     mockResults = [];
+    mockResultsError = null;
     vi.clearAllMocks();
   });
 
@@ -186,8 +201,10 @@ describe("backend/server.ts — health check HTTP server", () => {
 
       expect(res._statusCode).toBe(500);
       const body = JSON.parse(res._body);
-      expect(body).toHaveProperty("error");
-      expect(body.error).toContain("Database unavailable");
+      expect(body.type).toBe("InternalServerError");
+      // The raw failure message is deliberately not echoed back: /status has no
+      // auth guard, so an internal fault must not describe itself to callers.
+      expect(res._body).not.toContain("Database unavailable");
     });
   });
 
@@ -210,6 +227,49 @@ describe("backend/server.ts — health check HTTP server", () => {
       capturedHandler!(req, res);
 
       expect(res._statusCode).toBe(404);
+    });
+  });
+
+  describe("structured error responses", () => {
+    async function requestStatusWith(err: unknown) {
+      mockResultsError = err;
+      createHealthServer();
+      const req = makeReq("GET", "/status");
+      const res = makeRes();
+      await capturedHandler!(req, res);
+      return res;
+    }
+
+    it("returns 400 when the handler throws a ValidationError", async () => {
+      const res = await requestStatusWith(new ValidationError("bad limit"));
+      expect(res._statusCode).toBe(400);
+      expect(JSON.parse(res._body).type).toBe("ValidationError");
+    });
+
+    it("returns 401 when the handler throws an UnauthorizedError", async () => {
+      const res = await requestStatusWith(new UnauthorizedError("no token"));
+      expect(res._statusCode).toBe(401);
+    });
+
+    it("returns 429 with Retry-After when the handler throws a RateLimitError", async () => {
+      const res = await requestStatusWith(new RateLimitError("slow down", 45));
+      expect(res._statusCode).toBe(429);
+      expect(res._headers["Retry-After"]).toBe("45");
+    });
+
+    it("returns 503 when the handler throws a NetworkTimeoutError", async () => {
+      const res = await requestStatusWith(new NetworkTimeoutError("horizon timed out"));
+      expect(res._statusCode).toBe(503);
+    });
+
+    it("returns 500 for error types with no client-side meaning", async () => {
+      const res = await requestStatusWith(new ContractError("trapped"));
+      expect(res._statusCode).toBe(500);
+    });
+
+    it("returns 500 for a plain Error", async () => {
+      const res = await requestStatusWith(new Error("boom"));
+      expect(res._statusCode).toBe(500);
     });
   });
 });

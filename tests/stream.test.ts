@@ -66,7 +66,7 @@ vi.mock("../backend/config", () => ({
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 100,
     AGENT_SPENDING_LIMIT: "100",
-    agentKeypair: () => ({ secret: () => "process.env.AGENT_SECRET_KEY" }),
+    agentKeypair: () => ({ secret: () => "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X" }),
   },
   MAINNET_SPENDING_CAP: 10_000,
 }));

@@ -31,7 +31,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "process.env.AGENT_SECRET_KEY";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -49,7 +49,7 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const AGENT_SECRET = "process.env.AGENT_SECRET_KEY";
+const AGENT_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const INNER_SECRET = "SDPFZL3WZ" + "FXHQVLZX3TUZ5VXYYNZGLHC5BKWBHXMB5E6D64B2YJJFHF5";
 const DEST_KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 

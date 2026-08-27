@@ -43,11 +43,7 @@ vi.mock("../backend/tools/StellarPaymentTool");
 
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  // A fixed, valid testnet seed. The placeholder that used to sit here,
-  // "process.env.AGENT_SECRET_KEY", is not a decodable seed, so
-  // Keypair.fromSecret() threw "invalid encoded string" while the module mock
-  // was being built and the whole file failed at collection.
-  const secret = "SBTI6GDXOINWJ3CVX2DZR6A3UKMVF6GZVBWNHNCU4A6ZCCGKBUUIJQST";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -69,7 +65,7 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const TEST_SECRET   = "SBTI6GDXOINWJ3CVX2DZR6A3UKMVF6GZVBWNHNCU4A6ZCCGKBUUIJQST"; // must match the mocked config above
+const TEST_SECRET   = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const VALID_PAY_TO  = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const VALID_ISSUER  = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 

@@ -38,13 +38,7 @@ vi.mock("../backend/utils/logger", () => ({
 
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk");
-  // A fixed, valid testnet seed. The placeholder that used to sit here,
-  // "process.env.AGENT_SECRET_KEY", is not a decodable seed, so
-  // Keypair.fromSecret() threw "invalid encoded string" while the module mock
-  // was being built and the entire file failed at collection — no test in it
-  // has ever run. Fixed rather than random so the auth test below can pin the
-  // matching public key.
-  const secret = "SBTI6GDXOINWJ3CVX2DZR6A3UKMVF6GZVBWNHNCU4A6ZCCGKBUUIJQST";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -341,9 +335,7 @@ describe("prepareSorobanTx auth checks", () => {
   });
 
   it("does not throw when address credentials match the agent's public key", async () => {
-    // Must match the seed used by the mocked config above, or the signer will
-    // legitimately be rejected and this test asserts the wrong thing.
-    const agentSecret = "SBTI6GDXOINWJ3CVX2DZR6A3UKMVF6GZVBWNHNCU4A6ZCCGKBUUIJQST";
+    const agentSecret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
     const agentPublicKey = Keypair.fromSecret(agentSecret).publicKey();
     const rawKey = StrKey.decodeEd25519PublicKey(agentPublicKey);
 
