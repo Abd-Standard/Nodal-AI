@@ -9,6 +9,7 @@ import { createHash } from "crypto";
 import { config } from "../config";
 import { horizonServer } from "../rpc_client";
 import { StellarPaymentTool } from "./StellarPaymentTool";
+import { buildMemo } from "./MemoAttachmentTool";
 import { logger } from "../logger";
 
 // ─── x402 schemas ────────────────────────────────────────────────────────────
@@ -99,7 +100,10 @@ export class X402PaymentTool {
       assetIssuer:
         challenge.assetCode === "XLM" ? undefined : challenge.assetIssuer,
       // SPEC: memo = SHA-256(nonce)[0:28 hex chars]; resource server must apply the same derivation to verify.
-      memo: createHash("sha256").update(challenge.nonce).digest("hex").slice(0, 28),
+      memo: buildMemo({
+        type: "MEMO_TEXT",
+        value: createHash("sha256").update(challenge.nonce).digest("hex").slice(0, 28),
+      }).value as string,
     });
 
     this.usedNonces.add(challenge.nonce);

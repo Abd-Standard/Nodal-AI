@@ -28,6 +28,8 @@ import { BalanceCheckTool } from "./tools/BalanceCheckTool";
 import { PathPaymentTool } from "./tools/PathPaymentTool";
 import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
+import { LiquidityPoolTool } from "./tools/LiquidityPoolTool";
+import { StellarTomlTool } from "./tools/StellarTomlTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -81,7 +83,9 @@ export type TaskType =
   | "balance_check"
   | "path_payment"
   | "fee_bump"
-  | "dex_offer";
+  | "dex_offer"
+  | "liquidity_pool"
+  | "stellar_toml";
 
 
 export interface AgentTask {
@@ -154,6 +158,8 @@ export class PayFiAgent extends EventEmitter {
   private pathPaymentTool: PathPaymentTool;
   private feeBumpTool: FeeBumpTool;
   private dexOfferTool: DexOfferTool;
+  private liquidityPoolTool: LiquidityPoolTool;
+  private stellarTomlTool: StellarTomlTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -182,6 +188,8 @@ export class PayFiAgent extends EventEmitter {
     this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
     this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
+    this.liquidityPoolTool = new LiquidityPoolTool(config.agentKeypair().secret());
+    this.stellarTomlTool = new StellarTomlTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -450,6 +458,14 @@ export class PayFiAgent extends EventEmitter {
 
         case "dex_offer":
           data = await this.dexOfferTool.execute(task.payload);
+          break;
+
+        case "liquidity_pool":
+          data = await this.liquidityPoolTool.execute(task.payload);
+          break;
+
+        case "stellar_toml":
+          data = await this.stellarTomlTool.fetchToml(task.payload);
           break;
 
         default:
