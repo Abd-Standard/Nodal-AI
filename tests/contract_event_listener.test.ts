@@ -184,4 +184,88 @@ describe("ContractEventListener", () => {
 
     expect(onEvent).toHaveBeenCalledTimes(1);
   });
+
+  // ── Reconnect & Exhaustion ──────────────────────────────────────────────────
+
+  it("reconnects with exponential backoff when stream drops and resumes emitting events", async () => {
+    const event = makeEvent("released", "tok-2");
+    vi.mocked(rpcClient.sorobanServer.getEvents)
+      .mockRejectedValueOnce(new Error("Connection reset 1"))
+      .mockRejectedValueOnce(new Error("Connection reset 2"))
+      .mockResolvedValueOnce({ events: [event] } as any)
+      .mockResolvedValue({ events: [] } as any);
+
+    const onEvent = vi.fn();
+    const onError = vi.fn();
+    const handle = listen(VALID_CONTRACT, ["released"], onEvent);
+    handle.on("error", onError);
+    stopListening = handle;
+
+    // t=0: call 1 fails (attempt 1 -> wait 300ms)
+    await vi.advanceTimersByTimeAsync(300);
+    // t=300: call 2 fails (attempt 2 -> wait 600ms)
+    await vi.advanceTimersByTimeAsync(600);
+    // t=900: call 3 succeeds, receives event!
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(onEvent).toHaveBeenCalledWith(event);
+    expect(onError).not.toHaveBeenCalled();
+
+    // Now advance another 300ms: pollIntervalMs has reset back to normal interval
+    await vi.advanceTimersByTimeAsync(300);
+    expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(4);
+  });
+
+  it("emits error event on returned EventEmitter when reconnect retries are exhausted (default 5)", async () => {
+    const rpcError = new Error("RPC permanent drop");
+    vi.mocked(rpcClient.sorobanServer.getEvents).mockRejectedValue(rpcError);
+
+    const onEvent = vi.fn();
+    const onError = vi.fn();
+    const handle = listen(VALID_CONTRACT, [], onEvent);
+    handle.on("error", onError);
+    stopListening = handle;
+
+    // Attempt 1: t=0, fails. Wait 300ms.
+    await vi.advanceTimersByTimeAsync(300);
+    // Attempt 2: t=300, fails. Wait 600ms.
+    await vi.advanceTimersByTimeAsync(600);
+    // Attempt 3: t=900, fails. Wait 1200ms.
+    await vi.advanceTimersByTimeAsync(1200);
+    // Attempt 4: t=2100, fails. Wait 2400ms.
+    await vi.advanceTimersByTimeAsync(2400);
+    // Attempt 5: t=4500, fails -> exhaustion!
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(rpcError);
+    expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(5);
+
+    // Verify polling has stopped completely
+    await vi.advanceTimersByTimeAsync(10000);
+    expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(5);
+  });
+
+  it("respects maxReconnectAttempts configurable at call time", async () => {
+    const rpcError = new Error("Stream dropped");
+    vi.mocked(rpcClient.sorobanServer.getEvents).mockRejectedValue(rpcError);
+
+    const onEvent = vi.fn();
+    const onError = vi.fn();
+    const handle = listen(VALID_CONTRACT, [], onEvent, { maxReconnectAttempts: 2 });
+    handle.on("error", onError);
+    stopListening = handle;
+
+    // Attempt 1: t=0, fails. Wait 300ms.
+    await vi.advanceTimersByTimeAsync(300);
+    // Attempt 2: t=300, fails -> exhaustion at 2!
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(onError).toHaveBeenCalledOnce();
+    expect(onError).toHaveBeenCalledWith(rpcError);
+    expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(2);
+
+    await vi.advanceTimersByTimeAsync(5000);
+    expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(2);
+  });
 });

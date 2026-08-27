@@ -172,8 +172,103 @@ describe("dispatchWebhook", () => {
 
   it("does not throw when axios.post rejects (swallows delivery errors)", async () => {
     (globalThis as any).__webhookUrl = "https://example.com/webhook";
-    axiosPost.mockRejectedValueOnce(new Error("network error"));
+    axiosPost.mockRejectedValue(new Error("network error"));
 
-    await expect(dispatchWebhook(successResult)).resolves.toBeUndefined();
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await expect(promise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries 503 responses with exponential backoff and delivers on 200 (503 -> 503 -> 200)", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockResolvedValueOnce({ status: 200 });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries when subscriber resolves with non-2xx status (503 -> 503 -> 200)", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost
+      .mockResolvedValueOnce({ status: 503 })
+      .mockResolvedValueOnce({ status: 503 })
+      .mockResolvedValueOnce({ status: 200 });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry on HTTP 4xx (e.g. 400, 404) responses", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost.mockRejectedValueOnce({ response: { status: 404 } });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries on HTTP 429 rate limit responses", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost
+      .mockRejectedValueOnce({ response: { status: 429, headers: { "retry-after": "1" } } })
+      .mockResolvedValueOnce({ status: 200 });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ceases retrying after 3 failed attempts on persistent 5xx errors", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost.mockRejectedValue({ response: { status: 500 } });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

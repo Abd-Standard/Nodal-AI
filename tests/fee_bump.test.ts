@@ -14,6 +14,7 @@ import {
   Networks,
 } from "@stellar/stellar-sdk";
 import { FeeBumpTool } from "../backend/tools/FeeBumpTool";
+import { ValidationError } from "../backend/errors";
 import * as rpcClient from "../backend/rpc_client";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -134,10 +135,22 @@ describe("FeeBumpTool", () => {
 
   // ── Input validation ────────────────────────────────────────────────────────
 
-  it("rejects malformed (non-base64) XDR", async () => {
-    await expect(
-      tool.execute({ innerTxXdr: "not-valid-xdr!!!" })
-    ).rejects.toThrow(/Invalid inner transaction XDR/);
+  it("rejects malformed (non-base64) XDR with ValidationError", async () => {
+    const error = await tool
+      .execute({ innerTxXdr: "not-valid-xdr!!!" })
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.message).toMatch(/Invalid base64 encoding|Invalid inner transaction XDR/);
+  });
+
+  it("rejects corrupted base64 XDR with ValidationError before SDK call", async () => {
+    // Valid base64 but invalid XDR binary payload
+    const corruptedBase64 = Buffer.from("this is definitely not a stellar transaction").toString("base64");
+    const error = await tool
+      .execute({ innerTxXdr: corruptedBase64 })
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
   });
 
   it("throws when innerTxXdr is a fee-bump transaction itself", async () => {

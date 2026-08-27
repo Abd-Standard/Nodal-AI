@@ -16,6 +16,8 @@ import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
 import { resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { ValidationError } from "../errors";
+import { validateXDR } from "../types/xdr";
 import { createLogger } from "../utils/logger";
 import { SubmitResultSchema } from "./StellarPaymentTool";
 
@@ -49,6 +51,15 @@ export class FeeBumpTool {
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = FeeBumpInputSchema.parse(rawInput);
 
+    try {
+      validateXDR(input.innerTxXdr);
+    } catch (err) {
+      throw new ValidationError(
+        err instanceof Error ? err.message : "Invalid inner transaction XDR",
+        err
+      );
+    }
+
     const feeAccount = input.feeAccount ?? this.keypair.publicKey();
 
     // Deserialize the inner transaction from XDR
@@ -58,8 +69,8 @@ export class FeeBumpTool {
         input.innerTxXdr,
         this.networkPassphrase
       ) as Transaction;
-    } catch {
-      throw new Error(`Invalid inner transaction XDR: unable to deserialize`);
+    } catch (err) {
+      throw new ValidationError(`Invalid inner transaction XDR: unable to deserialize`, err);
     }
 
     if (innerTx instanceof FeeBumpTransaction) {

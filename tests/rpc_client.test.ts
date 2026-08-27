@@ -7,7 +7,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ZodError, z } from "zod";
 import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, horizonServer, sorobanServer, loadAccount, invalidateAccountCache } from "../backend/rpc_client";
-import { SimulationBudgetError } from "../backend/errors";
+import { SimulationBudgetError, ConfigError } from "../backend/errors";
 import { Networks, rpc, xdr, StrKey, Keypair } from "@stellar/stellar-sdk";
 
 vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
@@ -87,6 +87,16 @@ describe("resolveNetworkPassphrase", () => {
 
   it("throws for an unknown network string", () => {
     expect(() => resolveNetworkPassphrase("unknown")).toThrow("Unsupported network: unknown");
+  });
+
+  it("throws a ConfigError instance for unsupported networks", () => {
+    expect(() => resolveNetworkPassphrase("unsupported")).toThrow(ConfigError);
+    try {
+      resolveNetworkPassphrase("invalid-net");
+      expect.unreachable("should have thrown");
+    } catch (err) {
+      expect(err).toBeInstanceOf(ConfigError);
+    }
   });
 
   it("throws for empty string", () => {
@@ -242,7 +252,7 @@ describe("withRetry", () => {
     expect(caughtErr).toBeInstanceOf(Error);
     const err = caughtErr as Error;
     expect(err.name).toBe("StellarRPCError");
-    expect(err.message).toContain("RPC call failed after 3 attempts");
+    expect(err.message).toContain("RPC call failed after 3 attempt(s)");
     let caught: unknown;
     try {
       await withRetry(fn, 3, 0);
