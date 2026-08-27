@@ -242,7 +242,7 @@ describe("withRetry", () => {
     expect(caughtErr).toBeInstanceOf(Error);
     const err = caughtErr as Error;
     expect(err.name).toBe("StellarRPCError");
-    expect(err.message).toContain("RPC call failed after 3 attempts");
+    expect(err.message).toContain("RPC call failed after 3 attempt(s)");
     let caught: unknown;
     try {
       await withRetry(fn, 3, 0);
@@ -274,6 +274,17 @@ describe("withTimeout", () => {
     expect(err).toBeInstanceOf(TimeoutError);
     expect(err.message).toMatch(/timeout/i);
     expect(err.name).toBe("TimeoutError");
+  });
+
+  it("clears the timer when the wrapped promise rejects early", async () => {
+    vi.useFakeTimers();
+    const rejectPromise = Promise.reject(new Error("early failure"));
+    rejectPromise.catch(() => {}); // prevent unhandled rejection
+
+    const timed = withTimeout(rejectPromise, 5000);
+
+    await expect(timed).rejects.toThrow("early failure");
+    expect(vi.getTimerCount()).toBe(0);
   });
 });
 

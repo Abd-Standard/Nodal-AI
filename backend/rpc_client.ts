@@ -249,11 +249,19 @@ export async function withRetry<T>(
 }
 
 export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
-  let id: ReturnType<typeof setTimeout>;
-  const timeout = new Promise<never>((_, reject) => {
-    id = setTimeout(() => reject(new TimeoutError(ms)), ms);
+  return new Promise<T>((resolve, reject) => {
+    const id = setTimeout(() => reject(new TimeoutError(ms)), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(id);
+        resolve(value);
+      },
+      (err) => {
+        clearTimeout(id);
+        reject(err);
+      }
+    );
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(id));
 }
 
 function createHorizonServer(): Horizon.Server {
