@@ -88,7 +88,8 @@ export type TaskType =
   | "path_payment"
   | "fee_bump"
   | "dex_offer"
-  | "swap";
+  | "swap"
+  | "account_history";
 
 
 export interface AgentTask {
@@ -229,6 +230,7 @@ export class PayFiAgent extends EventEmitter {
   private feeBumpTool: FeeBumpTool;
   private dexOfferTool: DexOfferTool;
   private swapTool: SwapTool;
+  private accountHistoryTool: AccountHistoryTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -266,6 +268,7 @@ export class PayFiAgent extends EventEmitter {
     this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
     this.swapTool = new SwapTool(config.agentKeypair().secret());
+    this.accountHistoryTool = new AccountHistoryTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -619,6 +622,10 @@ export class PayFiAgent extends EventEmitter {
 
           case "swap":
             data = await this.swapTool.execute(task.payload);
+            break;
+
+          case "account_history":
+            data = await this.accountHistoryTool.fetch(task.payload);
             break;
 
           default:
