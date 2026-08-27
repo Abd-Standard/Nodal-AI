@@ -32,6 +32,7 @@ import { DexOfferTool } from "./tools/DexOfferTool";
 import { SetOptionsTool } from "./tools/SetOptionsTool";
 import { StellarIdentityTool } from "./tools/StellarIdentityTool";
 import { ClaimableBalanceTool } from "./tools/ClaimableBalanceTool";
+import { SorobanEventIndexerTool } from "./tools/SorobanEventIndexerTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -91,7 +92,8 @@ export type TaskType =
   | "dex_offer"
   | "set_options"
   | "web_auth"
-  | "claimable_balance";
+  | "claimable_balance"
+  | "soroban_events";
 
 
 export interface AgentTask {
@@ -234,6 +236,7 @@ export class PayFiAgent extends EventEmitter {
   private setOptionsTool: SetOptionsTool;
   private stellarIdentityTool: StellarIdentityTool;
   private claimableBalanceTool: ClaimableBalanceTool;
+  private sorobanEventIndexerTool: SorobanEventIndexerTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -273,6 +276,7 @@ export class PayFiAgent extends EventEmitter {
     this.setOptionsTool = new SetOptionsTool(config.agentKeypair().secret());
     this.stellarIdentityTool = new StellarIdentityTool(config.agentKeypair().secret());
     this.claimableBalanceTool = new ClaimableBalanceTool(config.agentKeypair().secret());
+    this.sorobanEventIndexerTool = new SorobanEventIndexerTool();
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -633,6 +637,10 @@ export class PayFiAgent extends EventEmitter {
 
           case "claimable_balance":
             data = await this.claimableBalanceTool.execute(task.payload);
+            break;
+
+          case "soroban_events":
+            data = await this.sorobanEventIndexerTool.query(task.payload);
             break;
 
           default:
