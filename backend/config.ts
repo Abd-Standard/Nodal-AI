@@ -175,6 +175,15 @@ const EnvSchema = z.object({
     .min(1)
     .default(10),
 
+  // How long a used x402 nonce is retained for replay protection before it
+  // becomes eligible for eviction. Defaults to 24h, comfortably above the
+  // longest plausible challenge lifetime.
+  X402_NONCE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .default(24 * 60 * 60 * 1_000),
+
   // Maximum number of tasks allowed to execute concurrently in agent.run().
   // Excess tasks are queued (bounded by QUEUE_CAPACITY) or rejected.
   MAX_CONCURRENT_TASKS: z.coerce
@@ -334,6 +343,14 @@ export interface AgentConfig {
   readonly MAX_X402_PAYMENTS_PER_MINUTE: number;
 
   /**
+   * How long (ms) a used x402 nonce is kept for replay protection before it can
+   * be evicted. Defaults to 86_400_000 (24 hours). A used nonce only needs to
+   * outlive its challenge, so anything past this window is dead weight that
+   * would otherwise grow the store without bound.
+   */
+  readonly X402_NONCE_TTL_MS: number;
+
+  /**
    * Maximum Soroban transaction fee in stroops (1 stroop = 0.0000001 XLM).
    * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
    */
@@ -470,6 +487,7 @@ function parseConfigAndDerive(): AgentConfig {
     AGENT_PUBLIC_KEY: derivedPublicKey,
     RPC_TIMEOUT_MS: rpcTimeoutMs,
     MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
+    X402_NONCE_TTL_MS: raw.X402_NONCE_TTL_MS,
     MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
     ...(ALLOWED_X402_ORIGINS ? { ALLOWED_X402_ORIGINS } : {}),
     ...(AGENT_SECRET_KEY_ARN ? { AGENT_SECRET_KEY_ARN } : {}),

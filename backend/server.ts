@@ -151,12 +151,16 @@ export function createHealthServer(): http.Server {
         });
         res.end(body);
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const body = JSON.stringify({ error: message });
+        // Route through the shared handler so a StructuredError gets the status
+        // code that describes it instead of a blanket 500 - and so an internal
+        // fault's message is not echoed to an unauthenticated caller.
+        const errorResponse = handleError(err);
+        const body = JSON.stringify(errorResponse);
 
-        res.writeHead(500, {
+        res.writeHead(errorResponse.status, {
           "Content-Type": "application/json",
           "Content-Length": Buffer.byteLength(body),
+          ...errorResponse.headers,
         });
         res.end(body);
       }
@@ -250,6 +254,8 @@ async function handleHealth(
     res.writeHead(errorResponse.status, {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(payload),
+      // e.g. Retry-After on a 429 from RateLimitError
+      ...errorResponse.headers,
     });
     res.end(payload);
   }
@@ -288,6 +294,8 @@ async function handleResults(
     res.writeHead(errorResponse.status, {
       "Content-Type": "application/json",
       "Content-Length": Buffer.byteLength(payload),
+      // e.g. Retry-After on a 429 from RateLimitError
+      ...errorResponse.headers,
     });
     res.end(payload);
   }
