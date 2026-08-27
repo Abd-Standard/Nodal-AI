@@ -12,8 +12,10 @@ import {
   xdr,
 } from "@stellar/stellar-sdk";
 import { z } from "zod";
+import { NotFoundError } from "@stellar/stellar-sdk";
 import { config } from "../config";
-import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { ValidationError } from "../errors";
+import { horizonServer, loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
 import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
 import { SubmitResultSchema } from "./StellarPaymentTool";
 
@@ -103,6 +105,17 @@ function resolveAsset(a: { code: string; issuer?: string | undefined }): Asset {
   return a.code === "XLM" ? Asset.native() : new Asset(a.code, a.issuer!);
 }
 
+async function verifyOfferExists(offerId: string): Promise<void> {
+  try {
+    await horizonServer.offers().offer(offerId).call();
+  } catch (err) {
+    if (err instanceof NotFoundError) {
+      throw new ValidationError(`Offer ${offerId} not found on Stellar network`);
+    }
+    throw err;
+  }
+}
+
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
 export class DexOfferTool {
@@ -127,6 +140,10 @@ export class DexOfferTool {
     // For delete: amount must be "0" regardless of the validated input amount
     const offerAmount = input.action === "delete" ? "0" : input.amount;
     const offerId = input.offerId != null ? String(input.offerId) : "0";
+
+    if (input.action === "update" || input.action === "delete") {
+      await verifyOfferExists(offerId);
+    }
 
     const sourceAccount = await loadAccount(this.keypair.publicKey());
 

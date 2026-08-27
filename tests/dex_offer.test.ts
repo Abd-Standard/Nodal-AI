@@ -6,14 +6,26 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Keypair, xdr, Asset } from "@stellar/stellar-sdk";
 import { DexOfferTool, DexOfferInputSchema } from "../backend/tools/DexOfferTool";
+import { ValidationError } from "../backend/errors";
 import * as rpcClient from "../backend/rpc_client";
+import { NotFoundError } from "@stellar/stellar-sdk";
+
+const { mockOfferCall } = vi.hoisted(() => ({
+  mockOfferCall: vi.fn(),
+}));
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
   submitTransaction: vi.fn(),
-  horizonServer: {},
+  horizonServer: {
+    offers: () => ({
+      offer: () => ({
+        call: mockOfferCall,
+      }),
+    }),
+  },
   sorobanServer: {},
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
@@ -130,6 +142,8 @@ describe("DexOfferTool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockOfferCall.mockReset();
+    mockOfferCall.mockResolvedValue({ id: "42" });
     tool = new DexOfferTool(TEST_SECRET);
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(
       makeMockAccount(tool.publicKey) as any
@@ -181,6 +195,40 @@ describe("DexOfferTool", () => {
   });
 
   // ── Update offer amount ─────────────────────────────────────────────────────
+
+  it("throws ValidationError when updating a non-existent offer", async () => {
+    mockOfferCall.mockRejectedValueOnce(new NotFoundError("Offer not found", {}));
+
+    const promise = tool.execute({
+      action: "update",
+      ...BASE_OFFER,
+      offerId: "999",
+    });
+
+    await expect(promise).rejects.toThrow("Offer 999 not found on Stellar network");
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("throws ValidationError when deleting a non-existent offer", async () => {
+    mockOfferCall.mockRejectedValueOnce(new NotFoundError("Offer not found", {}));
+
+    await expect(
+      tool.execute({
+        action: "delete",
+        ...BASE_OFFER,
+        offerId: "404",
+      })
+    ).rejects.toThrow(ValidationError);
+
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("does not verify offer existence for create action", async () => {
+    await tool.execute({ action: "create", ...BASE_OFFER });
+
+    expect(mockOfferCall).not.toHaveBeenCalled();
+    expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+  });
 
   it("updates an existing offer amount", async () => {
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
