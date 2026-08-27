@@ -21,6 +21,7 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
 import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
+import { buildMemo } from "./MemoAttachmentTool";
 import { createLogger } from "../utils/logger";
 
 const log = createLogger("stellar-payment");
@@ -205,11 +206,8 @@ export class StellarPaymentTool {
           })
         );
 
-      if (input.memo !== undefined) {
-        const memo = buildMemo(input.memoType, input.memo);
-        if (memo) {
-          builder.addMemo(memo);
-        }
+      if (input.memo) {
+        builder.addMemo(buildMemo({ type: "MEMO_TEXT", value: input.memo }));
       }
 
       return builder.setTimeout(SOROBAN_TX_TIMEOUT).build();

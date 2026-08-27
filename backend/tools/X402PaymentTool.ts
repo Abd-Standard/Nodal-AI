@@ -10,6 +10,7 @@ import Database from "better-sqlite3";
 import { config } from "../config";
 import { horizonServer } from "../rpc_client";
 import { StellarPaymentTool } from "./StellarPaymentTool";
+import { buildMemo } from "./MemoAttachmentTool";
 import { logger } from "../logger";
 import {
   INonceStore,
@@ -163,30 +164,18 @@ export class X402PaymentTool {
       throw new Error("x402: nonce already used");
     }
 
-    let txHash: string;
-    let ledger: number;
-    try {
-      ({ txHash, ledger } = await this.paymentTool.execute({
-        destination: challenge.payTo,
-        amount: challenge.amount,
-        assetCode: challenge.assetCode,
-        assetIssuer:
-          challenge.assetCode === "XLM" ? undefined : challenge.assetIssuer,
-        // SPEC: memo = SHA-256(nonce)[0:28 hex chars]; resource server must apply the same derivation to verify.
-        memo: createHash("sha256").update(challenge.nonce).digest("hex").slice(0, 28),
-      }));
-    } catch (err) {
-      // Horizon reports *why* a submission failed in result codes buried on the
-      // thrown error. Re-throwing a bare Error here discards them along with any
-      // hash, which leaves an operator unable to tell a failed trustline from an
-      // underfunded account from a genuine network fault. Keep the original as
-      // `cause` so the detail survives into AgentResult.error.
-      throw new TransactionFailureError(
-        `x402 payment submission failed: ${err instanceof Error ? err.message : String(err)}`,
-        extractTxHash(err),
-        err
-      );
-    }
+    const { txHash, ledger } = await this.paymentTool.execute({
+      destination: challenge.payTo,
+      amount: challenge.amount,
+      assetCode: challenge.assetCode,
+      assetIssuer:
+        challenge.assetCode === "XLM" ? undefined : challenge.assetIssuer,
+      // SPEC: memo = SHA-256(nonce)[0:28 hex chars]; resource server must apply the same derivation to verify.
+      memo: buildMemo({
+        type: "MEMO_TEXT",
+        value: createHash("sha256").update(challenge.nonce).digest("hex").slice(0, 28),
+      }).value as string,
+    });
 
     await this.nonceStore.add(challenge.nonce);
     // Opportunistic pruning: evict nonces older than the max challenge TTL.

@@ -29,9 +29,8 @@ import { BalanceCheckTool } from "./tools/BalanceCheckTool";
 import { PathPaymentTool } from "./tools/PathPaymentTool";
 import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
-import { SwapTool } from "./tools/SwapTool";
-import { AccountHistoryTool } from "./tools/AccountHistoryTool";
-import { SorobanDeployTool } from "./tools/SorobanDeployTool";
+import { LiquidityPoolTool } from "./tools/LiquidityPoolTool";
+import { StellarTomlTool } from "./tools/StellarTomlTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -89,9 +88,8 @@ export type TaskType =
   | "path_payment"
   | "fee_bump"
   | "dex_offer"
-  | "swap"
-  | "account_history"
-  | "soroban_deploy";
+  | "liquidity_pool"
+  | "stellar_toml";
 
 
 export interface AgentTask {
@@ -231,9 +229,8 @@ export class PayFiAgent extends EventEmitter {
   private pathPaymentTool: PathPaymentTool;
   private feeBumpTool: FeeBumpTool;
   private dexOfferTool: DexOfferTool;
-  private swapTool: SwapTool;
-  private accountHistoryTool: AccountHistoryTool;
-  private sorobanDeployTool: SorobanDeployTool;
+  private liquidityPoolTool: LiquidityPoolTool;
+  private stellarTomlTool: StellarTomlTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -270,9 +267,8 @@ export class PayFiAgent extends EventEmitter {
     this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
     this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
-    this.swapTool = new SwapTool(config.agentKeypair().secret());
-    this.accountHistoryTool = new AccountHistoryTool();
-    this.sorobanDeployTool = new SorobanDeployTool();
+    this.liquidityPoolTool = new LiquidityPoolTool(config.agentKeypair().secret());
+    this.stellarTomlTool = new StellarTomlTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -636,9 +632,17 @@ export class PayFiAgent extends EventEmitter {
             data = await this.sorobanDeployTool.execute(task.payload);
             break;
 
-          default:
-            throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
-        }
+        case "liquidity_pool":
+          data = await this.liquidityPoolTool.execute(task.payload);
+          break;
+
+        case "stellar_toml":
+          data = await this.stellarTomlTool.fetchToml(task.payload);
+          break;
+
+        default:
+          throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
+      }
 
         taskLog.info({ taskType: task.type }, "Task completed");
         const result: AgentResult = { success: true, taskType: task.type, data, correlationId };

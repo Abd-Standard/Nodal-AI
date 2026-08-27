@@ -178,6 +178,13 @@ const EnvSchema = z.object({
     .min(100)
     .optional(),
 
+  // TOML cache TTL in milliseconds (default: 5 minutes = 300,000 ms)
+  TOML_CACHE_TTL_MS: z.coerce
+    .number()
+    .int()
+    .min(0)
+    .default(300_000),
+
   // Rate limiting
   MAX_X402_PAYMENTS_PER_MINUTE: z.coerce
     .number()
@@ -350,6 +357,12 @@ export interface AgentConfig {
    * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.
    */
   readonly RPC_TIMEOUT_MS: number;
+
+  /**
+   * Cache TTL in milliseconds for Stellar TOML requests.
+   * Defaults to 300,000 (5 minutes).
+   */
+  readonly TOML_CACHE_TTL_MS: number;
 
   /**
    * Maximum number of x402 payments allowed per 60-second sliding window.
