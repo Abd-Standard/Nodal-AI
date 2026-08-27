@@ -12,6 +12,7 @@ import { createHash } from "crypto";
 import { X402PaymentTool } from "../backend/tools/X402PaymentTool";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
 import { config } from "../backend/config";
+import { TransactionFailureError, ErrorType } from "../backend/errors";
 import { horizonServer } from "../backend/rpc_client";
 
 // ─── Mock rpc_client so horizonServer.ledgers() is interceptable ──────────────
@@ -347,6 +348,55 @@ describe("X402PaymentTool", () => {
       );
 
       await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow(/no_trust/);
+    });
+
+    // ── #371: Horizon detail must survive as a structured error ──────────────
+
+    it("wraps a Horizon submission failure as TransactionFailureError", async () => {
+      getMockExecute().mockRejectedValueOnce(
+        new Error("Horizon: op_underfunded — insufficient balance")
+      );
+
+      await expect(tool.respond(VALID_CHALLENGE)).rejects.toBeInstanceOf(
+        TransactionFailureError
+      );
+    });
+
+    it("keeps the Horizon result code and the original error as cause", async () => {
+      const horizonError = new Error("Horizon: op_no_trust — missing trust line");
+      getMockExecute().mockRejectedValueOnce(horizonError);
+
+      const err = await tool.respond(VALID_CHALLENGE).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(TransactionFailureError);
+      const failure = err as TransactionFailureError;
+      expect(failure.errorType).toBe(ErrorType.TransactionFailure);
+      // The result code is what tells an operator *why* it failed, so it has to
+      // survive the wrap rather than being flattened to a generic message.
+      expect(failure.message).toContain("op_no_trust");
+      expect(failure.cause).toBe(horizonError);
+    });
+
+    it("preserves a txHash when Horizon rejected an already-submitted tx", async () => {
+      const horizonError = Object.assign(
+        new Error("Horizon: tx_failed"),
+        { txHash: "abc123def456" }
+      );
+      getMockExecute().mockRejectedValueOnce(horizonError);
+
+      const err = await tool.respond(VALID_CHALLENGE).catch((e: unknown) => e);
+
+      expect((err as TransactionFailureError).txHash).toBe("abc123def456");
+    });
+
+    it("leaves txHash undefined when the failure never reached Horizon", async () => {
+      getMockExecute().mockRejectedValueOnce(new Error("ECONNABORTED: network timeout"));
+
+      const err = await tool.respond(VALID_CHALLENGE).catch((e: unknown) => e);
+
+      // Nothing was submitted, so there is no hash to report — inventing one
+      // would send an operator looking for a transaction that never existed.
+      expect((err as TransactionFailureError).txHash).toBeUndefined();
     });
   });
 

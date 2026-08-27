@@ -6,7 +6,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ZodError, z } from "zod";
-import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, horizonServer, sorobanServer } from "../backend/rpc_client";
+import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, horizonServer, sorobanServer, loadAccount, invalidateAccountCache } from "../backend/rpc_client";
 import { SimulationBudgetError } from "../backend/errors";
 import { Networks, rpc, xdr, StrKey, Keypair } from "@stellar/stellar-sdk";
 
@@ -52,6 +52,7 @@ vi.mock("../backend/config", () => {
       MAX_RETRIES: 3,
       RETRY_DELAY_MS: 100,
       RPC_TIMEOUT_MS: 9000,
+      ACCOUNT_CACHE_TTL_MS: 30_000,
       MAX_X402_PAYMENTS_PER_MINUTE: 10,
       MAX_SOROBAN_FEE_STROOPS: 1_000_000,
     },
@@ -402,5 +403,101 @@ describe("RPC servers with request ID headers", () => {
 
   it("sorobanServer is created with X-Request-ID header", () => {
     expect(sorobanServer).toBeDefined();
+  });
+});
+
+// ─── #369: Horizon account cache TTL ──────────────────────────────────────────
+
+describe("loadAccount — account cache TTL", () => {
+  const PUBKEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+  const OTHER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  let fetchSpy: any;
+
+  beforeEach(() => {
+    invalidateAccountCache();
+    vi.useFakeTimers();
+    fetchSpy = vi
+      .spyOn(horizonServer, "loadAccount")
+      .mockImplementation(async (id: string) => ({ accountId: () => id }) as any);
+  });
+
+  afterEach(() => {
+    fetchSpy.mockRestore();
+    invalidateAccountCache();
+    vi.useRealTimers();
+  });
+
+  it("serves the second read from cache without hitting Horizon", async () => {
+    await loadAccount(PUBKEY);
+    await loadAccount(PUBKEY);
+
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("re-fetches once the TTL has elapsed", async () => {
+    await loadAccount(PUBKEY);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // One millisecond short of the TTL the entry is still fresh.
+    vi.advanceTimersByTime(29_999);
+    await loadAccount(PUBKEY);
+    expect(fetchSpy).toHaveBeenCalledTimes(1);
+
+    // Crossing it forces a refresh.
+    vi.advanceTimersByTime(2);
+    await loadAccount(PUBKEY);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("caches each account separately", async () => {
+    await loadAccount(PUBKEY);
+    await loadAccount(OTHER);
+    await loadAccount(PUBKEY);
+    await loadAccount(OTHER);
+
+    // One fetch each, not one per call and not one shared entry.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("bypasses the cache when forceRefresh is set", async () => {
+    await loadAccount(PUBKEY);
+    await loadAccount(PUBKEY, { forceRefresh: true });
+
+    // This is the tx_bad_seq recovery path: it must never be served a cached
+    // sequence number, which is precisely the value that was just rejected.
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not leave a stale entry behind when a refresh fails", async () => {
+    await loadAccount(PUBKEY);
+    vi.advanceTimersByTime(30_001);
+
+    // TypeError so DEFAULT_IS_RETRYABLE short-circuits: a retryable error would
+    // sit in withRetry's back-off, which never advances under fake timers.
+    fetchSpy.mockRejectedValueOnce(new TypeError("horizon down"));
+    await expect(loadAccount(PUBKEY)).rejects.toThrow("horizon down");
+
+    // The expired entry was dropped on the miss, so the next call refetches
+    // rather than quietly serving a record that is now well past its TTL.
+    fetchSpy.mockImplementation(async (id: string) => ({ accountId: () => id }) as any);
+    await loadAccount(PUBKEY);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+  });
+
+  it("invalidateAccountCache drops a single key or the whole cache", async () => {
+    await loadAccount(PUBKEY);
+    await loadAccount(OTHER);
+    expect(fetchSpy).toHaveBeenCalledTimes(2);
+
+    invalidateAccountCache(PUBKEY);
+    await loadAccount(PUBKEY);
+    await loadAccount(OTHER);
+    expect(fetchSpy).toHaveBeenCalledTimes(3);
+
+    invalidateAccountCache();
+    await loadAccount(PUBKEY);
+    await loadAccount(OTHER);
+    expect(fetchSpy).toHaveBeenCalledTimes(5);
   });
 });

@@ -16,6 +16,34 @@ import {
   SqliteNonceStore,
   MAX_NONCE_TTL_MS,
 } from "../nonce_store";
+import { TransactionFailureError } from "../errors";
+
+/**
+ * Best-effort recovery of a transaction hash from a submission error.
+ *
+ * A hash is only present when the transaction actually reached Horizon and was
+ * rejected — a failure during building, signing, or a network timeout has none.
+ * `TransactionFailureError.txHash` is therefore optional, and this returns
+ * `undefined` rather than inventing a value.
+ */
+function extractTxHash(err: unknown): string | undefined {
+  if (err === null || typeof err !== "object") return undefined;
+
+  const candidate = err as {
+    txHash?: unknown;
+    hash?: unknown;
+    response?: { data?: { hash?: unknown } };
+  };
+
+  for (const value of [
+    candidate.txHash,
+    candidate.hash,
+    candidate.response?.data?.hash,
+  ]) {
+    if (typeof value === "string" && value.length > 0) return value;
+  }
+  return undefined;
+}
 
 // ─── x402 schemas ────────────────────────────────────────────────────────────
 
@@ -135,15 +163,30 @@ export class X402PaymentTool {
       throw new Error("x402: nonce already used");
     }
 
-    const { txHash, ledger } = await this.paymentTool.execute({
-      destination: challenge.payTo,
-      amount: challenge.amount,
-      assetCode: challenge.assetCode,
-      assetIssuer:
-        challenge.assetCode === "XLM" ? undefined : challenge.assetIssuer,
-      // SPEC: memo = SHA-256(nonce)[0:28 hex chars]; resource server must apply the same derivation to verify.
-      memo: createHash("sha256").update(challenge.nonce).digest("hex").slice(0, 28),
-    });
+    let txHash: string;
+    let ledger: number;
+    try {
+      ({ txHash, ledger } = await this.paymentTool.execute({
+        destination: challenge.payTo,
+        amount: challenge.amount,
+        assetCode: challenge.assetCode,
+        assetIssuer:
+          challenge.assetCode === "XLM" ? undefined : challenge.assetIssuer,
+        // SPEC: memo = SHA-256(nonce)[0:28 hex chars]; resource server must apply the same derivation to verify.
+        memo: createHash("sha256").update(challenge.nonce).digest("hex").slice(0, 28),
+      }));
+    } catch (err) {
+      // Horizon reports *why* a submission failed in result codes buried on the
+      // thrown error. Re-throwing a bare Error here discards them along with any
+      // hash, which leaves an operator unable to tell a failed trustline from an
+      // underfunded account from a genuine network fault. Keep the original as
+      // `cause` so the detail survives into AgentResult.error.
+      throw new TransactionFailureError(
+        `x402 payment submission failed: ${err instanceof Error ? err.message : String(err)}`,
+        extractTxHash(err),
+        err
+      );
+    }
 
     await this.nonceStore.add(challenge.nonce);
     // Opportunistic pruning: evict nonces older than the max challenge TTL.

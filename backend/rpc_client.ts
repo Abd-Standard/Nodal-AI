@@ -16,7 +16,7 @@ import { randomUUID } from "crypto";
 import CircuitBreaker from "opossum";
 import { ZodError } from "zod";
 import { config } from "./config";
-import { sanitizeCause, SimulationBudgetError } from "./errors";
+import { sanitizeCause, SimulationBudgetError, UnauthorizedError } from "./errors";
 import { logger } from "./logger";
 import { validateXDR } from "./types/xdr";
 import { createLogger } from "./utils/logger";
@@ -46,7 +46,21 @@ type HorizonAccount = Awaited<ReturnType<Horizon.Server["loadAccount"]>>;
 type HorizonSubmitResult = Awaited<ReturnType<Horizon.Server["submitTransaction"]>>;
 type SorobanSimulationResult = Awaited<ReturnType<rpc.Server["simulateTransaction"]>>;
 
-const accountCache = new Map<string, HorizonAccount>();
+type CachedAccount = { account: HorizonAccount; expiresAt: number };
+
+// Keyed by public key. Entries carry their own expiry rather than relying on a
+// sweep, so a key that is never read again simply goes stale in place instead
+// of being served indefinitely.
+const accountCache = new Map<string, CachedAccount>();
+
+/** Drop a cached account, or the whole cache when no key is given. */
+export function invalidateAccountCache(publicKey?: string): void {
+  if (publicKey === undefined) {
+    accountCache.clear();
+    return;
+  }
+  accountCache.delete(publicKey);
+}
 
 // opossum's Status class exposes no public API to clear its rolling stats
 // window, so a closed breaker keeps stale failure counts that can trip it
@@ -254,35 +268,82 @@ function createHorizonServer(): Horizon.Server {
 
 export const horizonServer = createHorizonServer();
 
-export async function loadAccount(publicKey: string) {
-  return withBackoffGuard(() =>
+/**
+ * Load a Horizon account, serving a cached copy when one is still fresh.
+ *
+ * **The cache is bypassed with `forceRefresh` on the sequence-recovery paths,
+ * and cleared after every submission.** A Horizon account carries the source
+ * sequence number, and `TransactionBuilder` increments it in place while
+ * building. Serving one cached record to two builders would hand out the same
+ * (or a locally-drifted) sequence, which is the `tx_bad_seq` failure this cache
+ * is meant to reduce. Anything that can move the sequence therefore drops the
+ * entry — the cache exists to collapse bursts of *read-only* lookups
+ * (balances, trustlines, account info), not to survive a transaction.
+ */
+export async function loadAccount(
+  publicKey: string,
+  options?: { forceRefresh?: boolean }
+): Promise<HorizonAccount> {
+  const ttl = config.ACCOUNT_CACHE_TTL_MS;
+
+  if (options?.forceRefresh) {
+    accountCache.delete(publicKey);
+  } else if (ttl > 0) {
+    const cached = accountCache.get(publicKey);
+    // Compare against the read time, not the write time: an entry is stale the
+    // instant it passes expiresAt, even if it was only just written.
+    if (cached && cached.expiresAt > Date.now()) {
+      return cached.account;
+    }
+    // Expired entries are removed on the miss that finds them, so a failed
+    // refresh below cannot leave a stale record behind to be served later.
+    if (cached) accountCache.delete(publicKey);
+  }
+
+  const account = await withBackoffGuard(() =>
     withTimeout(
       withRetry(() => horizonServer.loadAccount(publicKey), config.MAX_RETRIES, config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE),
       config.RPC_TIMEOUT_MS
     )
   );
+
+  if (ttl > 0) {
+    accountCache.set(publicKey, { account, expiresAt: Date.now() + ttl });
+  }
+
+  return account;
 }
 
 export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
   validateXDR(tx.toEnvelope().toXDR("base64"));
 
-  return withBackoffGuard(() =>
-    withRetry(() => {
-      const controller = new AbortController();
-      let timeoutId: ReturnType<typeof setTimeout>;
-      const timeoutPromise = new Promise<never>((_, reject) => {
-        timeoutId = setTimeout(() => {
-          controller.abort();
-          reject(new TimeoutError(SUBMIT_TIMEOUT_MS));
-        }, SUBMIT_TIMEOUT_MS);
-      });
-      return Promise.race([
-        horizonServer.submitTransaction(tx),
-        timeoutPromise,
-      ]).finally(() => clearTimeout(timeoutId));
-    })
-  );
+  // Any submission may move the source account's sequence forward, and a failed
+  // one leaves it uncertain, so no cached record survives a submit attempt.
+  // Clearing every key (rather than just the source) keeps this correct for
+  // fee-bump and multi-signer envelopes without having to unpick which account
+  // actually advanced.
+  try {
+    return await withBackoffGuard(() =>
+      withRetry(() => {
+        const controller = new AbortController();
+        let timeoutId: ReturnType<typeof setTimeout>;
+        const timeoutPromise = new Promise<never>((_, reject) => {
+          timeoutId = setTimeout(() => {
+            controller.abort();
+            reject(new TimeoutError(SUBMIT_TIMEOUT_MS));
+          }, SUBMIT_TIMEOUT_MS);
+        });
+        return Promise.race([
+          horizonServer.submitTransaction(tx),
+          timeoutPromise,
+        ]).finally(() => clearTimeout(timeoutId));
+      })
+    );
+  } finally {
+    invalidateAccountCache();
+  }
 }
+
 
 function createSorobanServer(): rpc.Server {
   const requestId = randomUUID();
@@ -343,12 +404,21 @@ function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Arr
       const rawKey = ed25519 ?? muxedEd25519?.ed25519?.();
 
       if (!rawKey) {
-        throw new Error("Unexpected Soroban auth signer format");
+        // No signer could be decoded at all, so there is nothing to report but
+        // what was expected. `signer: null` distinguishes this from the
+        // mismatch case below, where a real key was recovered.
+        throw new UnauthorizedError("Unexpected Soroban auth signer format", {
+          signer: null,
+          expected: config.AGENT_PUBLIC_KEY,
+        });
       }
 
       const signer = StrKey.encodeEd25519PublicKey(Buffer.from(rawKey));
       if (signer !== config.AGENT_PUBLIC_KEY) {
-        throw new Error(`Unexpected Soroban auth signer: ${signer}`);
+        throw new UnauthorizedError(`Unexpected Soroban auth signer: ${signer}`, {
+          signer,
+          expected: config.AGENT_PUBLIC_KEY,
+        });
       }
     }
   }

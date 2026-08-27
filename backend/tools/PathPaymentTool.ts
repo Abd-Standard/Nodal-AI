@@ -192,7 +192,9 @@ export class PathPaymentTool {
         logger.warn("tx_bad_seq detected, reloading account and retrying once", {
           source: this.keypair.publicKey(),
         });
-        sourceAccount = await loadAccount(this.keypair.publicKey());
+        // Bypass the account cache: the whole point of this retry is that the
+        // sequence we used was wrong, so a cached record must not be reused.
+        sourceAccount = await loadAccount(this.keypair.publicKey(), { forceRefresh: true });
         tx = buildTx();
         tx.sign(this.keypair);
         const result = SubmitResultSchema.parse(await submitTransaction(tx));
