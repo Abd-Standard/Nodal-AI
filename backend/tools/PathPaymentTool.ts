@@ -42,6 +42,7 @@ export const PathPaymentInputSchema = z.object({
     .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "destMinAmount must be a valid Stellar decimal")
     .refine((v) => parseFloat(v) > 0, "destMinAmount must be greater than zero"),
   path: z.array(AssetSchema).optional().default([]),
+  allowSelfPayment: z.boolean().optional().default(false),
   memoType: z.enum(["text", "id", "hash", "return"]).optional().default("text"),
   memo: z.union([z.string(), z.number()]).optional(),
 });
@@ -137,7 +138,7 @@ export class PathPaymentTool {
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = PathPaymentInputSchema.parse(rawInput);
 
-    if (input.destination === this.keypair.publicKey()) {
+    if (!input.allowSelfPayment && input.destination === this.keypair.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 

@@ -285,6 +285,17 @@ describe("withTimeout", () => {
     expect(err.message).toMatch(/timeout/i);
     expect(err.name).toBe("TimeoutError");
   });
+
+  it("clears the timer when the wrapped promise rejects early", async () => {
+    vi.useFakeTimers();
+    const rejectPromise = Promise.reject(new Error("early failure"));
+    rejectPromise.catch(() => {}); // prevent unhandled rejection
+
+    const timed = withTimeout(rejectPromise, 5000);
+
+    await expect(timed).rejects.toThrow("early failure");
+    expect(vi.getTimerCount()).toBe(0);
+  });
 });
 
 // ─── prepareSorobanTx auth checks ──────────────────────────────────────────
