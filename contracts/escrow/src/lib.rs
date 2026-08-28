@@ -12,6 +12,22 @@
  *   - Only the arbiter can call `release`
  *   - Only the depositor can call `refund`, and only after expiry
  *   - State transitions are enforced (no double-release / double-refund)
+ *
+ * Formal verification annotations:
+ *   The `//@ requires` / `//@ ensures` comment blocks above each public
+ *   function are machine-readable specifications for formal verification
+ *   tooling. Vocabulary used by the annotations:
+ *   - `requires`        — preconditions; a violation panics with the error
+ *                         documented in the function's `# Panics` section.
+ *   - `ensures`         — postconditions that hold when the function returns.
+ *   - `old(x)`          — the value of `x` in the pre-call state.
+ *   - `stored_<field>`  — value read from instance storage under the matching
+ *                         `DataKey` (e.g. `stored_amount` == `DataKey::Amount`).
+ *   - `ledger_timestamp`— `env.ledger().timestamp()` at call time.
+ *   - `has(Key)`        — the instance-storage key exists.
+ *   - `result`          — the function's return value.
+ *   Contract-level `//@ invariant` lines above the impl must hold on every
+ *   entry into and exit from the contract.
  */
 
 #![cfg_attr(not(test), no_std)]
@@ -87,6 +103,12 @@ pub enum EscrowError {
 #[contract]
 pub struct EscrowContract;
 
+// ─── Contract invariants (formal verification) ───────────────────────────────
+//@ invariant stored_amount >= 0
+//@ invariant stored_amount == 0 ==> stored_released == true
+//@ invariant stored_released ==> contract_token_balance == 0
+//@ invariant !stored_released ==> contract_token_balance == stored_amount
+
 #[contractimpl]
 impl EscrowContract {
     /// Initialise the escrow and transfer funds from depositor to contract.
@@ -112,6 +134,20 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None.
+    //@ requires !has(Depositor)
+    //@ requires depositor != arbiter && depositor != recipient && arbiter != recipient
+    //@ requires amount > 0 && amount <= i128::MAX / 2
+    //@ requires expiry > ledger_timestamp
+    //@ ensures has(Depositor) && has(Recipient) && has(Arbiter) && has(Token) && has(Amount) && has(Expiry) && has(Released)
+    //@ ensures stored_depositor == depositor
+    //@ ensures stored_recipient == recipient
+    //@ ensures stored_arbiter == arbiter
+    //@ ensures stored_token == token
+    //@ ensures stored_amount == amount
+    //@ ensures stored_expiry == expiry
+    //@ ensures stored_released == false
+    //@ ensures depositor_token_balance == old(depositor_token_balance) - amount
+    //@ ensures contract_token_balance == old(contract_token_balance) + amount
     pub fn initialize(
         env: Env,
         depositor: Address,
@@ -197,6 +233,13 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None.
+    //@ requires has(Depositor)
+    //@ requires arbiter == stored_arbiter
+    //@ requires !stored_released
+    //@ ensures stored_released == true
+    //@ ensures stored_amount == old(stored_amount)
+    //@ ensures recipient_token_balance == old(recipient_token_balance) + old(stored_amount)
+    //@ ensures contract_token_balance == old(contract_token_balance) - old(stored_amount)
     pub fn release(env: Env, arbiter: Address) {
         // Read stored arbiter first, then authenticate against it (fixes TOCTOU).
         let stored_arbiter: Address = env
@@ -260,6 +303,13 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None.
+    //@ requires has(Depositor)
+    //@ requires depositor == stored_depositor
+    //@ requires !stored_released
+    //@ requires ledger_timestamp >= stored_expiry
+    //@ ensures stored_released == true
+    //@ ensures depositor_token_balance == old(depositor_token_balance) + old(stored_amount)
+    //@ ensures contract_token_balance == old(contract_token_balance) - old(stored_amount)
     pub fn refund(env: Env, depositor: Address) {
         // Read stored depositor first, then authenticate against it (fixes TOCTOU).
         let stored_depositor: Address = env
@@ -319,6 +369,8 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// Returns `EscrowState` with all stored fields.
+    //@ requires has(Depositor)
+    //@ ensures result == EscrowState { depositor: stored_depositor, recipient: stored_recipient, arbiter: stored_arbiter, token: stored_token, amount: stored_amount, expiry: stored_expiry, released: stored_released }
     pub fn get_state(env: Env) -> EscrowState {
         if !env.storage().instance().has(&DataKey::Depositor) {
             panic_with_error!(&env, EscrowError::NotInitialized);
@@ -385,6 +437,14 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None. Emits a `"partial_released"` event (or `"released"` on final settlement).
+    //@ requires has(Depositor)
+    //@ requires arbiter == stored_arbiter
+    //@ requires !stored_released
+    //@ requires release_amount > 0 && release_amount <= stored_amount
+    //@ ensures stored_amount == old(stored_amount) - release_amount
+    //@ ensures stored_released == (stored_amount == 0)
+    //@ ensures recipient_token_balance == old(recipient_token_balance) + release_amount
+    //@ ensures contract_token_balance == old(contract_token_balance) - release_amount
     pub fn release_partial(env: Env, arbiter: Address, release_amount: i128) {
         // Read stored arbiter and authenticate (consistent TOCTOU fix from release())
         let stored_arbiter: Address = env
@@ -462,6 +522,13 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None.
+    //@ requires has(Depositor)
+    //@ requires depositor == stored_depositor
+    //@ requires arbiter == stored_arbiter
+    //@ requires !stored_released
+    //@ ensures stored_released == true
+    //@ ensures depositor_token_balance == old(depositor_token_balance) + old(stored_amount)
+    //@ ensures contract_token_balance == old(contract_token_balance) - old(stored_amount)
     pub fn cancel(env: Env, depositor: Address, arbiter: Address) {
         let stored_depositor: Address = env
             .storage()
