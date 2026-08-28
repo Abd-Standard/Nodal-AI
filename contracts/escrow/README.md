@@ -95,6 +95,29 @@ If an execution condition is violated, the contract panics with one of the follo
 
 ---
 
+## Event Emissions & Confidentiality Audit
+
+Soroban emits contract events as **public on-chain data**. Every event is readable by any observer via `getEvents`, and the *topics* are the indexed, independently-filterable portion of an event. Because of this, an event that places private information in its topics constitutes an information disclosure. The following is a targeted audit of every `env.events().publish` emission in `lib.rs` (as of this audit):
+
+| Function | Topic(s) | Data payload | Private data in topics? |
+| :--- | :--- | :--- | :--- |
+| `initialize` | `escrow`, `initialized` | `depositor`, `recipient`, `amount` | No |
+| `release` | `escrow`, `released` | `recipient`, `amount` | No |
+| `refund` | `refunded` | `depositor`, `amount` | No |
+| `release_partial` | `partial_released` / `released` | `recipient`, `release_amount`, `remaining` | No |
+| `cancel` | `escrow`, `cancelled` | `depositor`, `amount` | No |
+| `propose_new_arbiter` | `arbiter_rotation_proposed` | `depositor`, `new_arbiter`, `now` | No |
+| `accept_arbiter_rotation` | `arbiter_rotation_accepted` | `new_arbiter`, `now` | No |
+
+### Audit conclusion: **No information disclosure found**
+
+1. **Topics carry only fixed event-name literals.** Every topic is a hardcoded `Symbol::new(&env, "...")` (e.g. `escrow`, `released`, `refunded`) used solely for event *type* classification. No caller-supplied or user-controlled value ever appears in a topic, and no private metadata (memos, off-chain references, PII) exists in contract storage to leak.
+2. **All data-payload values are already public on-chain state.** The payloads contain only addresses (`depositor`, `recipient`, `arbiter`, `new_arbiter`) and amounts/timestamps, each already disclosed by the public `get_state()` read function and ledger timestamps. Emitting them in events therefore reveals nothing that any on-chain observer could not already read directly.
+
+**Guidance for future changes:** keep topics restricted to static event-type symbols. If a data point is considered sensitive, exclude it from the emitted payload rather than from storage, and remember that event *data* — not just topics — is public to all observers.
+
+---
+
 ## Cargo.toml Dependencies
 
 The contract specifies minimal, optimized dependencies in [Cargo.toml](file:///Users/owner/Documents/Code/drip/Nodal-AI/contracts/escrow/Cargo.toml):
