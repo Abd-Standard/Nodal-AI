@@ -8,6 +8,8 @@ import { z } from "zod";
 import { config } from "../config";
 import { loadAccount, submitTransaction, horizonServer, resolveNetworkPassphrase } from "../rpc_client";
 import { SubmitResultSchema } from "./StellarPaymentTool";
+import { ValidationError } from "../errors";
+import { BalanceCheckTool } from "./BalanceCheckTool";
 
 export const TrustlineInputSchema = z.object({
   assetCode: z.string().min(1).max(12),
@@ -24,10 +26,12 @@ export type TrustlineInput = z.infer<typeof TrustlineInputSchema>;
 export class TrustlineTool {
   private keypair: Keypair;
   private networkPassphrase: string;
+  private balanceCheckTool: BalanceCheckTool;
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
     this.keypair = Keypair.fromSecret(secretKey);
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
+    this.balanceCheckTool = new BalanceCheckTool();
   }
 
   async checkTrustline(assetCode: string, assetIssuer: string): Promise<boolean> {
@@ -41,6 +45,17 @@ export class TrustlineTool {
     const input = TrustlineInputSchema.parse(rawInput);
     const asset = new Asset(input.assetCode, input.assetIssuer);
     const account = await loadAccount(this.keypair.publicKey());
+
+    if (input.action === "remove") {
+      const balance = await this.balanceCheckTool.execute({
+        publicKey: this.keypair.publicKey(),
+        assetCode: input.assetCode,
+        assetIssuer: input.assetIssuer,
+      });
+      if (Number(balance) > 0) {
+        throw new ValidationError(`Cannot remove trustline: non-zero balance of ${input.assetCode}`);
+      }
+    }
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,

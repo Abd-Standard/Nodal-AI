@@ -6,6 +6,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TrustlineTool } from "../backend/tools/TrustlineTool";
 import * as rpcClient from "../backend/rpc_client";
+import { BalanceCheckTool } from "../backend/tools/BalanceCheckTool";
+
+vi.mock("../backend/tools/BalanceCheckTool", () => ({
+  BalanceCheckTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
+}));
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
@@ -70,8 +75,9 @@ describe("TrustlineTool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new TrustlineTool(TEST_SECRET);
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({ hash: "trust_hash", ledger: 5 } as any);
+    vi.mocked(BalanceCheckTool).mockImplementation(() => ({ execute: vi.fn().mockResolvedValue("0") }) as any);
+    tool = new TrustlineTool(TEST_SECRET);
   });
 
   it("add trustline submits changeTrust operation and returns txHash", async () => {
@@ -81,10 +87,23 @@ describe("TrustlineTool", () => {
     expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
   });
 
-  it("remove trustline submits changeTrust with limit '0'", async () => {
+  it("remove trustline submits changeTrust with limit '0' for zero balance", async () => {
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(true) as any);
     const result = await tool.execute({ assetCode: "USDC", assetIssuer: ISSUER, action: "remove" });
     expect(result.txHash).toBe("trust_hash");
+    expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("rejects removing a trustline with a non-zero balance before submission", async () => {
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(true) as any);
+    const balanceCheck = vi.fn().mockResolvedValue("1.5");
+    vi.mocked(BalanceCheckTool).mockImplementation(() => ({ execute: balanceCheck }) as any);
+    tool = new TrustlineTool(TEST_SECRET);
+
+    await expect(
+      tool.execute({ assetCode: "USDC", assetIssuer: ISSUER, action: "remove" })
+    ).rejects.toThrow("Cannot remove trustline: non-zero balance of USDC");
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
   });
 
   it("add trustline with custom limit", async () => {
