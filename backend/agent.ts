@@ -34,6 +34,7 @@ import { StellarTomlTool } from "./tools/StellarTomlTool";
 import { DataEntryTool } from "./tools/DataEntryTool";
 import { SequenceNumberTool } from "./tools/SequenceNumberTool";
 import { SponsoredAccountTool } from "./tools/SponsoredAccountTool";
+import { AnchorQuoteTool } from "./tools/AnchorQuoteTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -95,7 +96,8 @@ export type TaskType =
   | "stellar_toml"
   | "data_entry"
   | "sequence_number"
-  | "sponsored_account";
+  | "sponsored_account"
+  | "anchor_quote";
 
 
 export interface AgentTask {
@@ -240,6 +242,7 @@ export class PayFiAgent extends EventEmitter {
   private dataEntryTool: DataEntryTool;
   private sequenceNumberTool: SequenceNumberTool;
   private sponsoredAccountTool: SponsoredAccountTool;
+  private anchorQuoteTool: AnchorQuoteTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -281,6 +284,7 @@ export class PayFiAgent extends EventEmitter {
     this.dataEntryTool = new DataEntryTool(config.agentKeypair().secret());
     this.sequenceNumberTool = new SequenceNumberTool(config.agentKeypair().secret());
     this.sponsoredAccountTool = new SponsoredAccountTool(config.agentKeypair().secret());
+    this.anchorQuoteTool = new AnchorQuoteTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -662,6 +666,10 @@ export class PayFiAgent extends EventEmitter {
 
         case "sponsored_account":
           data = await this.sponsoredAccountTool.execute(task.payload);
+          break;
+
+        case "anchor_quote":
+          data = await this.anchorQuoteTool.execute(task.payload);
           break;
 
         default:
