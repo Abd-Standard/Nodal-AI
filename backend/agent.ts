@@ -34,6 +34,7 @@ import { StellarTomlTool } from "./tools/StellarTomlTool";
 import { SorobanStorageTool } from "./tools/SorobanStorageTool";
 import { FriendBotTool } from "./tools/FriendBotTool";
 import { LedgerInfoTool } from "./tools/LedgerInfoTool";
+import { OfferBookTool } from "./tools/OfferBookTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -95,7 +96,8 @@ export type TaskType =
   | "stellar_toml"
   | "soroban_storage"
   | "friendbot_fund"
-  | "ledger_info";
+  | "ledger_info"
+  | "offer_book";
 
 
 export interface AgentTask {
@@ -240,6 +242,7 @@ export class PayFiAgent extends EventEmitter {
   private sorobanStorageTool: SorobanStorageTool;
   private friendBotTool: FriendBotTool;
   private ledgerInfoTool: LedgerInfoTool;
+  private offerBookTool: OfferBookTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -281,6 +284,7 @@ export class PayFiAgent extends EventEmitter {
     this.sorobanStorageTool = new SorobanStorageTool();
     this.friendBotTool = new FriendBotTool();
     this.ledgerInfoTool = new LedgerInfoTool();
+    this.offerBookTool = new OfferBookTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -662,6 +666,10 @@ export class PayFiAgent extends EventEmitter {
 
         case "ledger_info":
           data = await this.ledgerInfoTool.execute(task.payload);
+          break;
+
+        case "offer_book":
+          data = await this.offerBookTool.execute(task.payload);
           break;
 
         default:
