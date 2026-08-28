@@ -40,11 +40,12 @@ import { listen as listenContractEvents } from "./tools/ContractEventListener";
 import { horizonServer } from "./rpc_client";
 import * as rpcClient from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
-import { SpendingTracker } from "./spending_tracker";
+import { spendingTracker } from "./spending_tracker";
 import { dispatchWebhook } from "./webhook";
 
-// Instantiate a singleton tracker
-export const spendingTracker = new SpendingTracker();
+// Re-exported so existing importers (`server.ts`, tests) keep working after the
+// singleton moved to spending_tracker.ts.
+export { spendingTracker };
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 

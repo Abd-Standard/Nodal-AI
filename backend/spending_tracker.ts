@@ -146,3 +146,14 @@ export class SpendingTracker {
     }
   }
 }
+
+/**
+ * Process-wide singleton backing the cumulative spending window.
+ *
+ * Lives here (not in agent.ts) so value-moving tools — e.g.
+ * {@link SorobanInvokeTool} — can record simulated SAC transfers against the
+ * same window as payments without importing the agent (which would create a
+ * module cycle) or instantiating a second tracker (whose in-memory state would
+ * drift from the real one).
+ */
+export const spendingTracker = new SpendingTracker();

@@ -432,7 +432,23 @@ function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Arr
   }
 }
 
-export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
+/**
+ * A simulated + assembled Soroban transaction alongside the diagnostic events
+ * the simulation produced.
+ *
+ * The events are what the transaction would emit on-chain. Tools that move
+ * value (e.g. contract invocations that internally call the Stellar Asset
+ * Contract) inspect them to learn how much would actually be transferred
+ * before signing or broadcasting — see {@link SorobanInvokeTool}.
+ */
+export interface PreparedSorobanTx {
+  /** The transaction with the Soroban resource footprint attached. */
+  tx: Transaction;
+  /** Diagnostic events predicted by the simulation, in XDR form. */
+  events: xdr.DiagnosticEvent[];
+}
+
+export async function prepareSorobanTxWithEvents(tx: Transaction): Promise<PreparedSorobanTx> {
   const simResult = await simulateSorobanTx(tx);
   if (rpc.Api.isSimulationError(simResult)) {
     const simError = (simResult as { error?: string }).error ?? "";
@@ -445,5 +461,9 @@ export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
   const builtTx = rpc.assembleTransaction(tx, simResult).build();
   validateSorobanAuth(builtTx as Transaction | { operations?: Array<{ auth?: Array<unknown> }> });
 
-  return builtTx;
+  return { tx: builtTx, events: simResult.events ?? [] };
+}
+
+export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
+  return (await prepareSorobanTxWithEvents(tx)).tx;
 }

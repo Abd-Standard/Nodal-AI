@@ -34,6 +34,7 @@ import { Keypair, nativeToScVal, xdr } from "@stellar/stellar-sdk";
 import { SorobanInvokeTool, SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT } from "../backend/tools/SorobanInvokeTool";
 import * as rpcClient from "../backend/rpc_client";
 import { ContractError } from "../backend/errors";
+import { spendingTracker } from "../backend/spending_tracker";
 
 // ─── Module mock ──────────────────────────────────────────────────────────────
 /**
@@ -53,6 +54,7 @@ vi.mock("../backend/rpc_client", async () => {
     submitTransaction: vi.fn(),
     simulateSorobanTx: vi.fn(),
     prepareSorobanTx: vi.fn(),
+    prepareSorobanTxWithEvents: vi.fn(),
     resolveNetworkPassphrase: (_network: string) => Networks.TESTNET,
     horizonServer: {},
     sorobanServer: {
@@ -61,6 +63,16 @@ vi.mock("../backend/rpc_client", async () => {
     },
   };
 });
+
+// The tool records simulated SAC transfers into the shared spending window.
+// Mock the singleton so assertions stay in-process and no real DB is touched.
+vi.mock("../backend/spending_tracker", () => ({
+  spendingTracker: {
+    record: vi.fn(),
+    total: vi.fn(() => 0),
+    clear: vi.fn(),
+  },
+}));
 
 vi.mock("../backend/logger", () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
@@ -82,12 +94,20 @@ vi.mock("../backend/utils/logger", () => ({
  * because all RPC calls are mocked.
  */
 
+// Mutable knobs for the spending-limit tests: the tool reads these at call
+// time, so expose them as getters over a hoisted state object.
+const { configState } = vi.hoisted(() => ({
+  configState: { STELLAR_NETWORK: "testnet", AGENT_SPENDING_LIMIT: "100" },
+}));
+
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
   const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
-      STELLAR_NETWORK: "testnet",
+      get STELLAR_NETWORK() {
+        return configState.STELLAR_NETWORK;
+      },
       HORIZON_URL: "https://horizon-testnet.stellar.org",
       SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
       AGENT_SECRET_KEY: secret,
@@ -96,11 +116,15 @@ vi.mock("../backend/config", () => {
       X402_ASSET_CODE: "USDC",
       X402_ASSET_ISSUER:
         "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      get AGENT_SPENDING_LIMIT() {
+        return configState.AGENT_SPENDING_LIMIT;
+      },
       MAX_RETRIES: 3,
       RETRY_DELAY_MS: 100,
       MAX_X402_PAYMENTS_PER_MINUTE: 10,
       MAX_SOROBAN_FEE_STROOPS: 1_000_000,
     },
+    MAINNET_SPENDING_CAP: 10_000,
   };
 });
 
@@ -154,6 +178,62 @@ function makeMockPreparedTx(fee = 500_000): any {
     obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
   });
   return obj;
+}
+
+/**
+ * Build a real `xdr.DiagnosticEvent` shaped like a Stellar Asset Contract
+ * value-out event (transfer / transfer_from / burn) so the tool's simulated-
+ * event extraction is exercised against genuine XDR.
+ *
+ * Topic layout mirrors the SAC token interface:
+ * - transfer:       [Symbol("transfer"), from, to]
+ * - transfer_from:  [Symbol("transfer_from"), from, to, spender]
+ * - burn:           [Symbol("burn"), from]
+ * with the amount as an i128 in the event data.
+ */
+function makeSacTransferEvent(opts: {
+  name: "transfer" | "transfer_from" | "burn";
+  from: string;
+  to?: string;
+  spender?: string;
+  amount: bigint;
+  successful?: boolean;
+}): xdr.DiagnosticEvent {
+  const topics = [nativeToScVal(opts.name, { type: "symbol" })];
+  topics.push(nativeToScVal(opts.from, { type: "address" }));
+  if (opts.to) topics.push(nativeToScVal(opts.to, { type: "address" }));
+  if (opts.spender) topics.push(nativeToScVal(opts.spender, { type: "address" }));
+
+  const v0 = new xdr.ContractEventV0({
+    topics,
+    data: nativeToScVal(opts.amount, { type: "i128" }),
+  });
+  // js-xdr unions have no typed constructor in the shipped .d.ts, so the
+  // (switchValue, armValue) constructor needs an explicit cast.
+  const BodyCtor = xdr.ContractEventBody as unknown as new (
+    switchValue: number,
+    value: xdr.ContractEventV0
+  ) => xdr.ContractEventBody;
+  const ExtCtor = xdr.ExtensionPoint as unknown as new (switchValue: number) => xdr.ExtensionPoint;
+
+  const contractEvent = new xdr.ContractEvent({
+    ext: new ExtCtor(0),
+    contractId: Buffer.alloc(32),
+    type: xdr.ContractEventType.diagnostic(),
+    body: new BodyCtor(0, v0),
+  });
+  return new xdr.DiagnosticEvent({
+    inSuccessfulContractCall: opts.successful ?? true,
+    event: contractEvent,
+  });
+}
+
+/** Mock the simulation gate to return a prepared tx plus the given events. */
+function mockPreparedWithEvents(events: xdr.DiagnosticEvent[] = []): void {
+  vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockResolvedValue({
+    tx: makeMockPreparedTx(),
+    events,
+  } as any);
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
@@ -241,7 +321,7 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("calls prepareSorobanTx before any submission", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
+      mockPreparedWithEvents();
       vi.mocked(
         rpcClient.sorobanServer.sendTransaction as any,
       ).mockResolvedValue({
@@ -260,11 +340,11 @@ describe("SorobanInvokeTool", () => {
         args: [],
       });
 
-      expect(rpcClient.prepareSorobanTx).toHaveBeenCalledOnce();
+      expect(rpcClient.prepareSorobanTxWithEvents).toHaveBeenCalledOnce();
     });
 
     it("throws and does NOT submit when simulation fails", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockRejectedValue(
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockRejectedValue(
         new Error("Soroban simulation failed: insufficient balance"),
       );
 
@@ -280,7 +360,7 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("throws when simulation fails with contract error code", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockRejectedValue(
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockRejectedValue(
         new Error("Soroban simulation failed: Error(Contract, #3)"),
       );
 
@@ -295,7 +375,7 @@ describe("SorobanInvokeTool", () => {
 
     it("preserves simulation error detail in ContractError message when simulation fails", async () => {
       const errorDetail = "HostError: Error(Contract, #123) custom_revert_reason";
-      vi.mocked(rpcClient.prepareSorobanTx).mockRejectedValue(
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockRejectedValue(
         new ContractError(`Soroban simulation failed: ${errorDetail}`, undefined, errorDetail)
       );
 
@@ -309,9 +389,9 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("throws when Soroban fee exceeds MAX_SOROBAN_FEE_STROOPS", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-        sign: vi.fn(),
-        fee: 2_000_000,
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockResolvedValue({
+        tx: { sign: vi.fn(), fee: 2_000_000 } as any,
+        events: [],
       } as any);
 
       await expect(
@@ -326,9 +406,9 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("rejects when the prepared fee is not numeric", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-        sign: vi.fn(),
-        fee: "not-a-number",
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockResolvedValue({
+        tx: { sign: vi.fn(), fee: "not-a-number" } as any,
+        events: [],
       } as any);
 
       await expect(
@@ -343,9 +423,10 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(
-        makeMockPreparedTx(500_000)
-      );
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockResolvedValue({
+        tx: makeMockPreparedTx(500_000),
+        events: [],
+      } as any);
       vi.mocked(
         rpcClient.sorobanServer.sendTransaction as any,
       ).mockResolvedValue({
@@ -368,9 +449,10 @@ describe("SorobanInvokeTool", () => {
 
     it("does NOT call sendTransaction when simulateOnly=true", async () => {
       const mockPreparedTx = { sign: vi.fn() };
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(
-        mockPreparedTx as any,
-      );
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockResolvedValue({
+        tx: mockPreparedTx as any,
+        events: [],
+      } as any);
 
       const result = await tool.execute({
         contractId: VALID_CONTRACT,
@@ -413,7 +495,7 @@ describe("SorobanInvokeTool", () => {
           "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
         ) as any,
       );
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
+      mockPreparedWithEvents();
     });
 
     it("returns txHash after a successful confirmation on first poll", async () => {
@@ -554,7 +636,7 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("propagates network timeout on prepareSorobanTx", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockRejectedValue(
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockRejectedValue(
         new Error("ECONNABORTED: network timeout"),
       );
 
@@ -602,11 +684,14 @@ describe("SorobanInvokeTool", () => {
     it("throws 'Transaction signing produced no signatures' when sign() is a no-op", async () => {
       // Mock prepareSorobanTx to return a transaction whose sign() does nothing,
       // leaving the signatures array empty.
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-        sign: vi.fn(), // no-op — does NOT push to signatures
-        signatures: [], // empty signatures list — guard must catch this
-        fee: 500_000,
-        timeBounds: {},
+      vi.mocked(rpcClient.prepareSorobanTxWithEvents).mockResolvedValue({
+        tx: {
+          sign: vi.fn(), // no-op — does NOT push to signatures
+          signatures: [], // empty signatures list — guard must catch this
+          fee: 500_000,
+          timeBounds: {},
+        } as any,
+        events: [],
       } as any);
 
       await expect(
@@ -623,9 +708,7 @@ describe("SorobanInvokeTool", () => {
 
     it("submits successfully when sign() populates signatures", async () => {
       // Use makeMockPreparedTx so sign() adds a signature entry
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(
-        makeMockPreparedTx()
-      );
+      mockPreparedWithEvents();
 
       vi.mocked(rpcClient.sorobanServer.sendTransaction as any).mockResolvedValue({
         status: "PENDING",
@@ -699,6 +782,143 @@ describe("SorobanInvokeTool", () => {
       });
       expect(result.success).toBe(true);
       expect(result.data?.args).toHaveLength(2);
+    });
+  });
+
+  // ── Spending-limit guard on simulated internal SAC transfers ─────────────
+  /**
+   * A contract invocation can move funds internally via the Stellar Asset
+   * Contract (transfer / transfer_from / burn). Those moves are only visible
+   * after the mandatory simulation, so the spending cap is enforced against
+   * the simulated diagnostic events: reject over-limit invocations before
+   * broadcast, and record within-limit spends into the cumulative window.
+   */
+  describe("Spending-limit guard on simulated SAC transfers", () => {
+    // The tool debits `this.keypair.publicKey()`, which derives from the mocked
+    // TEST_SECRET — so AGENT must be that derived key, not a literal.
+    const AGENT = Keypair.fromSecret(TEST_SECRET).publicKey();
+    const OTHER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+
+    beforeEach(() => {
+      configState.STELLAR_NETWORK = "testnet";
+      configState.AGENT_SPENDING_LIMIT = "100";
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+        makeMockAccount(AGENT) as any,
+      );
+    });
+
+    it("rejects and does not broadcast when simulated SAC transfers exceed AGENT_SPENDING_LIMIT", async () => {
+      mockPreparedWithEvents([
+        // 2,000,000,000 raw units = 200.0000000 > limit 100
+        makeSacTransferEvent({ name: "transfer", from: AGENT, to: OTHER, amount: 2_000_000_000n }),
+      ]);
+
+      await expect(
+        tool.execute({ contractId: VALID_CONTRACT, method: "release", args: [] }),
+      ).rejects.toThrow(/exceeds AGENT_SPENDING_LIMIT/);
+
+      expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+    });
+
+    it("sums multiple SAC transfers before applying the limit", async () => {
+      mockPreparedWithEvents([
+        makeSacTransferEvent({ name: "transfer", from: AGENT, to: OTHER, amount: 600_000_000n }), // 60.0000000
+        makeSacTransferEvent({
+          name: "transfer_from",
+          from: AGENT,
+          to: OTHER,
+          spender: OTHER,
+          amount: 500_000_000n, // 50.0000000 — 60 + 50 = 110 > 100
+        }),
+      ]);
+
+      await expect(
+        tool.execute({ contractId: VALID_CONTRACT, method: "release", args: [] }),
+      ).rejects.toThrow(/exceeds AGENT_SPENDING_LIMIT/);
+    });
+
+    it("accepts and records to the spending tracker when within the limit", async () => {
+      mockPreparedWithEvents([
+        makeSacTransferEvent({ name: "transfer", from: AGENT, to: OTHER, amount: 400_000_000n }), // 40.0000000
+      ]);
+      vi.mocked(rpcClient.sorobanServer.sendTransaction as any).mockResolvedValue({
+        status: "PENDING",
+        hash: "spend_ok_hash",
+      });
+      vi.mocked(rpcClient.sorobanServer.getTransaction as any).mockResolvedValue({
+        status: "SUCCESS",
+      });
+
+      const result = await tool.execute({ contractId: VALID_CONTRACT, method: "release", args: [] });
+      expect(result.txHash).toBe("spend_ok_hash");
+      expect(spendingTracker.record).toHaveBeenCalledWith("40.0000000");
+    });
+
+    it("counts burn events that debit the agent toward the cap", async () => {
+      mockPreparedWithEvents([
+        makeSacTransferEvent({ name: "burn", from: AGENT, amount: 400_000_000n }), // 40.0000000
+      ]);
+      vi.mocked(rpcClient.sorobanServer.sendTransaction as any).mockResolvedValue({
+        status: "PENDING",
+        hash: "burn_hash",
+      });
+      vi.mocked(rpcClient.sorobanServer.getTransaction as any).mockResolvedValue({
+        status: "SUCCESS",
+      });
+
+      const result = await tool.execute({ contractId: VALID_CONTRACT, method: "release", args: [] });
+      expect(result.txHash).toBe("burn_hash");
+      expect(spendingTracker.record).toHaveBeenCalledWith("40.0000000");
+    });
+
+    it("ignores events that do not debit the agent (incoming / third-party transfers)", async () => {
+      mockPreparedWithEvents([
+        // Incoming and third-party transfers must not consume the agent's cap.
+        makeSacTransferEvent({ name: "transfer", from: OTHER, to: AGENT, amount: 9_000_000_000n }),
+        makeSacTransferEvent({ name: "transfer", from: OTHER, to: OTHER, amount: 9_000_000_000n }),
+      ]);
+      vi.mocked(rpcClient.sorobanServer.sendTransaction as any).mockResolvedValue({
+        status: "PENDING",
+        hash: "incoming_hash",
+      });
+      vi.mocked(rpcClient.sorobanServer.getTransaction as any).mockResolvedValue({
+        status: "SUCCESS",
+      });
+
+      const result = await tool.execute({ contractId: VALID_CONTRACT, method: "release", args: [] });
+      expect(result.txHash).toBe("incoming_hash");
+      expect(spendingTracker.record).not.toHaveBeenCalled();
+    });
+
+    it("enforces the mainnet spending cap on mainnet", async () => {
+      configState.STELLAR_NETWORK = "mainnet";
+      configState.AGENT_SPENDING_LIMIT = "999999"; // only the mainnet cap should trip
+      mockPreparedWithEvents([
+        // 200,000.0000000 > MAINNET_SPENDING_CAP (10,000)
+        makeSacTransferEvent({ name: "transfer", from: AGENT, to: OTHER, amount: 2_000_000_000_000n }),
+      ]);
+
+      await expect(
+        tool.execute({ contractId: VALID_CONTRACT, method: "release", args: [] }),
+      ).rejects.toThrow(/mainnet spending cap/);
+
+      expect(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+    });
+
+    it("does not record spending for simulateOnly dry-runs", async () => {
+      mockPreparedWithEvents([
+        makeSacTransferEvent({ name: "transfer", from: AGENT, to: OTHER, amount: 400_000_000n }),
+      ]);
+
+      const result = await tool.execute({
+        contractId: VALID_CONTRACT,
+        method: "release",
+        args: [],
+        simulateOnly: true,
+      });
+
+      expect(result.simulationResult).toBeDefined();
+      expect(spendingTracker.record).not.toHaveBeenCalled();
     });
   });
 });
