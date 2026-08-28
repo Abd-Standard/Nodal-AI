@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `InflationTool` (`backend/tools/InflationTool.ts`) — SET_OPTIONS wrapper for setting the account inflation destination and querying the current one via Horizon, wired into `PayFiAgent` as the `inflation` task type
 - Enhanced documentation for vitest configuration, including detailed explanation of `isolate: true` behavior and coverage thresholds
 - Inline comments in `tests/soroban_invoke.test.ts` explaining mock architecture and test isolation patterns
 - CHANGELOG.md following Keep a Changelog format for tracking releases and changes

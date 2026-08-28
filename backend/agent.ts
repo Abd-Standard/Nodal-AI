@@ -33,6 +33,7 @@ import { LiquidityPoolTool } from "./tools/LiquidityPoolTool";
 import { StellarTomlTool } from "./tools/StellarTomlTool";
 import { DataEntryTool } from "./tools/DataEntryTool";
 import { SequenceNumberTool } from "./tools/SequenceNumberTool";
+import { InflationTool } from "./tools/InflationTool";
 import { SponsoredAccountTool } from "./tools/SponsoredAccountTool";
 import { AnchorQuoteTool } from "./tools/AnchorQuoteTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
@@ -97,7 +98,8 @@ export type TaskType =
   | "data_entry"
   | "sequence_number"
   | "sponsored_account"
-  | "anchor_quote";
+  | "anchor_quote"
+  | "inflation";
 
 
 export interface AgentTask {
@@ -243,6 +245,7 @@ export class PayFiAgent extends EventEmitter {
   private sequenceNumberTool: SequenceNumberTool;
   private sponsoredAccountTool: SponsoredAccountTool;
   private anchorQuoteTool: AnchorQuoteTool;
+  private inflationTool: InflationTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -285,6 +288,7 @@ export class PayFiAgent extends EventEmitter {
     this.sequenceNumberTool = new SequenceNumberTool(config.agentKeypair().secret());
     this.sponsoredAccountTool = new SponsoredAccountTool(config.agentKeypair().secret());
     this.anchorQuoteTool = new AnchorQuoteTool();
+    this.inflationTool = new InflationTool(config.agentKeypair().secret());
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -670,6 +674,10 @@ export class PayFiAgent extends EventEmitter {
 
         case "anchor_quote":
           data = await this.anchorQuoteTool.execute(task.payload);
+          break;
+
+        case "inflation":
+          data = await this.inflationTool.execute(task.payload);
           break;
 
         default:
