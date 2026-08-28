@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Enhanced documentation for vitest configuration, including detailed explanation of `isolate: true` behavior and coverage thresholds
 - Inline comments in `tests/soroban_invoke.test.ts` explaining mock architecture and test isolation patterns
 - CHANGELOG.md following Keep a Changelog format for tracking releases and changes
+- `SorobanInvokeTool` now enforces the spending limit on contract invocations: simulated Stellar Asset Contract transfers that debit the agent are summed from the mandatory Soroban simulation and checked against `AGENT_SPENDING_LIMIT` (and the mainnet cap) before broadcast, and within-limit spends are recorded into the cumulative spending window
 
 ### Fixed
 
