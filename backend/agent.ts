@@ -32,6 +32,7 @@ import { DexOfferTool } from "./tools/DexOfferTool";
 import { LiquidityPoolTool } from "./tools/LiquidityPoolTool";
 import { StellarTomlTool } from "./tools/StellarTomlTool";
 import { SorobanStorageTool } from "./tools/SorobanStorageTool";
+import { FriendBotTool } from "./tools/FriendBotTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -91,7 +92,8 @@ export type TaskType =
   | "dex_offer"
   | "liquidity_pool"
   | "stellar_toml"
-  | "soroban_storage";
+  | "soroban_storage"
+  | "friendbot_fund";
 
 
 export interface AgentTask {
@@ -234,6 +236,7 @@ export class PayFiAgent extends EventEmitter {
   private liquidityPoolTool: LiquidityPoolTool;
   private stellarTomlTool: StellarTomlTool;
   private sorobanStorageTool: SorobanStorageTool;
+  private friendBotTool: FriendBotTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -273,6 +276,7 @@ export class PayFiAgent extends EventEmitter {
     this.liquidityPoolTool = new LiquidityPoolTool(config.agentKeypair().secret());
     this.stellarTomlTool = new StellarTomlTool();
     this.sorobanStorageTool = new SorobanStorageTool();
+    this.friendBotTool = new FriendBotTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -646,6 +650,10 @@ export class PayFiAgent extends EventEmitter {
 
         case "soroban_storage":
           data = await this.sorobanStorageTool.execute(task.payload);
+          break;
+
+        case "friendbot_fund":
+          data = await this.friendBotTool.execute(task.payload);
           break;
 
         default:
