@@ -13,6 +13,7 @@
     "test:ts:coverage": "vitest run --coverage",
     "test:rust": "cargo test --manifest-path contracts/escrow/Cargo.toml",
     "test:rust:coverage": "cargo tarpaulin --manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust",
+    "check:wasm-size": "bash scripts/check_wasm_size.sh",
     "test:e2e": "vitest run tests/e2e/**",
     "test:all": "npm run test:rust && npm run test:ts",
     "lint": "eslint backend/**/*.ts tests/**/*.ts",
