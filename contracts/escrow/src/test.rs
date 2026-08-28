@@ -13,6 +13,9 @@
  *   Authorization   : wrong arbiter, wrong depositor
  *   Events          : "released", "refunded"
  *   Balance         : partial lock, full balance lock
+ *   Property tests  : conservation of funds — the sum of released/refunded
+ *                     tokens equals the initialised amount over many random
+ *                     amounts (proptest)
  */
 
 #[cfg(test)]
@@ -20,6 +23,7 @@ mod tests {
     extern crate std;
 
     use crate::{EscrowContract, EscrowContractClient, EscrowState};
+    use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger},
         token::{Client as TokenClient, StellarAssetClient},
@@ -75,7 +79,14 @@ mod tests {
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
         // Use max i128 amount; should panic due to overflow guard
-        client.initialize(&depositor, &recipient, &arbiter, &token_id, i128::MAX, &env.ledger().timestamp() + EXPIRY_OFFSET);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &i128::MAX,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
     }
 
     // 2. initialize -> refund after expiry
@@ -1046,5 +1057,179 @@ mod tests {
             state.arbiter, trusted_arbiter,
             "arbiter should be rotated to trusted address"
         );
+    }
+
+    // ── Property tests: conservation of funds ──────────────────────────────
+    // Core escrow invariant: the sum of released/refunded tokens always equals
+    // the amount initialised, verified over many random amounts via proptest.
+
+    /// Strategy: positive amounts within the contract's overflow guard
+    /// (`initialize` panics with `InvalidAmount` when `amount > i128::MAX / 2`).
+    fn amount_strategy() -> impl Strategy<Value = i128> {
+        proptest::num::i128::ANY.prop_filter(
+            "amount must be positive and within the overflow guard",
+            |a| *a > 0 && *a <= i128::MAX / 2,
+        )
+    }
+
+    /// Strategy: `(amount, cut_points)` where cut points drawn from
+    /// `[1, amount - 1]` derive a random sequence of partial releases that sums
+    /// exactly to `amount` (between 1 and 8 parts; duplicates collapse).
+    fn partial_release_strategy() -> impl Strategy<Value = (i128, Vec<i128>)> {
+        amount_strategy().prop_flat_map(|amount| {
+            // Tiny amounts degrade gracefully: at most `amount` parts of size 1.
+            let max_parts = amount.min(8) as usize;
+            let cuts = proptest::collection::vec(1..amount.max(2), 0..=max_parts - 1);
+            (Just(amount), cuts)
+        })
+    }
+
+    // 38. property: a full release moves exactly the initialised amount
+    #[test]
+    fn prop_full_release_conserves_funds() {
+        proptest!(ProptestConfig::with_cases(128), |(amount in amount_strategy())| {
+            let env = Env::default();
+            env.mock_all_auths();
+            let depositor = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let arbiter = Address::generate(&env);
+            let (token_id, token) = create_token(&env, &depositor);
+            StellarAssetClient::new(&env, &token_id).mint(&depositor, &amount);
+            let contract_id = env.register_contract(None, EscrowContract);
+            let client = EscrowContractClient::new(&env, &contract_id);
+            client.initialize(
+                &depositor,
+                &recipient,
+                &arbiter,
+                &token_id,
+                &amount,
+                &(env.ledger().timestamp() + EXPIRY_OFFSET),
+            );
+            prop_assert_eq!(
+                token.balance(&contract_id),
+                amount,
+                "contract must hold the full initialised amount"
+            );
+
+            client.release(&arbiter);
+
+            // Released tokens == initialised amount, nothing left in escrow.
+            prop_assert_eq!(
+                token.balance(&recipient),
+                amount,
+                "recipient must receive exactly the initialised amount"
+            );
+            prop_assert_eq!(
+                token.balance(&contract_id),
+                0,
+                "no funds may remain stuck in the contract"
+            );
+            let state = client.get_state();
+            prop_assert!(state.released, "escrow must be sealed after release");
+        });
+    }
+
+    // 39. property: random partial releases sum to the initialised amount
+    #[test]
+    fn prop_partial_releases_sum_to_initial_amount() {
+        proptest!(ProptestConfig::with_cases(128), |(pair in partial_release_strategy())| {
+            let (amount, cuts) = pair;
+            let env = Env::default();
+            env.mock_all_auths();
+            let depositor = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let arbiter = Address::generate(&env);
+            let (token_id, token) = create_token(&env, &depositor);
+            StellarAssetClient::new(&env, &token_id).mint(&depositor, &amount);
+            let contract_id = env.register_contract(None, EscrowContract);
+            let client = EscrowContractClient::new(&env, &contract_id);
+            client.initialize(
+                &depositor,
+                &recipient,
+                &arbiter,
+                &token_id,
+                &amount,
+                &(env.ledger().timestamp() + EXPIRY_OFFSET),
+            );
+
+            // Derive the exact-splitting release sequence from the cut points.
+            let mut points = cuts;
+            points.sort_unstable();
+            points.dedup();
+            let mut boundaries = vec![0];
+            boundaries.extend(points);
+            boundaries.push(amount);
+            let parts: Vec<i128> = boundaries.windows(2).map(|w| w[1] - w[0]).collect();
+            prop_assert!(!parts.is_empty());
+            prop_assert!(parts.iter().all(|p| *p > 0), "parts must all be positive");
+
+            // After every release, the recipient's balance must equal the
+            // cumulative sum of the parts released so far.
+            let mut released_so_far: i128 = 0;
+            for part in parts {
+                client.release_partial(&arbiter, &part);
+                released_so_far += part;
+                prop_assert_eq!(
+                    token.balance(&recipient),
+                    released_so_far,
+                    "recipient must receive the cumulative released sum"
+                );
+                prop_assert_eq!(
+                    token.balance(&contract_id),
+                    amount - released_so_far,
+                    "contract must hold exactly the unreleased remainder"
+                );
+            }
+
+            // Invariant: sum of released tokens == initialised amount.
+            prop_assert_eq!(
+                released_so_far, amount,
+                "sum of released tokens must equal the initialised amount"
+            );
+            prop_assert_eq!(
+                token.balance(&contract_id),
+                0,
+                "no funds may remain stuck in the contract"
+            );
+            let state = client.get_state();
+            prop_assert_eq!(state.amount, 0, "stored amount must reach zero");
+            prop_assert!(state.released, "escrow must be sealed once fully released");
+        });
+    }
+
+    // 40. property: a post-expiry refund returns exactly the initialised amount
+    #[test]
+    fn prop_refund_conserves_funds() {
+        proptest!(ProptestConfig::with_cases(128), |(amount in amount_strategy())| {
+            let env = Env::default();
+            env.mock_all_auths();
+            let depositor = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let arbiter = Address::generate(&env);
+            let (token_id, token) = create_token(&env, &depositor);
+            StellarAssetClient::new(&env, &token_id).mint(&depositor, &amount);
+            let contract_id = env.register_contract(None, EscrowContract);
+            let client = EscrowContractClient::new(&env, &contract_id);
+            let expiry = env.ledger().timestamp() + 100;
+            client.initialize(&depositor, &recipient, &arbiter, &token_id, &amount, &expiry);
+
+            // Advance past expiry, then refund.
+            env.ledger().with_mut(|li| li.timestamp = expiry + 1);
+            client.refund(&depositor);
+
+            // Refunded tokens == initialised amount, nothing left in escrow.
+            prop_assert_eq!(
+                token.balance(&depositor),
+                amount,
+                "depositor must recover exactly the initialised amount"
+            );
+            prop_assert_eq!(
+                token.balance(&contract_id),
+                0,
+                "no funds may remain stuck in the contract"
+            );
+            let state = client.get_state();
+            prop_assert!(state.released, "escrow must be sealed after refund");
+        });
     }
 }
