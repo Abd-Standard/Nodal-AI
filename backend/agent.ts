@@ -31,6 +31,10 @@ import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
 import { LiquidityPoolTool } from "./tools/LiquidityPoolTool";
 import { StellarTomlTool } from "./tools/StellarTomlTool";
+import { DataEntryTool } from "./tools/DataEntryTool";
+import { SequenceNumberTool } from "./tools/SequenceNumberTool";
+import { SponsoredAccountTool } from "./tools/SponsoredAccountTool";
+import { AnchorQuoteTool } from "./tools/AnchorQuoteTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -89,7 +93,11 @@ export type TaskType =
   | "fee_bump"
   | "dex_offer"
   | "liquidity_pool"
-  | "stellar_toml";
+  | "stellar_toml"
+  | "data_entry"
+  | "sequence_number"
+  | "sponsored_account"
+  | "anchor_quote";
 
 
 export interface AgentTask {
@@ -231,6 +239,10 @@ export class PayFiAgent extends EventEmitter {
   private dexOfferTool: DexOfferTool;
   private liquidityPoolTool: LiquidityPoolTool;
   private stellarTomlTool: StellarTomlTool;
+  private dataEntryTool: DataEntryTool;
+  private sequenceNumberTool: SequenceNumberTool;
+  private sponsoredAccountTool: SponsoredAccountTool;
+  private anchorQuoteTool: AnchorQuoteTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -269,6 +281,10 @@ export class PayFiAgent extends EventEmitter {
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
     this.liquidityPoolTool = new LiquidityPoolTool(config.agentKeypair().secret());
     this.stellarTomlTool = new StellarTomlTool();
+    this.dataEntryTool = new DataEntryTool(config.agentKeypair().secret());
+    this.sequenceNumberTool = new SequenceNumberTool(config.agentKeypair().secret());
+    this.sponsoredAccountTool = new SponsoredAccountTool(config.agentKeypair().secret());
+    this.anchorQuoteTool = new AnchorQuoteTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -638,6 +654,22 @@ export class PayFiAgent extends EventEmitter {
 
         case "stellar_toml":
           data = await this.stellarTomlTool.fetchToml(task.payload);
+          break;
+
+        case "data_entry":
+          data = await this.dataEntryTool.execute(task.payload);
+          break;
+
+        case "sequence_number":
+          data = await this.sequenceNumberTool.execute(task.payload);
+          break;
+
+        case "sponsored_account":
+          data = await this.sponsoredAccountTool.execute(task.payload);
+          break;
+
+        case "anchor_quote":
+          data = await this.anchorQuoteTool.execute(task.payload);
           break;
 
         default:
