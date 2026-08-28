@@ -31,10 +31,10 @@ import { FeeBumpTool } from "./tools/FeeBumpTool";
 import { DexOfferTool } from "./tools/DexOfferTool";
 import { LiquidityPoolTool } from "./tools/LiquidityPoolTool";
 import { StellarTomlTool } from "./tools/StellarTomlTool";
-import { SorobanStorageTool } from "./tools/SorobanStorageTool";
-import { FriendBotTool } from "./tools/FriendBotTool";
-import { LedgerInfoTool } from "./tools/LedgerInfoTool";
-import { OfferBookTool } from "./tools/OfferBookTool";
+import { DataEntryTool } from "./tools/DataEntryTool";
+import { SequenceNumberTool } from "./tools/SequenceNumberTool";
+import { SponsoredAccountTool } from "./tools/SponsoredAccountTool";
+import { AnchorQuoteTool } from "./tools/AnchorQuoteTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -94,10 +94,10 @@ export type TaskType =
   | "dex_offer"
   | "liquidity_pool"
   | "stellar_toml"
-  | "soroban_storage"
-  | "friendbot_fund"
-  | "ledger_info"
-  | "offer_book";
+  | "data_entry"
+  | "sequence_number"
+  | "sponsored_account"
+  | "anchor_quote";
 
 
 export interface AgentTask {
@@ -239,10 +239,10 @@ export class PayFiAgent extends EventEmitter {
   private dexOfferTool: DexOfferTool;
   private liquidityPoolTool: LiquidityPoolTool;
   private stellarTomlTool: StellarTomlTool;
-  private sorobanStorageTool: SorobanStorageTool;
-  private friendBotTool: FriendBotTool;
-  private ledgerInfoTool: LedgerInfoTool;
-  private offerBookTool: OfferBookTool;
+  private dataEntryTool: DataEntryTool;
+  private sequenceNumberTool: SequenceNumberTool;
+  private sponsoredAccountTool: SponsoredAccountTool;
+  private anchorQuoteTool: AnchorQuoteTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -281,10 +281,10 @@ export class PayFiAgent extends EventEmitter {
     this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
     this.liquidityPoolTool = new LiquidityPoolTool(config.agentKeypair().secret());
     this.stellarTomlTool = new StellarTomlTool();
-    this.sorobanStorageTool = new SorobanStorageTool();
-    this.friendBotTool = new FriendBotTool();
-    this.ledgerInfoTool = new LedgerInfoTool();
-    this.offerBookTool = new OfferBookTool();
+    this.dataEntryTool = new DataEntryTool(config.agentKeypair().secret());
+    this.sequenceNumberTool = new SequenceNumberTool(config.agentKeypair().secret());
+    this.sponsoredAccountTool = new SponsoredAccountTool(config.agentKeypair().secret());
+    this.anchorQuoteTool = new AnchorQuoteTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -656,20 +656,20 @@ export class PayFiAgent extends EventEmitter {
           data = await this.stellarTomlTool.fetchToml(task.payload);
           break;
 
-        case "soroban_storage":
-          data = await this.sorobanStorageTool.execute(task.payload);
+        case "data_entry":
+          data = await this.dataEntryTool.execute(task.payload);
           break;
 
-        case "friendbot_fund":
-          data = await this.friendBotTool.execute(task.payload);
+        case "sequence_number":
+          data = await this.sequenceNumberTool.execute(task.payload);
           break;
 
-        case "ledger_info":
-          data = await this.ledgerInfoTool.execute(task.payload);
+        case "sponsored_account":
+          data = await this.sponsoredAccountTool.execute(task.payload);
           break;
 
-        case "offer_book":
-          data = await this.offerBookTool.execute(task.payload);
+        case "anchor_quote":
+          data = await this.anchorQuoteTool.execute(task.payload);
           break;
 
         default:
