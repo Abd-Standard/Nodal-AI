@@ -115,6 +115,28 @@ export class SpendingTracker {
     }
   }
 
+  /**
+   * Return the current rolling window spending status.
+   */
+  getWindowStatus(): {
+    windowSpend: number;
+    windowLimit: number;
+    windowStartsAt: number;
+    remainingBudget: number;
+  } {
+    const now = Date.now();
+    const windowSpend = this.total();
+    const windowLimit = parseFloat(config.AGENT_SPENDING_LIMIT);
+    const windowStartsAt = now - this.windowMs;
+    const remainingBudget = isNaN(windowLimit) ? 0 : Math.max(0, windowLimit - windowSpend);
+    return {
+      windowSpend,
+      windowLimit,
+      windowStartsAt,
+      remainingBudget,
+    };
+  }
+
   clear() {
     this.records = [];
     try {
