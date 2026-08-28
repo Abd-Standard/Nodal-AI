@@ -295,6 +295,7 @@ Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `path_payment`: `{ destination: string; sendAsset: Asset; sendMax: string; destAsset: Asset; destAmount: string; ... }`
 - `fee_bump`: `{ innerTx: string; feeAccount: string; maxFee: string }`
 - `account_info`: `{ publicKey?: string }`
+- `inflation`: `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
 - `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
 - `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
 
