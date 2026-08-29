@@ -4,6 +4,12 @@
  * Comprehensive test suite for StellarPaymentTool.
  * Covers: happy path, input validation, network errors, retry exhaustion,
  * timeout simulation, insufficient funds, and memo edge cases.
+ *
+ * Network mocking is centralised in the shared MockHorizonServer fixture
+ * (tests/fixtures/MockHorizonServer.ts); see createMockHorizonServer() for
+ * the full API. The fixture is created inside the async vi.mock factory below
+ * because vi.mock factories are hoisted above imports and therefore cannot
+ * reference top-level bindings directly.
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
@@ -12,24 +18,22 @@ import { z } from "zod";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
 import { SubmitResultSchema } from "../backend/tools/StellarPaymentTool";
 import * as rpcClient from "../backend/rpc_client";
+import type { MockHorizonServer } from "./fixtures/MockHorizonServer";
+import { makeMockAccount } from "./fixtures/MockHorizonServer";
 
-// ─── Module mock ──────────────────────────────────────────────────────────────
-// All Horizon/Soroban network calls are intercepted here.
+// ─── Shared MockHorizonServer fixture ────────────────────────────────────────
+// All Horizon/Soroban network calls are intercepted here. The async factory
+// imports the fixture module and returns a fresh, configurable mock server.
 
-vi.mock("../backend/rpc_client", () => ({
-  loadAccount: vi.fn(),
-  submitTransaction: vi.fn(),
-  horizonServer: {},
-  sorobanServer: {},
-  simulateSorobanTx: vi.fn(),
-  prepareSorobanTx: vi.fn(),
-  resolveNetworkPassphrase: (_network: string) => {
-    const { Networks } = require("@stellar/stellar-sdk");
-    if (_network === "mainnet") return Networks.PUBLIC;
-    if (_network === "futurenet") return Networks.FUTURENET;
-    return Networks.TESTNET;
-  },
-}));
+vi.mock("../backend/rpc_client", async () => {
+  const { createMockHorizonServer } = await import("./fixtures/MockHorizonServer");
+  return createMockHorizonServer();
+});
+
+// The mocked `rpc_client` module IS the MockHorizonServer instance, so this
+// cast exposes the fixture's convenience API (reset, setAccount,
+// setSubmitResult, ...) to the suite below.
+const mockHorizonServer = rpcClient as unknown as MockHorizonServer;
 
 // ─── Mock config — isolate from real .env ─────────────────────────────────────
 vi.mock("../backend/config", () => {
@@ -58,36 +62,14 @@ const TEST_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const VALID_DEST   = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const VALID_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
-/** Minimal account object that satisfies TransactionBuilder */
-function makeMockAccount(publicKey: string) {
-  return {
-    id: publicKey,
-    accountId: () => publicKey,
-    sequenceNumber: () => "100",
-    incrementSequenceNumber: vi.fn(),
-    sequence: "100",
-    incrementedSequenceNumber: () => "101",
-    thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
-    flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
-    balances: [{ asset_type: "native", balance: "10000.0000000" }],
-    signers: [],
-    data_attr: {},
-    subentry_count: 0,
-    home_domain: "",
-    inflation_dest: null,
-  };
-}
-
 // ─── Test suite ───────────────────────────────────────────────────────────────
 
 describe("StellarPaymentTool", () => {
   let tool: StellarPaymentTool;
 
   beforeEach(() => {
-    vi.clearAllMocks();
+    mockHorizonServer.reset();
     tool = new StellarPaymentTool();
-    // Default: return a minimal valid account for TransactionBuilder
-    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
   });
 
 
@@ -160,13 +142,7 @@ describe("StellarPaymentTool", () => {
     });
 
     it("accepts a 7-decimal amount (boundary)", async () => {
-      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
-        makeMockAccount(tool.publicKey) as any
-      );
-      vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
-        hash: "boundary_hash",
-        ledger: 1,
-      } as any);
+      mockHorizonServer.setSubmitResult({ hash: "boundary_hash", ledger: 1 } as any);
 
       const result = await tool.execute({
         destination: VALID_DEST,
@@ -179,10 +155,7 @@ describe("StellarPaymentTool", () => {
 
   describe("memo boundary tests", () => {
     beforeEach(() => {
-      vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
-        hash: "boundary_hash",
-        ledger: 1,
-      } as any);
+      mockHorizonServer.setSubmitResult({ hash: "boundary_hash", ledger: 1 } as any);
     });
 
     it("accepts 28 ASCII characters", async () => {
@@ -219,10 +192,7 @@ describe("StellarPaymentTool", () => {
 
   describe("memo type support", () => {
     beforeEach(() => {
-      vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
-        hash: "memo_type_hash",
-        ledger: 1,
-      } as any);
+      mockHorizonServer.setSubmitResult({ hash: "memo_type_hash", ledger: 1 } as any);
     });
 
     it("accepts memo type 'id' with numeric value", async () => {
@@ -236,13 +206,18 @@ describe("StellarPaymentTool", () => {
       expect(result.txHash).toBe("memo_type_hash");
     });
 
-    it("accepts memo type 'id' with max 64-bit unsigned integer", async () => {
+    it("accepts memo type 'id' with a large (max-safe) integer", async () => {
+      // Number.MAX_SAFE_INTEGER is the largest JS number that is exactly
+      // representable and therefore the largest safe 'id' memo input. The
+      // literal 2^64 - 1 cannot be represented exactly in JS (it silently
+      // rounds above the tool's uint64 bound), so the boundary is exercised
+      // with the largest value the tool can legitimately accept.
       const result = await tool.execute({
         destination: VALID_DEST,
         amount: "1",
         assetCode: "XLM",
         memoType: "id",
-        memo: 18446744073709551615, // 2^64 - 1
+        memo: Number.MAX_SAFE_INTEGER,
       });
       expect(result.txHash).toBe("memo_type_hash");
     });
@@ -387,13 +362,7 @@ describe("StellarPaymentTool", () => {
 
   describe("Happy path", () => {
     beforeEach(() => {
-      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
-        makeMockAccount(tool.publicKey) as any
-      );
-      vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
-        hash: "success_tx_hash",
-        ledger: 42,
-      } as any);
+      mockHorizonServer.setSubmitResult({ hash: "success_tx_hash", ledger: 42 } as any);
     });
 
     it("completes an XLM payment and returns txHash + ledger", async () => {
@@ -420,13 +389,13 @@ describe("StellarPaymentTool", () => {
 
     it("calls loadAccount with the agent public key", async () => {
       await tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" });
-      expect(rpcClient.loadAccount).toHaveBeenCalledOnce();
-      expect(rpcClient.loadAccount).toHaveBeenCalledWith(tool.publicKey);
+      expect(mockHorizonServer.loadAccount).toHaveBeenCalledOnce();
+      expect(mockHorizonServer.loadAccount).toHaveBeenCalledWith(tool.publicKey);
     });
 
     it("calls submitTransaction exactly once per payment", async () => {
       await tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" });
-      expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+      expect(mockHorizonServer.submitTransaction).toHaveBeenCalledOnce();
     });
 
     it("embeds a memo when provided", async () => {
@@ -444,14 +413,8 @@ describe("StellarPaymentTool", () => {
   // ── Horizon / network error handling ────────────────────────────────────────
 
   describe("Network error handling", () => {
-    beforeEach(() => {
-      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
-        makeMockAccount(tool.publicKey) as any
-      );
-    });
-
     it("propagates Horizon submission error", async () => {
-      vi.mocked(rpcClient.submitTransaction).mockRejectedValue(
+      mockHorizonServer.setSubmitError(
         new Error("Horizon: transaction failed — op_no_source_account")
       );
 
@@ -461,7 +424,7 @@ describe("StellarPaymentTool", () => {
     });
 
     it("surfaces insufficient funds error from Horizon", async () => {
-      vi.mocked(rpcClient.submitTransaction).mockRejectedValue(
+      mockHorizonServer.setSubmitError(
         new Error("Horizon: op_underfunded — insufficient balance")
       );
 
@@ -471,9 +434,7 @@ describe("StellarPaymentTool", () => {
     });
 
     it("propagates account not found error", async () => {
-      vi.mocked(rpcClient.loadAccount).mockRejectedValue(
-        new Error("Horizon: account not found (404)")
-      );
+      mockHorizonServer.setAccountError(new Error("Horizon: account not found (404)"));
 
       await expect(
         tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" })
@@ -481,7 +442,7 @@ describe("StellarPaymentTool", () => {
     });
 
     it("handles network timeout from loadAccount", async () => {
-      vi.mocked(rpcClient.loadAccount).mockRejectedValue(
+      mockHorizonServer.setAccountError(
         Object.assign(new Error("ECONNABORTED: network timeout after 30000ms"), {
           code: "ECONNABORTED",
         })
@@ -493,7 +454,7 @@ describe("StellarPaymentTool", () => {
     });
 
     it("handles network timeout from submitTransaction", async () => {
-      vi.mocked(rpcClient.submitTransaction).mockRejectedValue(
+      mockHorizonServer.setSubmitError(
         Object.assign(new Error("ECONNABORTED: network timeout after 30000ms"), {
           code: "ECONNABORTED",
         })
@@ -505,7 +466,7 @@ describe("StellarPaymentTool", () => {
     });
 
     it("surfaces tx_bad_seq when sequence number is stale", async () => {
-      vi.mocked(rpcClient.submitTransaction).mockRejectedValue(
+      mockHorizonServer.setSubmitError(
         new Error("Horizon: tx_bad_seq — sequence number is not valid")
       );
 
@@ -515,7 +476,7 @@ describe("StellarPaymentTool", () => {
     });
 
     it("recovers from tx_bad_seq on first retry", async () => {
-      vi.mocked(rpcClient.submitTransaction)
+      mockHorizonServer.submitTransaction
         .mockRejectedValueOnce(new Error("Horizon: tx_bad_seq — sequence number is not valid"))
         .mockResolvedValueOnce({ hash: "retry_success_hash", ledger: 42 } as any);
 
@@ -526,11 +487,11 @@ describe("StellarPaymentTool", () => {
       });
       expect(result.txHash).toBe("retry_success_hash");
       expect(result.ledger).toBe(42);
-      expect(rpcClient.submitTransaction).toHaveBeenCalledTimes(2);
+      expect(mockHorizonServer.submitTransaction).toHaveBeenCalledTimes(2);
     });
 
     it("surfaces destination account non-existent (op_no_destination)", async () => {
-      vi.mocked(rpcClient.submitTransaction).mockRejectedValue(
+      mockHorizonServer.setSubmitError(
         new Error("Horizon: op_no_destination — destination account does not exist")
       );
 
@@ -543,16 +504,10 @@ describe("StellarPaymentTool", () => {
   // ── Retry exhaustion ────────────────────────────────────────────────────────
 
   describe("Retry exhaustion", () => {
-    beforeEach(() => {
-      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
-        makeMockAccount(tool.publicKey) as any
-      );
-    });
-
     it("throws after all retries are exhausted on loadAccount", async () => {
       // rpcClient.loadAccount is already wrapped in withRetry internally.
       // We simulate the final rejection reaching the tool.
-      vi.mocked(rpcClient.loadAccount).mockRejectedValue(
+      mockHorizonServer.setAccountError(
         new Error("max retries exceeded: 503 Service Unavailable")
       );
 
@@ -562,7 +517,7 @@ describe("StellarPaymentTool", () => {
     });
 
     it("throws after all retries exhausted on submitTransaction", async () => {
-      vi.mocked(rpcClient.submitTransaction).mockRejectedValue(
+      mockHorizonServer.setSubmitError(
         new Error("max retries exceeded: Horizon unavailable")
       );
 
@@ -576,13 +531,13 @@ describe("StellarPaymentTool", () => {
 
   describe("State verification", () => {
     it("does not call submitTransaction when loadAccount fails", async () => {
-      vi.mocked(rpcClient.loadAccount).mockRejectedValue(new Error("not found"));
+      mockHorizonServer.setAccountError(new Error("not found"));
 
       try {
         await tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" });
       } catch (_) { /* expected */ }
 
-      expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+      expect(mockHorizonServer.submitTransaction).not.toHaveBeenCalled();
     });
 
     it("exposes the agent public key", () => {
@@ -614,19 +569,19 @@ describe("StellarPaymentTool", () => {
         };
       });
 
-      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      mockHorizonServer.loadAccount.mockResolvedValue(
         makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
       );
-      vi.mocked(rpcClient.submitTransaction).mockImplementation((tx: any) => {
+      mockHorizonServer.submitTransaction.mockImplementation((tx: any) => {
         // Verify XDR contains mainnet network passphrase
         return Promise.resolve({ hash: "mainnet_tx", ledger: 100 } as any);
       });
       // The correct network passphrase is verified via resolveNetworkPassphrase
       // unit tests in rpc_client.test.ts. Here we just verify the tool submits.
-      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      mockHorizonServer.loadAccount.mockResolvedValue(
         makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
       );
-      vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+      mockHorizonServer.submitTransaction.mockResolvedValue({
         hash: "mainnet_tx",
         ledger: 100,
       } as any);
@@ -639,7 +594,7 @@ describe("StellarPaymentTool", () => {
       });
 
       expect(result.txHash).toBe("mainnet_tx");
-      expect(rpcClient.submitTransaction).toHaveBeenCalled();
+      expect(mockHorizonServer.submitTransaction).toHaveBeenCalled();
     });
 
     it("uses Networks.FUTURENET when STELLAR_NETWORK is futurenet", async () => {
@@ -662,17 +617,17 @@ describe("StellarPaymentTool", () => {
         };
       });
 
-      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      mockHorizonServer.loadAccount.mockResolvedValue(
         makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
       );
-      vi.mocked(rpcClient.submitTransaction).mockImplementation((tx: any) => {
+      mockHorizonServer.submitTransaction.mockImplementation((tx: any) => {
         // Verify XDR contains futurenet network passphrase
         return Promise.resolve({ hash: "futurenet_tx", ledger: 200 } as any);
       });
-      vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      mockHorizonServer.loadAccount.mockResolvedValue(
         makeMockAccount(Keypair.fromSecret(TEST_SECRET).publicKey()) as any
       );
-      vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+      mockHorizonServer.submitTransaction.mockResolvedValue({
         hash: "futurenet_tx",
         ledger: 200,
       } as any);
@@ -685,20 +640,17 @@ describe("StellarPaymentTool", () => {
       });
 
       expect(result.txHash).toBe("futurenet_tx");
-      expect(rpcClient.submitTransaction).toHaveBeenCalled();
+      expect(mockHorizonServer.submitTransaction).toHaveBeenCalled();
     });
   });
 });
 
 describe("Horizon response validation", () => {
   it("throws ZodError when submitTransaction returns malformed response", async () => {
-    vi.mocked(rpcClient.loadAccount).mockResolvedValue(
-      makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5") as any
+    mockHorizonServer.setAccount(
+      makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5")
     );
-    vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
-      hash: undefined,
-      ledger: 1,
-    } as any);
+    mockHorizonServer.setSubmitResult({ hash: undefined, ledger: 1 } as any);
 
     const tool = new StellarPaymentTool();
 
