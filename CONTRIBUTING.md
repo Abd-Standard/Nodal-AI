@@ -116,6 +116,52 @@ All jobs **must pass** before your PR can be merged.
 
 ---
 
+## Test Conventions
+
+### Global timer and spy cleanup
+
+The file `tests/helpers/globalSetup.ts` is registered as a Vitest `setupFiles` entry in `vitest.config.ts`. It registers an `afterEach` hook that fires after **every** test in the suite:
+
+```typescript
+afterEach(() => {
+  vi.useRealTimers();    // restore real timers after every test
+  vi.restoreAllMocks();  // restore all spied/mocked functions
+});
+```
+
+**What this means for you when writing tests:**
+
+- You **do not** need to call `vi.useRealTimers()` or `vi.restoreAllMocks()` yourself in `afterEach` / `afterAll` — the global hook covers it.
+- You **may still** call `vi.useFakeTimers()` inside an individual test or `beforeEach` block whenever you need controlled time. The global hook will clean up after the test completes.
+- You **should not** add a bare `vi.useFakeTimers()` at the top level of a test file (outside a `beforeEach`) unless you also pair it with an explicit `afterEach(() => vi.useRealTimers())` — module-level calls run only once and can affect test ordering.
+
+**Why the hook exists:**
+
+Individual test files previously called `vi.useFakeTimers()` / `vi.restoreAllMocks()` inconsistently. When a file forgot to clean up, fake timer state leaked into the next file executed on the same worker thread, causing timing-sensitive tests (polling, retries, streams) to hang or behave non-deterministically. The global hook eliminates this class of flaky test.
+
+---
+
+## Local Git Hooks
+
+This repository uses **Husky** to enforce code quality through local git hooks. These hooks run automatically before key git operations:
+
+### Pre-Commit Hook (`.husky/pre-commit`)
+
+Runs `scan-secrets.sh` to prevent accidental commits of sensitive data (API keys, private keys, etc.).
+
+### Pre-Push Hook (`.husky/pre-push`)
+
+**NEW**: Runs `npm test` automatically before allowing pushes to the remote repository.
+
+This prevents broken tests from being pushed and failing only during CI checks. If your tests fail locally, the push is blocked with output showing which tests failed. Fix the failing tests and try pushing again.
+
+**To bypass** (not recommended):
+```bash
+git push --no-verify
+```
+
+---
+
 ## Branch Protection Rules
 
 Repository maintainers should enable the following branch protection rules on `main`:
@@ -150,6 +196,48 @@ Repository maintainers should enable the following branch protection rules on `m
 
 ---
 
+## Release Process
+
+Nodal AI uses [Conventional Commits](https://www.conventionalcommits.org/) to automate changelog generation and GitHub Releases.
+
+### How it works
+
+1. **Version tags trigger the release workflow** (`.github/workflows/release.yml`).  
+   Push a tag matching `v<major>.<minor>.<patch>` (or a pre-release like `v1.2.3-rc.1`) to `main`:
+   ```bash
+   git tag v1.2.3
+   git push origin v1.2.3
+   ```
+2. The workflow runs `npm run changelog:update`, which prepends a new section to `CHANGELOG.md` from all conventional commits since the previous tag.
+3. A GitHub Release is created automatically with the extracted changelog section as its body.
+4. The updated `CHANGELOG.md` is committed back to `main` via a `[skip ci]` commit.
+
+### Updating the changelog locally
+
+To preview or manually update the changelog without pushing a tag:
+
+```bash
+npm run changelog:update
+```
+
+This appends new entries to `CHANGELOG.md` in place.  Review the diff and commit it if it looks correct:
+
+```bash
+git add CHANGELOG.md
+git commit -m "chore(release): update CHANGELOG.md"
+```
+
+### Conventional Commits quick reference
+
+| Prefix | Release type | Example |
+|---|---|---|
+| `fix:` | Patch | `fix(agent): handle missing nonce in x402 payload` |
+| `feat:` | Minor | `feat(tools): add SponsoredAccountTool` |
+| `feat!:` or `BREAKING CHANGE:` | Major | `feat!: remove deprecated TaskType aliases` |
+| `chore:`, `docs:`, `test:`, `refactor:` | No release | `docs: update CONTRIBUTING.md` |
+
+---
+
 ## Dependency Auditing
 
 To check for vulnerabilities in dependencies:
@@ -169,7 +257,7 @@ To check for vulnerabilities in dependencies:
 
 ## Code of Conduct
 
-We are committed to providing a welcoming and inclusive environment for all contributors. Please:
+We are committed to providing a welcoming and inclusive environment for all contributors. Please refer to [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md) for our full expectations. In summary:
 - Be respectful and considerate of others
 - Use inclusive language
 - Accept constructive feedback gracefully

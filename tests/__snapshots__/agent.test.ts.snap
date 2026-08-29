@@ -2,7 +2,9 @@
 
 exports[`AgentResult snapshot > AgentResult has expected shape on failure 1`] = `
 {
+  "correlationId": "fixed-test-id-failure",
   "error": "Test error",
+  "errorType": "UNKNOWN_ERROR",
   "success": false,
   "taskType": "stellar_payment",
 }
@@ -10,8 +12,10 @@ exports[`AgentResult snapshot > AgentResult has expected shape on failure 1`] = 
 
 exports[`AgentResult snapshot > AgentResult has expected shape on success 1`] = `
 {
+  "correlationId": "fixed-test-id-success",
   "data": {
     "ledger": 1,
+    "network": "mainnet",
     "txHash": "success_tx_hash",
   },
   "success": true,

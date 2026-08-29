@@ -66,7 +66,7 @@ vi.mock("../backend/config", () => ({
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 100,
     AGENT_SPENDING_LIMIT: "100",
-    agentKeypair: () => ({ secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73" }),
+    agentKeypair: () => ({ secret: () => "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X" }),
   },
   MAINNET_SPENDING_CAP: 10_000,
 }));
@@ -172,5 +172,70 @@ describe("PayFiAgent — stream (issue #107)", () => {
     agent.startListening("https://example.com/resource", vi.fn());
     agent.startListening("https://example.com/resource", vi.fn());
     expect(mockStream).toHaveBeenCalledOnce(); // only one stream opened
+  });
+
+  // ── SSE disconnect and reconnect scenarios (#455) ─────────────────────────
+
+  it("SSE stream emits 3 events then fires an error event — reconnect logic fires", () => {
+    const onChallenge = vi.fn();
+    let capturedOpts: Record<string, (...args: unknown[]) => void> = {};
+
+    // Capture the stream options so we can simulate SSE lifecycle events
+    (mockStream as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      (opts: Record<string, (...args: unknown[]) => void>) => {
+        capturedOpts = opts;
+        return mockStopStream;
+      },
+    );
+
+    agent.startListening("https://example.com/resource", onChallenge);
+
+    const makeValidChallenge = (nonce: string) => {
+      const challenge = {
+        resource: "https://example.com/resource",
+        amount: "1",
+        assetCode: "USDC",
+        assetIssuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+        payTo: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+        nonce,
+        expiresAt: new Date(Date.now() + 60_000).toISOString(),
+      };
+      return `x402:${Buffer.from(JSON.stringify(challenge)).toString("base64")}`;
+    };
+
+    // Emit 3 valid x402 events
+    capturedOpts["onmessage"]?.({ memo: makeValidChallenge("550e8400-e29b-41d4-a716-446655440000") });
+    capturedOpts["onmessage"]?.({ memo: makeValidChallenge("550e8400-e29b-41d4-a716-446655440001") });
+    capturedOpts["onmessage"]?.({ memo: makeValidChallenge("550e8400-e29b-41d4-a716-446655440002") });
+
+    expect(onChallenge).toHaveBeenCalledTimes(3);
+
+    // Fire an error event — the stream drops
+    capturedOpts["onerror"]?.({ message: "SSE connection dropped" });
+
+    // The agent should have called stop to close the broken stream
+    expect(mockStopStream).toHaveBeenCalled();
+  });
+
+  it("SSE stream fires a close event (clean disconnect) — listener terminates without error", () => {
+    const onChallenge = vi.fn();
+    let capturedOpts: Record<string, (...args: unknown[]) => void> = {};
+
+    (mockStream as ReturnType<typeof vi.fn>).mockImplementationOnce(
+      (opts: Record<string, (...args: unknown[]) => void>) => {
+        capturedOpts = opts;
+        return mockStopStream;
+      },
+    );
+
+    agent.startListening("https://example.com/resource", onChallenge);
+
+    // Simulate a clean SSE close
+    expect(() => {
+      capturedOpts["onclose"]?.();
+    }).not.toThrow();
+
+    // No challenges should have been forwarded
+    expect(onChallenge).not.toHaveBeenCalled();
   });
 });

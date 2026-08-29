@@ -19,10 +19,6 @@ import { createLogger } from "./utils/logger";
 
 const log = createLogger("telemetry");
 
-// OTLP_ENDPOINT is validated in the Zod schema but not yet declared on the
-// AgentConfig interface — access it via a narrow type assertion.
-const otlpEndpoint: string | undefined = (config as unknown as Record<string, unknown>).OTLP_ENDPOINT as string | undefined;
-
 let tracer: Tracer = trace.getTracer("stellar-agent-kit");
 let sdk: NodeSDK | null = null;
 
@@ -32,6 +28,7 @@ let sdk: NodeSDK | null = null;
  * are no-ops.
  */
 export function initTelemetry(): void {
+  const otlpEndpoint: string | undefined = (config as unknown as Record<string, unknown>).OTLP_ENDPOINT as string | undefined;
   if (!otlpEndpoint) {
     log.info("OTLP_ENDPOINT not configured, skipping OpenTelemetry initialisation");
     return;

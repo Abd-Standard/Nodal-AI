@@ -6,6 +6,11 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { TrustlineTool } from "../backend/tools/TrustlineTool";
 import * as rpcClient from "../backend/rpc_client";
+import { BalanceCheckTool } from "../backend/tools/BalanceCheckTool";
+
+vi.mock("../backend/tools/BalanceCheckTool", () => ({
+  BalanceCheckTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
+}));
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
@@ -20,7 +25,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -37,7 +42,7 @@ vi.mock("../backend/config", () => {
   };
 });
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
 function makeMockAccount(hasUsdc = false) {
@@ -70,8 +75,9 @@ describe("TrustlineTool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new TrustlineTool(TEST_SECRET);
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({ hash: "trust_hash", ledger: 5 } as any);
+    vi.mocked(BalanceCheckTool).mockImplementation(() => ({ execute: vi.fn().mockResolvedValue("0") }) as any);
+    tool = new TrustlineTool(TEST_SECRET);
   });
 
   it("add trustline submits changeTrust operation and returns txHash", async () => {
@@ -81,10 +87,23 @@ describe("TrustlineTool", () => {
     expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
   });
 
-  it("remove trustline submits changeTrust with limit '0'", async () => {
+  it("remove trustline submits changeTrust with limit '0' for zero balance", async () => {
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(true) as any);
     const result = await tool.execute({ assetCode: "USDC", assetIssuer: ISSUER, action: "remove" });
     expect(result.txHash).toBe("trust_hash");
+    expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+  });
+
+  it("rejects removing a trustline with a non-zero balance before submission", async () => {
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(true) as any);
+    const balanceCheck = vi.fn().mockResolvedValue("1.5");
+    vi.mocked(BalanceCheckTool).mockImplementation(() => ({ execute: balanceCheck }) as any);
+    tool = new TrustlineTool(TEST_SECRET);
+
+    await expect(
+      tool.execute({ assetCode: "USDC", assetIssuer: ISSUER, action: "remove" })
+    ).rejects.toThrow("Cannot remove trustline: non-zero balance of USDC");
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
   });
 
   it("add trustline with custom limit", async () => {
@@ -110,10 +129,29 @@ describe("TrustlineTool", () => {
     expect(exists).toBe(false);
   });
 
+  it("checkTrustline returns false for native XLM (no trustline needed)", async () => {
+    // The native balance entry has asset_type "native", which the check filters
+    // out via `b.asset_type !== "native"`. Passing any issuer for XLM must
+    // still return false — XLM is always spendable and never requires a trustline.
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(false) as any);
+    const exists = await tool.checkTrustline("XLM", ISSUER);
+    expect(exists).toBe(false);
+  });
+
   it("rejects invalid assetIssuer length", async () => {
     await expect(
       tool.execute({ assetCode: "USDC", assetIssuer: "SHORT", action: "add" })
     ).rejects.toThrow(/Invalid asset issuer/);
+  });
+
+  it("rejects a syntactically invalid 56-character assetIssuer", async () => {
+    await expect(
+      tool.execute({
+        assetCode: "USDC",
+        assetIssuer: "G" + "A".repeat(55),
+        action: "add",
+      })
+    ).rejects.toThrow(/valid Stellar public key/i);
   });
 
   it("propagates submission error", async () => {

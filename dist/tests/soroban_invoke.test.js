@@ -77,16 +77,27 @@ const rpcClient = __importStar(require("../backend/rpc_client"));
  * The sorobanServer object contains sendTransaction and getTransaction, which are
  * critical for the polling mechanism that confirms transaction settlement.
  */
-vitest_1.vi.mock("../backend/rpc_client", () => ({
-    loadAccount: vitest_1.vi.fn(),
-    submitTransaction: vitest_1.vi.fn(),
-    simulateSorobanTx: vitest_1.vi.fn(),
-    prepareSorobanTx: vitest_1.vi.fn(),
-    horizonServer: {},
-    sorobanServer: {
-        sendTransaction: vitest_1.vi.fn(),
-        getTransaction: vitest_1.vi.fn(),
-    },
+vitest_1.vi.mock("../backend/rpc_client", async () => {
+    const { Networks } = await Promise.resolve().then(() => __importStar(require("@stellar/stellar-sdk")));
+    return {
+        loadAccount: vitest_1.vi.fn(),
+        submitTransaction: vitest_1.vi.fn(),
+        simulateSorobanTx: vitest_1.vi.fn(),
+        prepareSorobanTx: vitest_1.vi.fn(),
+        resolveNetworkPassphrase: (_network) => Networks.TESTNET,
+        horizonServer: {},
+        sorobanServer: {
+            sendTransaction: vitest_1.vi.fn(),
+            getTransaction: vitest_1.vi.fn(),
+        },
+    };
+});
+vitest_1.vi.mock("../backend/logger", () => ({
+    logger: { info: vitest_1.vi.fn(), warn: vitest_1.vi.fn(), error: vitest_1.vi.fn(), debug: vitest_1.vi.fn() },
+}));
+vitest_1.vi.mock("../backend/utils/logger", () => ({
+    createLogger: vitest_1.vi.fn(() => ({ info: vitest_1.vi.fn(), warn: vitest_1.vi.fn(), error: vitest_1.vi.fn(), debug: vitest_1.vi.fn() })),
+    generateCorrelationId: vitest_1.vi.fn(() => "mock-correlation-id"),
 }));
 /**
  * Mock the config module to provide a predictable environment.
@@ -99,8 +110,8 @@ vitest_1.vi.mock("../backend/rpc_client", () => ({
  * because all RPC calls are mocked.
  */
 vitest_1.vi.mock("../backend/config", () => {
-    const { Keypair } = require("@stellar/stellar-sdk");
-    const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
+    const secret = "process.env.AGENT_SECRET_KEY";
     return {
         config: {
             STELLAR_NETWORK: "testnet",
@@ -113,6 +124,8 @@ vitest_1.vi.mock("../backend/config", () => {
             X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
             MAX_RETRIES: 3,
             RETRY_DELAY_MS: 100,
+            MAX_X402_PAYMENTS_PER_MINUTE: 10,
+            MAX_SOROBAN_FEE_STROOPS: 1_000_000,
         },
     };
 });
@@ -120,7 +133,7 @@ vitest_1.vi.mock("../backend/config", () => {
 /**
  * Test fixtures: reusable constants and helper functions.
  */
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "process.env.AGENT_SECRET_KEY";
 const VALID_CONTRACT = "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH";
 /**
  * makeMockAccount(publicKey): Constructs a mock Stellar account object.
@@ -152,12 +165,28 @@ function makeMockAccount(publicKey) {
         subentry_count: 0,
     };
 }
+/**
+ * Creates a mock prepared transaction that satisfies the post-sign signature guard.
+ * sign() mutates `signatures` in place (matching real Stellar SDK behaviour).
+ */
+function makeMockPreparedTx(fee = 500_000) {
+    const obj = { signatures: [], fee, timeBounds: {} };
+    obj.sign = vitest_1.vi.fn().mockImplementation(() => {
+        obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
+    });
+    return obj;
+}
 // ─── Tests ────────────────────────────────────────────────────────────────────
 (0, vitest_1.describe)("SorobanInvokeTool", () => {
     let tool;
     (0, vitest_1.beforeEach)(() => {
         vitest_1.vi.clearAllMocks();
         tool = new SorobanInvokeTool_1.SorobanInvokeTool();
+    });
+    // ── Timeout constant validation ────────────────────────────────────────────
+    (0, vitest_1.it)("SOROBAN_TX_TIMEOUT is within valid range [1, 300]", () => {
+        (0, vitest_1.expect)(SorobanInvokeTool_1.SOROBAN_TX_TIMEOUT).toBeGreaterThan(0);
+        (0, vitest_1.expect)(SorobanInvokeTool_1.SOROBAN_TX_TIMEOUT).toBeLessThanOrEqual(300);
     });
     // ── Input validation ────────────────────────────────────────────────────────
     /**
@@ -208,9 +237,7 @@ function makeMockAccount(publicKey) {
             vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"));
         });
         (0, vitest_1.it)("calls prepareSorobanTx before any submission", async () => {
-            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-                sign: vitest_1.vi.fn(),
-            });
+            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
             vitest_1.vi.mocked(rpcClient.sorobanServer.sendTransaction).mockResolvedValue({
                 status: "PENDING",
                 hash: "sim_test_hash",
@@ -242,10 +269,49 @@ function makeMockAccount(publicKey) {
                 args: [],
             })).rejects.toThrow(/simulation failed/);
         });
-        (0, vitest_1.it)("does NOT call sendTransaction when simulateOnly=true", async () => {
+        (0, vitest_1.it)("throws when Soroban fee exceeds MAX_SOROBAN_FEE_STROOPS", async () => {
             vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
                 sign: vitest_1.vi.fn(),
+                fee: 2_000_000,
             });
+            await (0, vitest_1.expect)(tool.execute({
+                contractId: VALID_CONTRACT,
+                method: "release",
+                args: [],
+            })).rejects.toThrow(/Soroban fee.*exceeds MAX_SOROBAN_FEE_STROOPS/);
+            (0, vitest_1.expect)(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+        });
+        (0, vitest_1.it)("rejects when the prepared fee is not numeric", async () => {
+            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
+                sign: vitest_1.vi.fn(),
+                fee: "not-a-number",
+            });
+            await (0, vitest_1.expect)(tool.execute({
+                contractId: VALID_CONTRACT,
+                method: "release",
+                args: [],
+            })).rejects.toThrow(/invalid Soroban fee/i);
+            (0, vitest_1.expect)(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+        });
+        (0, vitest_1.it)("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
+            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx(500_000));
+            vitest_1.vi.mocked(rpcClient.sorobanServer.sendTransaction).mockResolvedValue({
+                status: "PENDING",
+                hash: "fee_within_cap_hash",
+            });
+            vitest_1.vi.mocked(rpcClient.sorobanServer.getTransaction).mockResolvedValue({
+                status: "SUCCESS",
+            });
+            const result = await tool.execute({
+                contractId: VALID_CONTRACT,
+                method: "release",
+                args: [],
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("fee_within_cap_hash");
+        });
+        (0, vitest_1.it)("does NOT call sendTransaction when simulateOnly=true", async () => {
+            const mockPreparedTx = { sign: vitest_1.vi.fn() };
+            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(mockPreparedTx);
             const result = await tool.execute({
                 contractId: VALID_CONTRACT,
                 method: "release",
@@ -253,7 +319,10 @@ function makeMockAccount(publicKey) {
                 simulateOnly: true,
             });
             (0, vitest_1.expect)(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+            // Discriminated union: simulationResult must be present, txHash must be absent
             (0, vitest_1.expect)(result.simulationResult).toBeDefined();
+            (0, vitest_1.expect)(result.simulationResult).toBe(mockPreparedTx);
+            (0, vitest_1.expect)(result.txHash).toBeUndefined();
         });
     });
     // ── Submission and confirmation polling ─────────────────────────────────────
@@ -277,9 +346,7 @@ function makeMockAccount(publicKey) {
     (0, vitest_1.describe)("Submission and confirmation polling", () => {
         (0, vitest_1.beforeEach)(() => {
             vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"));
-            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-                sign: vitest_1.vi.fn(),
-            });
+            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
         });
         (0, vitest_1.it)("returns txHash after a successful confirmation on first poll", async () => {
             vitest_1.vi.mocked(rpcClient.sorobanServer.sendTransaction).mockResolvedValue({
@@ -398,7 +465,52 @@ function makeMockAccount(publicKey) {
             })).rejects.toThrow(/not found/);
         });
     });
-    // ── Args validation ────────────────────────────────────────────────────────
+    // ── Signature assertion (issue #99) ────────────────────────────────────────
+    /**
+     * Post-sign guard: verifies that the transaction has at least one signature
+     * before submission. A no-op sign() call (e.g., mutated Keypair behaviour
+     * in a future SDK version) would cause an empty signatures array, which the
+     * Stellar network rejects immediately. The guard catches this early.
+     */
+    (0, vitest_1.describe)("Post-sign signature assertion", () => {
+        (0, vitest_1.beforeEach)(() => {
+            vitest_1.vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"));
+        });
+        (0, vitest_1.it)("throws 'Transaction signing produced no signatures' when sign() is a no-op", async () => {
+            // Mock prepareSorobanTx to return a transaction whose sign() does nothing,
+            // leaving the signatures array empty.
+            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
+                sign: vitest_1.vi.fn(), // no-op — does NOT push to signatures
+                signatures: [], // empty signatures list — guard must catch this
+                fee: 500_000,
+                timeBounds: {},
+            });
+            await (0, vitest_1.expect)(tool.execute({
+                contractId: VALID_CONTRACT,
+                method: "release",
+                args: [],
+            })).rejects.toThrow("Transaction signing produced no signatures");
+            // sendTransaction must NOT have been called when signing failed
+            (0, vitest_1.expect)(rpcClient.sorobanServer.sendTransaction).not.toHaveBeenCalled();
+        });
+        (0, vitest_1.it)("submits successfully when sign() populates signatures", async () => {
+            // Use makeMockPreparedTx so sign() adds a signature entry
+            vitest_1.vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(makeMockPreparedTx());
+            vitest_1.vi.mocked(rpcClient.sorobanServer.sendTransaction).mockResolvedValue({
+                status: "PENDING",
+                hash: "signed_ok_hash",
+            });
+            vitest_1.vi.mocked(rpcClient.sorobanServer.getTransaction).mockResolvedValue({
+                status: "SUCCESS",
+            });
+            const result = await tool.execute({
+                contractId: VALID_CONTRACT,
+                method: "release",
+                args: [],
+            });
+            (0, vitest_1.expect)(result.txHash).toBe("signed_ok_hash");
+        });
+    });
     (0, vitest_1.describe)("args validation", () => {
         (0, vitest_1.it)("rejects plain JavaScript object in args array", () => {
             const result = SorobanInvokeTool_1.SorobanInvokeInputSchema.safeParse({
@@ -436,7 +548,8 @@ function makeMockAccount(publicKey) {
         });
         (0, vitest_1.it)("accepts multiple xdr.ScVal instances", () => {
             const arg1 = (0, stellar_sdk_1.nativeToScVal)(100n, { type: "i128" });
-            const arg2 = (0, stellar_sdk_1.nativeToScVal)("GABC", { type: "address" });
+            // Use a real 56-char G-address; "GABC" is not a valid Stellar address
+            const arg2 = (0, stellar_sdk_1.nativeToScVal)("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5", { type: "address" });
             const result = SorobanInvokeTool_1.SorobanInvokeInputSchema.safeParse({
                 contractId: VALID_CONTRACT,
                 method: "test",

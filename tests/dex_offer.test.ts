@@ -6,14 +6,26 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Keypair, xdr, Asset } from "@stellar/stellar-sdk";
 import { DexOfferTool, DexOfferInputSchema } from "../backend/tools/DexOfferTool";
+import { ValidationError } from "../backend/errors";
 import * as rpcClient from "../backend/rpc_client";
+import { NotFoundError } from "@stellar/stellar-sdk";
+
+const { mockOfferCall } = vi.hoisted(() => ({
+  mockOfferCall: vi.fn(),
+}));
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
   submitTransaction: vi.fn(),
-  horizonServer: {},
+  horizonServer: {
+    offers: () => ({
+      offer: () => ({
+        call: mockOfferCall,
+      }),
+    }),
+  },
   sorobanServer: {},
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
@@ -27,7 +39,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -44,7 +56,7 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
 function makeMockAccount(publicKey: string) {
@@ -130,6 +142,8 @@ describe("DexOfferTool", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    mockOfferCall.mockReset();
+    mockOfferCall.mockResolvedValue({ id: "42" });
     tool = new DexOfferTool(TEST_SECRET);
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(
       makeMockAccount(tool.publicKey) as any
@@ -150,7 +164,7 @@ describe("DexOfferTool", () => {
     expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
   });
 
-  it("creates an offer and returns the network-assigned offerId", async () => {
+  it("returns offerId from transaction result metadata for create action", async () => {
     const networkAssignedOfferId = "12345678";
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: "offer_tx_hash",
@@ -182,6 +196,40 @@ describe("DexOfferTool", () => {
 
   // ── Update offer amount ─────────────────────────────────────────────────────
 
+  it("throws ValidationError when updating a non-existent offer", async () => {
+    mockOfferCall.mockRejectedValueOnce(new NotFoundError("Offer not found", {}));
+
+    const promise = tool.execute({
+      action: "update",
+      ...BASE_OFFER,
+      offerId: "999",
+    });
+
+    await expect(promise).rejects.toThrow("Offer 999 not found on Stellar network");
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("throws ValidationError when deleting a non-existent offer", async () => {
+    mockOfferCall.mockRejectedValueOnce(new NotFoundError("Offer not found", {}));
+
+    await expect(
+      tool.execute({
+        action: "delete",
+        ...BASE_OFFER,
+        offerId: "404",
+      })
+    ).rejects.toThrow(ValidationError);
+
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("does not verify offer existence for create action", async () => {
+    await tool.execute({ action: "create", ...BASE_OFFER });
+
+    expect(mockOfferCall).not.toHaveBeenCalled();
+    expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+  });
+
   it("updates an existing offer amount", async () => {
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: "update_tx_hash",
@@ -201,13 +249,13 @@ describe("DexOfferTool", () => {
 
   // ── Input validation ────────────────────────────────────────────────────────
 
-  it("rejects update without offerId", async () => {
+  it("rejects update action without offerId", async () => {
     await expect(
       tool.execute({ action: "update", ...BASE_OFFER })
     ).rejects.toThrow(/offerId is required/);
   });
 
-  it("rejects delete without offerId", async () => {
+  it("rejects delete action without offerId", async () => {
     await expect(
       tool.execute({ action: "delete", ...BASE_OFFER })
     ).rejects.toThrow(/offerId is required/);
@@ -229,6 +277,13 @@ describe("DexOfferTool", () => {
     await expect(
       tool.execute({ action: "buy", ...BASE_OFFER })
     ).rejects.toThrow();
+  });
+
+  it("propagates network errors from submitTransaction", async () => {
+    vi.mocked(rpcClient.submitTransaction).mockRejectedValueOnce(new Error("Network Error"));
+    await expect(
+      tool.execute({ action: "create", ...BASE_OFFER })
+    ).rejects.toThrow("Network Error");
   });
 });
 

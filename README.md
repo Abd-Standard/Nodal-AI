@@ -38,21 +38,10 @@ Nodal AI is built on a clean, three-pillar separation of concerns. For a deep di
    ```bash
    git clone https://github.com/your-username/nodal-ai.git
    cd nodal-ai
-   npm run setup
+   cp ..env .env
    ```
 
-   `npm run setup` runs an interactive onboarding script (`scripts/setup.ts`) that prompts for each
-   required value — validating Stellar key formats for `AGENT_SECRET_KEY` and `X402_ASSET_ISSUER` as
-   you type — and writes the result to `.env`. It will ask before overwriting an existing `.env`.
-
-   Prefer to do it by hand? Copy `.env.example` to `.env` instead and fill in at minimum
-   `AGENT_SECRET_KEY`, `HORIZON_URL`, `SOROBAN_RPC_URL`, and `X402_ASSET_ISSUER`:
-
-   ```bash
-   cp .env.example .env
-   ```
-
-   See [`.env.example`](./.env.example) for the full list of variables and their descriptions.
+   Open `.env` and fill in at minimum `AGENT_SECRET_KEY`, `HORIZON_URL`, `SOROBAN_RPC_URL`, and `X402_ASSET_ISSUER`. See [`..env`](./..env) for the full list of variables and their descriptions.
 
 2. **Install Dependencies:**
 
@@ -138,6 +127,7 @@ PayFiAgent enforces two layers of spending limits to prevent runaway payments:
 These limits apply to:
 - Direct `stellar_payment` tasks via `StellarPaymentTool`
 - `x402_respond` tasks that trigger automatic payment via `X402PaymentTool`
+- `soroban_invoke` tasks whose contract calls internally move funds. A contract invocation can trigger Stellar Asset Contract (SAC) transfers (`transfer`, `transfer_from`, `burn`) that are invisible in the request payload, so `SorobanInvokeTool` derives the amount from the mandatory Soroban simulation: it sums the simulated SAC events that debit the agent, rejects the invocation when the total exceeds the limit (error: `"Contract invocation transfers X ... exceeds AGENT_SPENDING_LIMIT of Y"`), and records within-limit spends into the same rolling spending window as payments. Dry-runs (`simulateOnly: true`) are checked but never recorded, since no funds move.
 
 ### Mainnet Checklist
 
@@ -164,7 +154,7 @@ We are actively participating in the **Stellar Wave** program! We welcome contri
 
 ## Examples
 
-Runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `.env.example` to `.env` and fill in your values, then run any script with:
+Three runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `..env` to `.env` and fill in your values, then run any script with:
 
 ```bash
 npx ts-node scripts/examples/<script>.ts
@@ -194,15 +184,36 @@ Responds to a sample x402 payment challenge and prints the resulting `X402Paymen
 npx ts-node scripts/examples/respond_x402.ts
 ```
 
-### `batch_payment_csv.ts` — batch_payment
+### `multisig_payment.ts` — multisig_payment
 
-Reads payment targets from a CSV file (`destination,amount,assetCode` columns) and dispatches
-them as a single atomic `batch_payment` transaction. Prints a summary of the outcome — since the
-batch is atomic, it is either all payments succeeded or all failed. A sample CSV is provided at
-`scripts/examples/sample_payments.csv`.
+Demonstrates the two-phase multisig workflow: first dispatch returns an unsigned XDR for external signature collection, then re-dispatch with collected signatures to submit (simulate-only in this example).
 
 ```bash
-npx ts-node scripts/examples/batch_payment_csv.ts scripts/examples/sample_payments.csv
+npx ts-node scripts/examples/multisig_payment.ts
+```
+
+### `place_dex_offer.ts` — dex_offer
+
+Places a manage-sell offer on the Stellar DEX. This example creates an offer to sell XLM for USDC at a specified price. Use `action: "create"` to place, `"update"` to modify, or `"delete"` to cancel.
+
+```bash
+npx ts-node scripts/examples/place_dex_offer.ts
+```
+
+### `query_contract.ts` — soroban_query
+
+Performs a read-only query on a Soroban contract without broadcasting. This example calls `get_state` on a deployed escrow contract to verify state after deployment. Pass the contract address via `CONTRACT_ID`:
+
+```bash
+CONTRACT_ID=C... npx ts-node scripts/examples/query_contract.ts
+```
+
+### `fee_bump.ts` — fee_bump
+
+Wraps a transaction in a fee-bump envelope for sponsored retry flows. This is useful when the agent needs to pay fees on behalf of a transaction signed by a different account. Pass the inner transaction XDR via `INNER_TX_XDR`:
+
+```bash
+INNER_TX_XDR=AAAA... npx ts-node scripts/examples/fee_bump.ts
 ```
 
 ---
@@ -244,9 +255,18 @@ The primary integration surface for developers. Dispatch tasks to the agent via 
 ### TaskType
 
 ```typescript
-type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump"
+type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump" | "account_info"
 ```
 
+All three values are wired into `PayFiAgent.run()` in `backend/agent.ts`. Any unrecognised type throws `"Unknown task type: <value>"` immediately at dispatch time.
+
+| Value | Tool | Description |
+|-------|------|-------------|
+| `stellar_payment` | `StellarPaymentTool` | Submit a native XLM or custom Stellar asset payment via Horizon. Enforces the per-transaction `AGENT_SPENDING_LIMIT` and the mainnet spending cap before execution. |
+| `soroban_invoke` | `SorobanInvokeTool` | Invoke any Soroban smart contract function. Always runs a mandatory simulation pass via Soroban RPC before broadcast; set `simulateOnly: true` for a dry-run that skips submission. |
+| `x402_respond` | `X402PaymentTool` | Respond to an [x402](https://github.com/x402-foundation/x402) `402 Payment Required` challenge. Validates the challenge schema, enforces spending limits, delegates to `StellarPaymentTool`, and returns an `X402PaymentProof`. |
+
+> **Standalone utilities:** `BalanceCheckTool` (`backend/tools/BalanceCheckTool.ts`) and `SorobanQueryTool` (`backend/tools/SorobanQueryTool.ts`) are importable directly and are not dispatched through `PayFiAgent.run()`. Use them outside the agent task loop when you only need a read-only query.
 | Value | Description |
 |-------|-------------|
 | `stellar_payment` | Native XLM or custom asset payment via Horizon |
@@ -254,6 +274,7 @@ type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_pa
 | `x402_respond` | Respond to an x402 payment challenge with spending limit guard |
 | `path_payment` | Cross-asset path payment strict send via the Stellar DEX |
 | `fee_bump` | Wrap an existing transaction in a fee-bump envelope for sponsored retry |
+| `account_info` | Fetch the agent's account balances, sequence number, and trustlines from Horizon |
 
 ### AgentTask
 
@@ -266,8 +287,18 @@ interface AgentTask {
 
 Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }`
-- `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; ... }`
+- `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; simulateOnly?: boolean; ... }`
 - `x402_respond`: `{ resource: string; amount: string; assetCode?: string; assetIssuer?: string; payTo: string; nonce: string; expiresAt: string }`
+- `change_trust`: `{ assetCode: string; assetIssuer: string; action: "add" | "remove"; limit?: string }`
+- `batch_payment`: `{ payments: PaymentInput[] }` (max 100 payments; aggregate spending limit enforced)
+- `multisig_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string; additionalSigners: string[]; minSignatures: number; signatures?: string[] }`
+- `dex_offer`: `{ action: "create" | "update" | "delete"; selling: Asset; buying: Asset; amount: string; price: string; offerId?: string | number }`
+- `path_payment`: `{ destination: string; sendAsset: Asset; sendMax: string; destAsset: Asset; destAmount: string; ... }`
+- `fee_bump`: `{ innerTx: string; feeAccount: string; maxFee: string }`
+- `account_info`: `{ publicKey?: string }`
+- `inflation`: `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
+- `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
+- `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
 
 ### AgentResult
 
@@ -277,10 +308,25 @@ interface AgentResult {
   taskType: TaskType;
   data?: unknown;
   error?: string;
+  errorType?: string;
+  correlationId?: string;
+  durationMs?: number;
+  sequenceIndex?: number;
 }
 ```
 
 Task execution result. On success, `data` contains the tool's output. On failure, `error` is populated.
+
+| Field | Present | Meaning |
+|---|---|---|
+| `success` | always | Whether the task completed. |
+| `taskType` | always | The task type that was dispatched. |
+| `data` | on success | The tool's output. |
+| `error` | on failure | Failure message. For a `StructuredError` carrying context, the context is appended as `\| context: {...}` JSON — an auth rejection, for example, reports the signer that was presented and the one expected. Signing material is stripped before serialisation. |
+| `errorType` | on failure | Machine-readable category (`UNAUTHORIZED_ERROR`, `TRANSACTION_FAILURE`, …) so callers can branch without string matching. |
+| `correlationId` | always | Ties together every log line, persisted result, and webhook for this execution. |
+| `durationMs` | usually | Wall-clock execution time. |
+| `sequenceIndex` | `runSequence` only | Zero-based position of the task within the `runSequence` call. Since the sequence stops at the first failure, the last entry's `sequenceIndex` is the index of the task that failed — and it stays correct after the results are filtered or sorted, which array position does not. Absent on `run()`. |
 
 ### Usage Example
 
