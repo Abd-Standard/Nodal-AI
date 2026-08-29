@@ -196,6 +196,48 @@ Repository maintainers should enable the following branch protection rules on `m
 
 ---
 
+## Release Process
+
+Nodal AI uses [Conventional Commits](https://www.conventionalcommits.org/) to automate changelog generation and GitHub Releases.
+
+### How it works
+
+1. **Version tags trigger the release workflow** (`.github/workflows/release.yml`).  
+   Push a tag matching `v<major>.<minor>.<patch>` (or a pre-release like `v1.2.3-rc.1`) to `main`:
+   ```bash
+   git tag v1.2.3
+   git push origin v1.2.3
+   ```
+2. The workflow runs `npm run changelog:update`, which prepends a new section to `CHANGELOG.md` from all conventional commits since the previous tag.
+3. A GitHub Release is created automatically with the extracted changelog section as its body.
+4. The updated `CHANGELOG.md` is committed back to `main` via a `[skip ci]` commit.
+
+### Updating the changelog locally
+
+To preview or manually update the changelog without pushing a tag:
+
+```bash
+npm run changelog:update
+```
+
+This appends new entries to `CHANGELOG.md` in place.  Review the diff and commit it if it looks correct:
+
+```bash
+git add CHANGELOG.md
+git commit -m "chore(release): update CHANGELOG.md"
+```
+
+### Conventional Commits quick reference
+
+| Prefix | Release type | Example |
+|---|---|---|
+| `fix:` | Patch | `fix(agent): handle missing nonce in x402 payload` |
+| `feat:` | Minor | `feat(tools): add SponsoredAccountTool` |
+| `feat!:` or `BREAKING CHANGE:` | Major | `feat!: remove deprecated TaskType aliases` |
+| `chore:`, `docs:`, `test:`, `refactor:` | No release | `docs: update CONTRIBUTING.md` |
+
+---
+
 ## Dependency Auditing
 
 To check for vulnerabilities in dependencies:

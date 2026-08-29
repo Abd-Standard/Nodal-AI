@@ -51,3 +51,6 @@ yarn-error.log*
 # Temporary files
 tmp/
 temp/
+
+# Generated API docs (TypeDoc)
+docs/api/
