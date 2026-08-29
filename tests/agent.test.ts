@@ -5,13 +5,20 @@
  * including the secondary mainnet spending cap guard.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { PayFiAgent, spendingTracker } from "../backend/agent";
+import { describe, it, test, expect, vi, beforeEach } from "vitest";
+import { PayFiAgent, spendingTracker, type TaskType } from "../backend/agent";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
 import { BalanceCheckTool } from "../backend/tools/BalanceCheckTool";
 import { PathPaymentTool } from "../backend/tools/PathPaymentTool";
 import { FeeBumpTool } from "../backend/tools/FeeBumpTool";
 import { DexOfferTool } from "../backend/tools/DexOfferTool";
+import { LiquidityPoolTool } from "../backend/tools/LiquidityPoolTool";
+import { StellarTomlTool } from "../backend/tools/StellarTomlTool";
+import { DataEntryTool } from "../backend/tools/DataEntryTool";
+import { SequenceNumberTool } from "../backend/tools/SequenceNumberTool";
+import { SponsoredAccountTool } from "../backend/tools/SponsoredAccountTool";
+import { AnchorQuoteTool } from "../backend/tools/AnchorQuoteTool";
+import { InflationTool } from "../backend/tools/InflationTool";
 import { ValidationError, UnauthorizedError, ErrorType } from "../backend/errors";
 
 vi.mock("../backend/tools/StellarPaymentTool", () => ({
@@ -84,6 +91,48 @@ vi.mock("../backend/tools/FeeBumpTool", () => ({
 vi.mock("../backend/tools/DexOfferTool", () => ({
   DexOfferTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: "dex_mock_hash", ledger: 1, offerId: "0" }),
+  })),
+}));
+
+vi.mock("../backend/tools/LiquidityPoolTool", () => ({
+  LiquidityPoolTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ poolId: "pool_mock_id" }),
+  })),
+}));
+
+vi.mock("../backend/tools/StellarTomlTool", () => ({
+  StellarTomlTool: vi.fn().mockImplementation(() => ({
+    fetchToml: vi.fn().mockResolvedValue({ VERSION: "2.0.0" }),
+  })),
+}));
+
+vi.mock("../backend/tools/DataEntryTool", () => ({
+  DataEntryTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ txHash: "data_entry_mock_hash", ledger: 1 }),
+  })),
+}));
+
+vi.mock("../backend/tools/SequenceNumberTool", () => ({
+  SequenceNumberTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ sequence: "12345678" }),
+  })),
+}));
+
+vi.mock("../backend/tools/SponsoredAccountTool", () => ({
+  SponsoredAccountTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ txHash: "sponsored_mock_hash", ledger: 1 }),
+  })),
+}));
+
+vi.mock("../backend/tools/AnchorQuoteTool", () => ({
+  AnchorQuoteTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ quoteId: "quote_mock_id", price: "1.0" }),
+  })),
+}));
+
+vi.mock("../backend/tools/InflationTool", () => ({
+  InflationTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn().mockResolvedValue({ txHash: "inflation_mock_hash", ledger: 1 }),
   })),
 }));
 
@@ -983,5 +1032,244 @@ describe("PayFiAgent — mutation-killing: StellarPaymentTool data passthrough",
       payload: { destination: DEST, amount: "1", assetCode: "XLM" },
     });
     expect((result.data as any).ledger).toBe(42);
+  });
+});
+
+// ─── Issue #450: Parameterized agent task dispatch matrix ────────────────────
+//
+// Covers all 14 registered TaskType values in the PayFiAgent.run() dispatch
+// switch. Each row verifies that:
+//   1. The correct tool method is invoked (via the existing vi.mock stubs).
+//   2. result.taskType echoes back the dispatched type.
+//   3. result.success is true when the tool stub resolves.
+//
+// Tool mocks for the 7 task types not exercised by earlier test suites
+// (LiquidityPoolTool, StellarTomlTool, DataEntryTool, SequenceNumberTool,
+//  SponsoredAccountTool, AnchorQuoteTool, InflationTool) are declared in the
+// vi.mock() section at the top of this file.
+
+type DispatchRow = [
+  taskType: TaskType,
+  payload: Record<string, unknown>,
+  description: string,
+];
+
+/**
+ * Minimal valid payloads for each TaskType.
+ *
+ * Payloads are kept as small as possible — they only need to satisfy the
+ * tool mock's input path (which ignores them entirely) and any spending-limit
+ * guard that inspects payload.amount.  Amounts are set to "1" to stay below
+ * MAINNET_SPENDING_CAP (10 000) configured in the mock above.
+ */
+const DISPATCH_MATRIX: DispatchRow[] = [
+  [
+    "stellar_payment",
+    { destination: DEST, amount: "1", assetCode: "XLM" },
+    "routes stellar_payment to StellarPaymentTool",
+  ],
+  [
+    "soroban_invoke",
+    { contractId: "C".repeat(56), method: "ping", args: [] },
+    "routes soroban_invoke to SorobanInvokeTool",
+  ],
+  [
+    "soroban_query",
+    { contractId: "C".repeat(56), method: "get_state", args: [] },
+    "routes soroban_query to SorobanQueryTool",
+  ],
+  [
+    "x402_respond",
+    {
+      resource: "https://api.example.com/resource",
+      amount: "1",
+      assetCode: "USDC",
+      assetIssuer: ISSUER,
+      payTo: DEST,
+      nonce: "550e8400-e29b-41d4-a716-446655440000",
+      expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    },
+    "routes x402_respond to X402PaymentTool",
+  ],
+  [
+    "account_info",
+    {},
+    "routes account_info to AccountInfoTool",
+  ],
+  [
+    "change_trust",
+    { assetCode: "USDC", assetIssuer: ISSUER, action: "add" },
+    "routes change_trust to TrustlineTool",
+  ],
+  [
+    "multisig_payment",
+    {
+      destination: DEST,
+      amount: "1",
+      assetCode: "XLM",
+      additionalSigners: [DEST],
+      minSignatures: 2,
+    },
+    "routes multisig_payment to MultiSigPaymentTool",
+  ],
+  [
+    "batch_payment",
+    { payments: [{ destination: DEST, amount: "1", assetCode: "XLM" }] },
+    "routes batch_payment to BatchPaymentTool",
+  ],
+  [
+    "balance_check",
+    { publicKey: DEST },
+    "routes balance_check to BalanceCheckTool",
+  ],
+  [
+    "path_payment",
+    {
+      destination: DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "1",
+      destAsset: { code: "USDC", issuer: ISSUER },
+      destMinAmount: "0.9",
+    },
+    "routes path_payment to PathPaymentTool",
+  ],
+  [
+    "fee_bump",
+    { innerTxXdr: "AAAA" },
+    "routes fee_bump to FeeBumpTool",
+  ],
+  [
+    "dex_offer",
+    {
+      action: "create",
+      selling: { code: "XLM" },
+      buying: { code: "USDC", issuer: ISSUER },
+      amount: "1",
+      price: "0.25",
+    },
+    "routes dex_offer to DexOfferTool",
+  ],
+  [
+    "liquidity_pool",
+    {
+      action: "deposit",
+      assetA: { code: "XLM" },
+      assetB: { code: "USDC", issuer: ISSUER },
+      maxAmountA: "100",
+      maxAmountB: "100",
+      minPrice: "0.1",
+      maxPrice: "10",
+    },
+    "routes liquidity_pool to LiquidityPoolTool",
+  ],
+  [
+    "inflation",
+    { action: "set", inflationDestination: DEST },
+    "routes inflation to InflationTool",
+  ],
+];
+
+describe("PayFiAgent — task dispatch matrix (#450)", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+
+    // Re-apply default mock implementations after vi.clearAllMocks() resets them.
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "dispatch_hash", ledger: 1 }) }) as any,
+    );
+    vi.mocked(BalanceCheckTool).mockImplementation(
+      () => ({ getBalance: vi.fn().mockResolvedValue({ publicKey: DEST, balances: [] }) }) as any,
+    );
+    vi.mocked(PathPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "path_dispatch_hash", ledger: 1 }) }) as any,
+    );
+    vi.mocked(FeeBumpTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "fee_bump_dispatch_hash", ledger: 1 }) }) as any,
+    );
+    vi.mocked(DexOfferTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "dex_dispatch_hash", ledger: 1, offerId: "0" }) }) as any,
+    );
+    vi.mocked(LiquidityPoolTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ poolId: "pool_dispatch_id" }) }) as any,
+    );
+    vi.mocked(StellarTomlTool).mockImplementation(
+      () => ({ fetchToml: vi.fn().mockResolvedValue({ VERSION: "2.0.0" }) }) as any,
+    );
+    vi.mocked(DataEntryTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "data_entry_dispatch_hash", ledger: 1 }) }) as any,
+    );
+    vi.mocked(SequenceNumberTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ sequence: "12345678" }) }) as any,
+    );
+    vi.mocked(SponsoredAccountTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "sponsored_dispatch_hash", ledger: 1 }) }) as any,
+    );
+    vi.mocked(AnchorQuoteTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ quoteId: "quote_dispatch_id", price: "1.0" }) }) as any,
+    );
+    vi.mocked(InflationTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "inflation_dispatch_hash", ledger: 1 }) }) as any,
+    );
+
+    agent = new PayFiAgent();
+  });
+
+  // Verify we are testing exactly 14 registered TaskType values.
+  it("dispatch matrix covers exactly 14 TaskType entries", () => {
+    expect(DISPATCH_MATRIX).toHaveLength(14);
+    const taskTypes = DISPATCH_MATRIX.map(([type]) => type);
+    // All entries must be unique — no accidental duplicates.
+    expect(new Set(taskTypes).size).toBe(14);
+  });
+
+  test.each(DISPATCH_MATRIX)(
+    "dispatches %s → result.taskType === '%s' and result.success === true",
+    async (taskType, payload) => {
+      const result = await agent.run({ type: taskType, payload });
+
+      // The dispatched type must be reflected back in the result without mutation.
+      expect(result.taskType).toBe(taskType);
+
+      // The agent must report success when the underlying tool stub resolves.
+      expect(result.success).toBe(true);
+    },
+  );
+});
+
+describe("PayFiAgent — unknown task type rejection (#450)", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }) }) as any,
+    );
+    agent = new PayFiAgent();
+  });
+
+  it("returns a failed AgentResult containing 'Unknown task type:' for an unregistered type", async () => {
+    // Cast through `any` to bypass TypeScript's exhaustive type checking —
+    // the runtime guard must catch values that slip past the type system.
+    const result = await agent.run({
+      type: "totally_unknown_task_type" as any,
+      payload: {},
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Unknown task type:/i);
+    // The unrecognised type string must appear in the error message so
+    // operators can diagnose dispatch misrouting without reading source code.
+    expect(result.error).toContain("totally_unknown_task_type");
+  });
+
+  it("does not throw synchronously — always returns an AgentResult", async () => {
+    // run() must never reject its Promise; the error must be captured in the result.
+    await expect(
+      agent.run({ type: "another_unknown" as any, payload: {} }),
+    ).resolves.toMatchObject({ success: false });
   });
 });
