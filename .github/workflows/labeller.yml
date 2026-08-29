@@ -1,0 +1,31 @@
+# .github/workflows/labeller.yml
+#
+# Automatically labels pull requests based on changed file paths.
+# Labels are defined in .github/labeler.yml.
+#
+# Requires the GITHUB_TOKEN to have write access to issues/pull-requests.
+# This is granted by default in public repositories.
+
+name: PR Labeller
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  label:
+    name: Apply path-based labels
+    runs-on: ubuntu-latest
+    # Allow the workflow to add/remove labels on pull requests.
+    permissions:
+      contents: read
+      pull-requests: write
+
+    steps:
+      - name: Apply labels
+        uses: actions/labeler@v5
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          configuration-path: .github/labeler.yml
+          # Sync labels on every push — remove labels whose paths no longer match.
+          sync-labels: true
