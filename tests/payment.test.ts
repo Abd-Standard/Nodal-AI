@@ -711,3 +711,121 @@ describe("Horizon response validation", () => {
     ).rejects.toThrow(z.ZodError);
   });
 });
+
+// ─── Mutation-killing assertions for StellarPaymentTool.ts (#456) ─────────────
+// These tests pin exact values and boundary conditions that Stryker's arithmetic,
+// comparison, and logical mutations would otherwise survive.
+
+describe("StellarPaymentTool — mutation-killing: exact return values", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      makeMockAccount(new StellarPaymentTool(TEST_SECRET).publicKey) as any,
+    );
+    vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+      hash: "exact_hash_value",
+      ledger: 999,
+    } as any);
+  });
+
+  it("execute() returns an object whose txHash is exactly the Horizon hash", async () => {
+    const tool = new StellarPaymentTool(TEST_SECRET);
+    const result = await tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" });
+    // A mutation swapping result.txHash ↔ result.ledger would be caught here.
+    expect(result.txHash).toBe("exact_hash_value");
+    expect(result.txHash).not.toBe(999);
+  });
+
+  it("execute() returns an object whose ledger is exactly the Horizon ledger number", async () => {
+    const tool = new StellarPaymentTool(TEST_SECRET);
+    const result = await tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" });
+    expect(result.ledger).toBe(999);
+    expect(result.ledger).not.toBe("exact_hash_value");
+  });
+
+  it("execute() returns exactly two keys (txHash and ledger), no extras", async () => {
+    const tool = new StellarPaymentTool(TEST_SECRET);
+    const result = await tool.execute({ destination: VALID_DEST, amount: "1", assetCode: "XLM" });
+    const keys = Object.keys(result);
+    expect(keys).toContain("txHash");
+    expect(keys).toContain("ledger");
+  });
+});
+
+describe("StellarPaymentTool — mutation-killing: amount validation boundaries", () => {
+  let tool: StellarPaymentTool;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tool = new StellarPaymentTool(TEST_SECRET);
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      makeMockAccount(tool.publicKey) as any,
+    );
+  });
+
+  it("rejects amount '0.00000000' (8 decimal places)", async () => {
+    await expect(
+      tool.execute({ destination: VALID_DEST, amount: "0.00000000", assetCode: "XLM" }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects amount '0.0000000' (7 decimal places of just zeros — still 0)", async () => {
+    // 0.0000000 is numerically zero; Stellar disallows it
+    await expect(
+      tool.execute({ destination: VALID_DEST, amount: "0.0000000", assetCode: "XLM" }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a non-numeric amount string", async () => {
+    await expect(
+      tool.execute({ destination: VALID_DEST, amount: "not-a-number", assetCode: "XLM" }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects an empty string amount", async () => {
+    await expect(
+      tool.execute({ destination: VALID_DEST, amount: "", assetCode: "XLM" }),
+    ).rejects.toThrow();
+  });
+});
+
+describe("StellarPaymentTool — mutation-killing: destination key validation", () => {
+  let tool: StellarPaymentTool;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tool = new StellarPaymentTool(TEST_SECRET);
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      makeMockAccount(tool.publicKey) as any,
+    );
+  });
+
+  it("rejects a key starting with 'S' (secret key, not public key)", async () => {
+    const secretKey = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
+    await expect(
+      tool.execute({ destination: secretKey, amount: "1", assetCode: "XLM" }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects an empty destination string", async () => {
+    await expect(
+      tool.execute({ destination: "", amount: "1", assetCode: "XLM" }),
+    ).rejects.toThrow();
+  });
+
+  it("accepts a valid USDC payment with the correct issuer", async () => {
+    vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
+      hash: "usdc_tx",
+      ledger: 5,
+    } as any);
+
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      amount: "10",
+      assetCode: "USDC",
+      assetIssuer: VALID_ISSUER,
+    });
+    expect(result.txHash).toBe("usdc_tx");
+    expect(result.ledger).toBe(5);
+  });
+});

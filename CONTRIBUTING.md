@@ -116,6 +116,31 @@ All jobs **must pass** before your PR can be merged.
 
 ---
 
+## Test Conventions
+
+### Global timer and spy cleanup
+
+The file `tests/helpers/globalSetup.ts` is registered as a Vitest `setupFiles` entry in `vitest.config.ts`. It registers an `afterEach` hook that fires after **every** test in the suite:
+
+```typescript
+afterEach(() => {
+  vi.useRealTimers();    // restore real timers after every test
+  vi.restoreAllMocks();  // restore all spied/mocked functions
+});
+```
+
+**What this means for you when writing tests:**
+
+- You **do not** need to call `vi.useRealTimers()` or `vi.restoreAllMocks()` yourself in `afterEach` / `afterAll` — the global hook covers it.
+- You **may still** call `vi.useFakeTimers()` inside an individual test or `beforeEach` block whenever you need controlled time. The global hook will clean up after the test completes.
+- You **should not** add a bare `vi.useFakeTimers()` at the top level of a test file (outside a `beforeEach`) unless you also pair it with an explicit `afterEach(() => vi.useRealTimers())` — module-level calls run only once and can affect test ordering.
+
+**Why the hook exists:**
+
+Individual test files previously called `vi.useFakeTimers()` / `vi.restoreAllMocks()` inconsistently. When a file forgot to clean up, fake timer state leaked into the next file executed on the same worker thread, causing timing-sensitive tests (polling, retries, streams) to hang or behave non-deterministically. The global hook eliminates this class of flaky test.
+
+---
+
 ## Local Git Hooks
 
 This repository uses **Husky** to enforce code quality through local git hooks. These hooks run automatically before key git operations:

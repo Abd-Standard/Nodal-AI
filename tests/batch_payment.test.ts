@@ -3,8 +3,10 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { ZodError } from "zod";
 import { BatchPaymentTool } from "../backend/tools/BatchPaymentTool";
 import * as rpcClient from "../backend/rpc_client";
+import { config } from "../backend/config";
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
@@ -212,6 +214,63 @@ describe("BatchPaymentTool", () => {
     it("reports skipped as 0 on a successful batch", async () => {
       const result = await tool.execute({ payments: [GOOD1, GOOD2] });
       expect(result.skipped).toBe(0);
+    });
+  });
+
+  // #451 — boundary tests for the 100-payment ceiling and the aggregate
+  // spending limit, plus a basic throughput check.
+  describe("100-payment boundary and aggregate spend limit", () => {
+    it("accepts exactly 100 payments and completes well under a second", async () => {
+      const payments = Array.from({ length: 100 }, () => ({
+        destination: DEST1,
+        amount: "0.01",
+        assetCode: "XLM",
+      }));
+
+      const start = Date.now();
+      const result = await tool.execute({ payments });
+      const elapsedMs = Date.now() - start;
+
+      expect(result.txHash).toBe("batch_tx_hash");
+      expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
+      // Fully mocked network calls — this is a smoke check that the 100-item
+      // pre-flight loop has no accidental O(n^2) or leak-shaped slowdown.
+      expect(elapsedMs).toBeLessThan(1000);
+    });
+
+    it("rejects 101 payments before ever touching the network", async () => {
+      const payments = Array.from({ length: 101 }, () => ({
+        destination: DEST1,
+        amount: "0.01",
+        assetCode: "XLM",
+      }));
+
+      // Enforced by BatchPaymentInputSchema's `.max(100)` via Zod's own
+      // .parse(), so the tool throws the raw ZodError rather than wrapping it
+      // in the project's ValidationError — asserting the real thrown type.
+      await expect(tool.execute({ payments })).rejects.toThrow(ZodError);
+      expect(rpcClient.loadAccount).not.toHaveBeenCalled();
+      expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+    });
+
+    it("rejects 100 payments of 0.11 XLM against a tightened AGENT_SPENDING_LIMIT of 10", async () => {
+      // 100 × 0.11 = 11, which exceeds a limit of 10. Mutates the shared
+      // mocked config for this one test and restores it, since every other
+      // test in this file relies on the default limit of 1000.
+      const original = (config as { AGENT_SPENDING_LIMIT: string }).AGENT_SPENDING_LIMIT;
+      (config as { AGENT_SPENDING_LIMIT: string }).AGENT_SPENDING_LIMIT = "10";
+      try {
+        const payments = Array.from({ length: 100 }, () => ({
+          destination: DEST1,
+          amount: "0.11",
+          assetCode: "XLM",
+        }));
+
+        await expect(tool.execute({ payments })).rejects.toThrow(/AGENT_SPENDING_LIMIT/);
+        expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+      } finally {
+        (config as { AGENT_SPENDING_LIMIT: string }).AGENT_SPENDING_LIMIT = original;
+      }
     });
   });
 });

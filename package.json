@@ -16,6 +16,7 @@
     "check:wasm-size": "bash scripts/check_wasm_size.sh",
     "test:e2e": "vitest run tests/e2e/**",
     "test:all": "npm run test:rust && npm run test:ts",
+    "test:mutation": "stryker run stryker.config.mjs",
     "lint": "eslint backend/**/*.ts tests/**/*.ts",
     "audit": "npm audit --audit-level=high",
     "prepare": "husky install",
@@ -43,6 +44,8 @@
     "zod": "3.25.76"
   },
   "devDependencies": {
+    "@stryker-mutator/core": "8.7.1",
+    "@stryker-mutator/vitest-runner": "8.7.1",
     "@types/better-sqlite3": "7.6.13",
     "@types/node": "20.19.43",
     "@types/opossum": "8.1.7",

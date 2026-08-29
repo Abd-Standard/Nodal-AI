@@ -37,6 +37,8 @@ import {
   Networks,
 } from "@stellar/stellar-sdk";
 import { randomUUID } from "crypto";
+import * as http from "http";
+import type { AddressInfo } from "net";
 import axios from "axios";
 import { PayFiAgent } from "../../backend/agent";
 import { X402PaymentTool, X402Challenge } from "../../backend/tools/X402PaymentTool";
@@ -129,4 +131,89 @@ describe("x402 round-trip E2E — testnet", () => {
     const verifier = new X402PaymentTool();
     await expect(verifier.verify(result.data as any, challenge)).resolves.not.toThrow();
   }, 60_000);
+
+  // #452 — the tests above only ever exercise the *client* half of x402
+  // (agent.run() called directly with a challenge object). This drives the
+  // full HTTP round trip against a local mock resource server that plays the
+  // other half of the protocol: it issues the 402 challenge, then accepts or
+  // rejects the follow-up request based on the proof header.
+  //
+  // Gated on RUN_E2E in addition to the file's existing testnet
+  // prerequisites, since it reuses the funded agent/asset from beforeAll and
+  // still needs Friendbot/Horizon network access.
+  describe.skipIf(!process.env.RUN_E2E)("mock resource server round trip", () => {
+    it("receives a 402 challenge, pays it, and gets 200 back with a valid proof", async () => {
+      const challenge: X402Challenge = {
+        resource: "", // filled in below once the mock server has a port
+        amount: "1.0000000",
+        assetCode: ASSET_CODE,
+        assetIssuer: issuerKp.publicKey(),
+        payTo: resourceServerKp.publicKey(),
+        nonce: randomUUID(),
+        expiresAt: new Date(Date.now() + 5 * 60_000).toISOString(),
+      };
+
+      const server = http.createServer((req, res) => {
+        if (req.url !== "/resource") {
+          res.writeHead(404);
+          res.end();
+          return;
+        }
+
+        const proofHeader = req.headers["x-payment-proof"];
+        if (!proofHeader) {
+          res.writeHead(402, { "Content-Type": "application/json" });
+          res.end(JSON.stringify(challenge));
+          return;
+        }
+
+        try {
+          const raw = Array.isArray(proofHeader) ? proofHeader[0] : proofHeader;
+          const proof = JSON.parse(raw ?? "");
+          if (typeof proof.txHash === "string" && proof.txHash.length > 0) {
+            res.writeHead(200, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ ok: true }));
+          } else {
+            res.writeHead(400, { "Content-Type": "application/json" });
+            res.end(JSON.stringify({ error: "missing txHash" }));
+          }
+        } catch {
+          res.writeHead(400, { "Content-Type": "application/json" });
+          res.end(JSON.stringify({ error: "invalid proof" }));
+        }
+      });
+
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
+
+      try {
+        const port = (server.address() as AddressInfo).port;
+        const resourceUrl = `http://127.0.0.1:${port}/resource`;
+        challenge.resource = resourceUrl;
+
+        // 1. Agent hits the gated endpoint and gets a 402 challenge back.
+        const challengeResponse = await axios.get(resourceUrl, {
+          validateStatus: () => true,
+        });
+        expect(challengeResponse.status).toBe(402);
+        const receivedChallenge: X402Challenge = challengeResponse.data;
+
+        // 2. Agent pays the challenge via x402_respond and gets a signed proof.
+        const result = await agent.run({
+          type: "x402_respond",
+          payload: receivedChallenge,
+        });
+        expect(result.success).toBe(true);
+
+        // 3. Agent retries the request, attaching the proof — server verifies
+        // txHash is non-empty and grants access.
+        const paidResponse = await axios.get(resourceUrl, {
+          headers: { "X-PAYMENT-PROOF": JSON.stringify(result.data) },
+          validateStatus: () => true,
+        });
+        expect(paidResponse.status).toBe(200);
+      } finally {
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    }, 60_000);
+  });
 });

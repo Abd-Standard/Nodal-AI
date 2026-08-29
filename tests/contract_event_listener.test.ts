@@ -268,4 +268,91 @@ describe("ContractEventListener", () => {
     await vi.advanceTimersByTimeAsync(5000);
     expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(2);
   });
+
+  // ── Start / Stop lifecycle (#457) ──────────────────────────────────────────
+
+  it("start → emit 2 events → stop → no further events arrive", async () => {
+    const event1 = makeEvent("released", "tok-10");
+    const event2 = makeEvent("released", "tok-11");
+
+    // First two polls return events; subsequent polls return empty
+    vi.mocked(rpcClient.sorobanServer.getEvents)
+      .mockResolvedValueOnce({ events: [event1] } as any)
+      .mockResolvedValueOnce({ events: [event2] } as any)
+      .mockResolvedValue({ events: [] } as any);
+
+    const onEvent = vi.fn();
+    stopListening = listen(VALID_CONTRACT, ["released"], onEvent);
+
+    // Advance through two poll cycles (each 300ms)
+    await vi.advanceTimersByTimeAsync(300);
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(onEvent).toHaveBeenCalledTimes(2);
+
+    const callsAtStop = vi.mocked(rpcClient.sorobanServer.getEvents).mock.calls.length;
+    stopListening();
+
+    // Advance far past the poll interval — no further calls should occur
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(vi.mocked(rpcClient.sorobanServer.getEvents).mock.calls.length).toBe(callsAtStop);
+    // onEvent was invoked exactly twice and nothing more
+    expect(onEvent).toHaveBeenCalledTimes(2);
+  });
+
+  it("stop() before any events arrive — listener does not throw", async () => {
+    vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
+      events: [],
+    } as any);
+
+    const onEvent = vi.fn();
+
+    // stop() immediately — the in-flight first poll may or may not have
+    // fired, but nothing should throw
+    expect(() => {
+      stopListening = listen(VALID_CONTRACT, [], onEvent);
+      stopListening();
+    }).not.toThrow();
+
+    // Confirm polling truly stops
+    await vi.advanceTimersByTimeAsync(2000);
+    expect(onEvent).not.toHaveBeenCalled();
+  });
+
+  it("stop() is idempotent — calling it twice does not throw", async () => {
+    vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
+      events: [],
+    } as any);
+
+    const onEvent = vi.fn();
+    stopListening = listen(VALID_CONTRACT, [], onEvent);
+
+    await vi.advanceTimersByTimeAsync(300);
+
+    expect(() => {
+      stopListening();
+      stopListening(); // second call should be a no-op
+    }).not.toThrow();
+  });
+
+  it("no timer leak after stop() — clearTimeout called for the pending timer", async () => {
+    vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
+      events: [],
+    } as any);
+
+    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+
+    const onEvent = vi.fn();
+    stopListening = listen(VALID_CONTRACT, [], onEvent);
+
+    // Let one poll cycle complete so a next-tick timer is scheduled
+    await vi.advanceTimersByTimeAsync(300);
+
+    stopListening();
+
+    // clearTimeout must have been called to cancel the scheduled next poll
+    expect(clearTimeoutSpy).toHaveBeenCalled();
+
+    clearTimeoutSpy.mockRestore();
+  });
 });

@@ -15,6 +15,26 @@ vi.mock("../backend/config", () => ({
   },
 }));
 
+// attachBreakerTelemetry logs through the module-level `log` (a
+// createLogger("rpc-client") child logger) in backend/rpc_client.ts. Mock
+// utils/logger the same way tests/rpc_client.test.ts does, so `createLogger`
+// always hands back this one shared mock and its warn/info calls can be
+// asserted directly (#453).
+const { rpcClientLog } = vi.hoisted(() => ({
+  rpcClientLog: {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  },
+}));
+
+vi.mock("../backend/utils/logger", () => ({
+  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+  createLogger: vi.fn(() => rpcClientLog),
+  generateCorrelationId: vi.fn(() => "mock-id"),
+}));
+
 import {
   createRpcBreaker,
   attachBreakerTelemetry,
@@ -152,6 +172,56 @@ describe("RPC circuit breaker", () => {
       vi.useRealTimers();
       await breaker.fire();
       expect(seen).toContain("close");
+
+      breaker.shutdown();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // #453 — assert the actual log fields attachBreakerTelemetry emits on each
+  // state change, so a regression there (wrong field name, dropped circuit
+  // name, etc.) fails a test instead of only showing up in production logs.
+  it("logs structured warn/info telemetry with the correct fields on each state change", async () => {
+    vi.useFakeTimers();
+    let shouldFail = true;
+    try {
+      const breaker = new CircuitBreaker(
+        async () => {
+          if (shouldFail) throw new Error("upstream down");
+          return "ok";
+        },
+        { ...RPC_BREAKER_OPTIONS, name: "test-breaker" }
+      );
+      attachBreakerTelemetry(breaker, "test-breaker");
+
+      await driveToOpen(breaker as unknown as CircuitBreaker<unknown[], unknown>);
+
+      expect(rpcClientLog.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          circuit: "test-breaker",
+          failures: expect.any(Number),
+        }),
+        "RPC circuit opened"
+      );
+
+      vi.advanceTimersByTime(RPC_BREAKER_OPTIONS.resetTimeout + 1);
+      expect(breaker.halfOpen).toBe(true);
+
+      expect(rpcClientLog.info).toHaveBeenCalledWith(
+        { circuit: "test-breaker" },
+        "RPC circuit half-open"
+      );
+
+      shouldFail = false;
+      vi.useRealTimers();
+      await breaker.fire();
+      expect(breaker.closed).toBe(true);
+
+      expect(rpcClientLog.info).toHaveBeenCalledWith(
+        expect.objectContaining({ circuit: "test-breaker" }),
+        "RPC circuit closed"
+      );
 
       breaker.shutdown();
     } finally {
