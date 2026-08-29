@@ -216,6 +216,29 @@ Wraps a transaction in a fee-bump envelope for sponsored retry flows. This is us
 INNER_TX_XDR=AAAA... npx ts-node scripts/examples/fee_bump.ts
 ```
 
+### `anchor_deposit.ts` — SEP-0010 + SEP-0006 anchor deposit
+
+Demonstrates a complete PayFi onboarding scenario by combining `StellarIdentityTool` (SEP-0010 web auth) with an anchor USDC deposit flow:
+
+1. Fetches the anchor's `stellar.toml` to discover `WEB_AUTH_ENDPOINT` and `TRANSFER_SERVER`.
+2. Authenticates with the anchor via SEP-0010 challenge-response and obtains a JWT.
+3. Initiates a SEP-0006 deposit to obtain the anchor's deposit address (and optional memo).
+4. Sends a test asset payment to the deposit address via `stellar_payment`.
+5. Prints a deposit confirmation summary.
+
+Tested against the [Stellar Demo Anchor](https://testanchor.stellar.org) on testnet.
+
+**Required .env vars** (in addition to the standard set):
+
+| Variable | Description |
+|---|---|
+| `ANCHOR_URL` | Base URL of the anchor (e.g. `https://testanchor.stellar.org`) |
+| `ANCHOR_ASSET_ISSUER` | Issuer account of the anchor asset |
+
+```bash
+npx ts-node scripts/examples/anchor_deposit.ts
+```
+
 ---
 
 ## E2E Tests

@@ -4,6 +4,47 @@ Thank you for your interest in contributing to Nodal AI! This document outlines 
 
 ---
 
+## Stellar Wave & Drips Points
+
+Nodal AI participates in the **[Stellar Wave](https://stellar.org/wave)** programme — a developer contribution sprint where every merged PR on a labelled issue earns you **Drips points** that can be redeemed within the Stellar ecosystem.
+
+### What are Drips points?
+
+Drips points are contribution credits issued by the Stellar Development Foundation to reward open-source work. Points are tracked per-contributor and accumulated over each sprint cycle.
+
+### How to earn points
+
+1. **Find a Wave-eligible issue**: Browse the [Issues](https://github.com/Nodal-stellar/Nodal-AI/issues) tab and filter by `good first issue`, `help wanted`, or any issue carrying a `complexity: <score>` label.
+2. **Claim the issue**: Comment on it so maintainers can assign it to you and avoid duplicate work.
+3. **Submit a PR**: Reference the issue number (`Closes #<number>`) in your PR description. Follow the branch-naming and commit-message conventions below.
+4. **Get it merged**: Once your PR passes CI and review, it is merged and your Drips points are recorded.
+
+### Sprint cycle cadence
+
+Stellar Wave runs in **two-week sprints**. Issues labelled for the current sprint are prioritised for review. Check the project board or issue comments for the active sprint tag.
+
+### Finding Wave-eligible issues
+
+| Filter | What it means |
+|---|---|
+| `good first issue` | Well-scoped, low-complexity tasks ideal for new contributors |
+| `help wanted` | Explicitly open for community contributions |
+| `complexity: 100` | Small tasks (~1–2 h); earn **100 Drips points** on merge |
+| `complexity: 150` | Medium tasks (~3–4 h); earn **150 Drips points** on merge |
+| `complexity: 200` | Larger tasks (~5+ h); earn **200 Drips points** on merge |
+
+### Drips points table
+
+| Complexity Score | Estimated effort | Drips points awarded |
+|:-:|:-:|:-:|
+| 100 | ~1–2 hours | 100 |
+| 150 | ~3–4 hours | 150 |
+| 200 | ~5+ hours | 200 |
+
+Points are awarded **once per merged PR** on an issue carrying a `complexity` label. A single PR that closes multiple issues earns the sum of their individual scores.
+
+---
+
 ## Stellar Wave Sprint Workflow
 
 We are actively participating in the **Stellar Wave** program! Here's how you can earn Drips points for your contributions:
@@ -168,6 +209,35 @@ Repository maintainers should enable the following branch protection rules on `m
 - **TypeScript**: Follow ESLint rules defined in `.eslintrc.cjs`
 - **Rust**: Follow standard `cargo fmt` and Clippy recommendations
 - **Env Access**: Always use `backend/config.ts` for environment variables, never `process.env` directly in tool code
+- **Logging**: In `backend/` source files, always use the structured logger from `backend/utils/logger.ts` (via `createLogger`) instead of raw `console.log` or `console.error`. The `no-console` ESLint rule is enforced as an error for all files under `backend/**`, except `backend/logger.ts` itself (which is the logger implementation). Violating this rule will fail CI.
+
+  ```typescript
+  // ✅ Correct
+  import { createLogger } from "../utils/logger";
+  const log = createLogger("my-tool");
+  log.info({ someField: "value" }, "Operation completed");
+
+  // ❌ Forbidden in backend/ (ESLint error)
+  console.log("Operation completed");
+  ```
+
+---
+
+## Automated PR Labelling
+
+Pull requests are automatically labelled by a GitHub Actions workflow (`.github/workflows/labeller.yml`) based on the file paths changed. This reduces triage effort for maintainers and helps contributors understand which theme their PR falls under.
+
+| Files changed | Label applied |
+|---|---|
+| `backend/tools/**` | `tooling` |
+| `backend/**` (non-tools) | `backend` |
+| `contracts/**` | `smart-contracts` |
+| `tests/**` | `testing` |
+| `.github/**` | `ci-cd` |
+| `docs/**`, `*.md` | `documentation` |
+| `scripts/**` | `dx` |
+
+Labels are defined in `.github/labeler.yml`. To add a new path-to-label mapping, open a PR editing that file.
 
 ---
 
