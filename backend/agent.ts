@@ -36,6 +36,7 @@ import { SequenceNumberTool } from "./tools/SequenceNumberTool";
 import { InflationTool } from "./tools/InflationTool";
 import { SponsoredAccountTool } from "./tools/SponsoredAccountTool";
 import { AnchorQuoteTool } from "./tools/AnchorQuoteTool";
+import { SorobanDeployTool } from "./tools/SorobanDeployTool";
 import { listen as listenContractEvents } from "./tools/ContractEventListener";
 
 import { horizonServer } from "./rpc_client";
@@ -100,7 +101,8 @@ export type TaskType =
   | "sequence_number"
   | "sponsored_account"
   | "anchor_quote"
-  | "inflation";
+  | "inflation"
+  | "soroban_deploy";
 
 
 export interface AgentTask {
@@ -247,6 +249,7 @@ export class PayFiAgent extends EventEmitter {
   private sponsoredAccountTool: SponsoredAccountTool;
   private anchorQuoteTool: AnchorQuoteTool;
   private inflationTool: InflationTool;
+  private sorobanDeployTool: SorobanDeployTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -290,6 +293,7 @@ export class PayFiAgent extends EventEmitter {
     this.sponsoredAccountTool = new SponsoredAccountTool(config.agentKeypair().secret());
     this.anchorQuoteTool = new AnchorQuoteTool();
     this.inflationTool = new InflationTool(config.agentKeypair().secret());
+    this.sorobanDeployTool = new SorobanDeployTool();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
