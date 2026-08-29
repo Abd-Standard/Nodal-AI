@@ -77,7 +77,7 @@ graph TD
 
 ## PayFiAgent Dispatch Flow
 
-The entry point for all agent tasks is `PayFiAgent.run(task)` inside [backend/agent.ts](file:///Users/owner/Documents/Code/drip/Nodal-AI/backend/agent.ts). The orchestrator handles task routing, enforces spending limits, and manages execution lifecycles:
+The entry point for all agent tasks is `PayFiAgent.run(task)` inside [backend/agent.ts](./backend/agent.ts). The orchestrator handles task routing, enforces spending limits, and manages execution lifecycles:
 
 ```
 [ Caller ] 
@@ -93,9 +93,9 @@ The entry point for all agent tasks is `PayFiAgent.run(task)` inside [backend/ag
 ```
 
 1. **Task Request**: The caller calls `agent.run({ type, payload })`.
-2. **Spending Guard**: If the task involves a payment (`stellar_payment` or `x402_respond`), `assertWithinSpendingLimit(amount)` is called to verify that the value does not exceed the configured `AGENT_SPENDING_LIMIT` in [backend/config.ts](file:///Users/owner/Documents/Code/drip/Nodal-AI/backend/config.ts) or the global `MAINNET_SPENDING_CAP` (10,000 USDC/XLM).
+2. **Spending Guard**: If the task involves a payment (`stellar_payment` or `x402_respond`), `assertWithinSpendingLimit(amount)` is called to verify that the value does not exceed the configured `AGENT_SPENDING_LIMIT` in [backend/config.ts](./backend/config.ts) or the global `MAINNET_SPENDING_CAP` (10,000 USDC/XLM).
 3. **Tool Delegation**: The agent delegates processing to the appropriate tool class instance (`paymentTool`, `sorobanTool`, or `x402Tool`).
-4. **Tool Execution**: The tool uses `config.agentKeypair()` to sign transaction envelopes and submits them via [backend/rpc_client.ts](file:///Users/owner/Documents/Code/drip/Nodal-AI/backend/rpc_client.ts).
+4. **Tool Execution**: The tool uses `config.agentKeypair()` to sign transaction envelopes and submits them via [backend/rpc_client.ts](./backend/rpc_client.ts).
 5. **Event Emission**: On completion or failure, the agent emits either `task:complete` or `task:failed` events.
 
 ---
@@ -227,7 +227,7 @@ The resulting string is stored in `AgentResult.error` and forwarded verbatim to 
 
 ## The Mandatory Simulation Gate
 
-To prevent lost fees and broadcast failures, all Soroban contract transactions must pass through a simulation gate prior to network submission. This logic is centered in [backend/rpc_client.ts](file:///Users/owner/Documents/Code/drip/Nodal-AI/backend/rpc_client.ts) inside the `prepareSorobanTx` function:
+To prevent lost fees and broadcast failures, all Soroban contract transactions must pass through a simulation gate prior to network submission. This logic is centered in [backend/rpc_client.ts](./backend/rpc_client.ts) inside the `prepareSorobanTx` function:
 
 ```
 [ Transaction built with BASE_FEE ]
@@ -253,7 +253,7 @@ To prevent lost fees and broadcast failures, all Soroban contract transactions m
 
 ## Escrow Lifecycle State Machine
 
-The smart contract in [contracts/escrow/src/lib.rs](file:///Users/owner/Documents/Code/drip/Nodal-AI/contracts/escrow/src/lib.rs) manages locked token deposits and restricts access using a 3-state state machine:
+The smart contract in [contracts/escrow/src/lib.rs](./contracts/escrow/src/lib.rs) manages locked token deposits and restricts access using a 3-state state machine:
 
 ```
     [ Uninitialized ]

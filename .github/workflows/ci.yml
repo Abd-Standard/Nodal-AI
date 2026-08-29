@@ -200,3 +200,23 @@ jobs:
           name: api-docs
           path: docs/api/
           retention-days: 30
+
+  check-links:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Validates every relative and external Markdown link across the repo's
+      # root docs and the escrow contract docs, so stale references (renamed
+      # files, dead external URLs) fail CI instead of rotting silently.
+      - name: Check Markdown links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --exclude "^https?://localhost(:[0-9]+)?"
+            --exclude "^#"
+            ./*.md
+            ./contracts/escrow/*.md
+          fail: true

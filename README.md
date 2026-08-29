@@ -36,12 +36,12 @@ Nodal AI is built on a clean, three-pillar separation of concerns. For a deep di
 1. **Clone & Configure:**
 
    ```bash
-   git clone https://github.com/your-username/nodal-ai.git
+   git clone https://github.com/Nodal-stellar/Nodal-AI.git
    cd nodal-ai
-   cp ..env .env
+   cp .env.example .env
    ```
 
-   Open `.env` and fill in at minimum `AGENT_SECRET_KEY`, `HORIZON_URL`, `SOROBAN_RPC_URL`, and `X402_ASSET_ISSUER`. See [`..env`](./..env) for the full list of variables and their descriptions.
+   Open `.env` and fill in at minimum `AGENT_SECRET_KEY`, `HORIZON_URL`, `SOROBAN_RPC_URL`, and `X402_ASSET_ISSUER`. See [`.env.example`](./.env.example) for the full list of variables and their descriptions.
 
 2. **Install Dependencies:**
 
@@ -111,11 +111,29 @@ docker-compose --profile test up --build
 
 ---
 
+## Development Environment (Devcontainer & Codespaces)
+
+For zero-setup provisioning, Nodal AI ships a [VS Code Dev Container](https://containers.dev/) configuration in [`.devcontainer/`](./.devcontainer/devcontainer.json). It gives you Node 20, the Rust toolchain (with the `wasm32-unknown-unknown` target), and the Stellar CLI, pre-installed, with no local setup required.
+
+**Using VS Code:**
+
+1. Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+2. Open the repository in VS Code and select **"Reopen in Container"** when prompted (or run the **Dev Containers: Reopen in Container** command).
+3. Wait for [`.devcontainer/post-create.sh`](./.devcontainer/post-create.sh) to finish installing `rustup`, the `wasm32-unknown-unknown` target, `stellar-cli`, and `npm install` — then you're ready to build, test, and run the example scripts.
+
+**Using GitHub Codespaces:**
+
+Open the repository on GitHub and select **Code → Codespaces → Create codespace on main** — the same `.devcontainer/` configuration provisions the Codespace automatically.
+
+The container forwards port `3000` and preinstalls `dbaeumer.vscode-eslint`, `esbenp.prettier-vscode`, `rust-lang.rust-analyzer`, and `tamasfe.even-better-toml` as recommended extensions.
+
+---
+
 ## Security Policy
 
 Security is the foundation of PayFi. See [SECURITY.md](./SECURITY.md) for the full responsible disclosure policy, response SLAs, core security invariants, and secret management guidelines.
 
-To report a vulnerability privately, use [GitHub Security Advisories](https://github.com/Dami24-hub/nodal-ai/security/advisories/new).
+To report a vulnerability privately, use [GitHub Security Advisories](https://github.com/Nodal-stellar/Nodal-AI/security/advisories/new).
 
 ### Spending Limit Enforcement
 
@@ -146,7 +164,7 @@ All four checks are enforced at startup via `backend/config.ts` validation and a
 
 We are actively participating in the **Stellar Wave** program! We welcome contributions ranging from bug fixes to new tool modules.
 
-1.  Check the [Issues](https://github.com/your-username/nodal-ai/issues) tab for tickets tagged `good first issue` or `help wanted`.
+1.  Check the [Issues](https://github.com/Nodal-stellar/Nodal-AI/issues) tab for tickets tagged `good first issue` or `help wanted`.
 2.  Follow the [CONTRIBUTING.md](./CONTRIBUTING.md) guide.
 3.  Submit a Pull Request and join our community in the next Wave sprint to earn Drips points for your contributions!
 
@@ -154,7 +172,7 @@ We are actively participating in the **Stellar Wave** program! We welcome contri
 
 ## Examples
 
-Three runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `..env` to `.env` and fill in your values, then run any script with:
+Runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `.env.example` to `.env` and fill in your values, then run any script with:
 
 ```bash
 npx ts-node scripts/examples/<script>.ts

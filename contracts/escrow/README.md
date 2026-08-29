@@ -120,7 +120,7 @@ Soroban emits contract events as **public on-chain data**. Every event is readab
 
 ## Cargo.toml Dependencies
 
-The contract specifies minimal, optimized dependencies in [Cargo.toml](file:///Users/owner/Documents/Code/drip/Nodal-AI/contracts/escrow/Cargo.toml):
+The contract specifies minimal, optimized dependencies in [Cargo.toml](./Cargo.toml):
 
 - **`soroban-sdk`**: The standard SDK for writing Smart Contracts on Stellar. The `alloc` feature enables dynamic allocation support.
 - **`testutils`**: Enables simulation, mocking, ledger manipulation, and event debugging inside the test environment.
