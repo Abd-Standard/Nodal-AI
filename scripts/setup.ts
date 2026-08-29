@@ -1,0 +1,203 @@
+/**
+ * scripts/setup.ts
+ *
+ * Interactive onboarding script for first-time contributors. Prompts for each
+ * required environment variable, validates Stellar key formats, and writes
+ * the result to `.env`.
+ *
+ * Usage:
+ *   npx ts-node scripts/setup.ts
+ *   npm run setup
+ */
+
+import { createInterface } from "readline/promises";
+import { stdin, stdout } from "process";
+import { existsSync, writeFileSync } from "fs";
+import { resolve } from "path";
+import { Keypair } from "@stellar/stellar-sdk";
+
+const ENV_PATH = resolve(process.cwd(), ".env");
+
+const NETWORK_DEFAULTS: Record<string, { horizon: string; soroban: string }> = {
+  testnet: {
+    horizon: "https://horizon-testnet.stellar.org",
+    soroban: "https://soroban-testnet.stellar.org",
+  },
+  mainnet: {
+    horizon: "https://horizon.stellar.org",
+    soroban: "https://mainnet.stellar.validationcloud.io/v1/<API_KEY>",
+  },
+  futurenet: {
+    horizon: "https://horizon-futurenet.stellar.org",
+    soroban: "https://rpc-futurenet.stellar.org",
+  },
+};
+
+const rl = createInterface({ input: stdin, output: stdout });
+
+async function ask(question: string, defaultValue?: string): Promise<string> {
+  const suffix = defaultValue ? ` (${defaultValue})` : "";
+  const answer = (await rl.question(`${question}${suffix}: `)).trim();
+  return answer || defaultValue || "";
+}
+
+async function askValidated(
+  question: string,
+  defaultValue: string | undefined,
+  validate: (value: string) => string | null
+): Promise<string> {
+  for (;;) {
+    const value = await ask(question, defaultValue);
+    const error = validate(value);
+    if (!error) return value;
+    console.log(`  ✗ ${error}`);
+  }
+}
+
+function isValidSecretKey(value: string): string | null {
+  try {
+    Keypair.fromSecret(value);
+    return null;
+  } catch {
+    return "Must be a valid Stellar secret key (starts with S, 56 characters).";
+  }
+}
+
+function isValidPublicKey(value: string): string | null {
+  if (value.length !== 56 || !value.startsWith("G")) {
+    return "Must be a 56-character Stellar public key starting with G.";
+  }
+  try {
+    Keypair.fromPublicKey(value);
+    return null;
+  } catch {
+    return "Not a valid Ed25519 Stellar public key.";
+  }
+}
+
+function isValidNetwork(value: string): string | null {
+  return value in NETWORK_DEFAULTS ? null : "Must be one of: testnet | mainnet | futurenet";
+}
+
+function isValidUrl(value: string): string | null {
+  try {
+    new URL(value);
+    return null;
+  } catch {
+    return "Must be a valid URL.";
+  }
+}
+
+function isPositiveDecimal(value: string): string | null {
+  return /^[1-9]\d*(\.\d{1,7})?$/.test(value)
+    ? null
+    : "Must be a positive decimal (e.g. '100' or '50.0000000').";
+}
+
+function isValidAssetCode(value: string): string | null {
+  return value.length >= 1 && value.length <= 12
+    ? null
+    : "Must be 1-12 characters.";
+}
+
+async function confirmOverwrite(): Promise<boolean> {
+  const answer = (await rl.question(".env already exists. Overwrite it? (y/N): ")).trim().toLowerCase();
+  return answer === "y" || answer === "yes";
+}
+
+async function main() {
+  console.log("Nodal AI — first-time setup\n");
+  console.log("This will walk you through creating a .env file. Press Enter to accept a default.\n");
+
+  if (existsSync(ENV_PATH)) {
+    const proceed = await confirmOverwrite();
+    if (!proceed) {
+      console.log("Aborted — existing .env left untouched.");
+      rl.close();
+      return;
+    }
+    console.log("");
+  }
+
+  const network = await askValidated(
+    "Stellar network (testnet | mainnet | futurenet)",
+    "testnet",
+    isValidNetwork
+  );
+  const networkDefaults = NETWORK_DEFAULTS[network];
+
+  const horizonUrl = await askValidated("Horizon RPC URL", networkDefaults.horizon, isValidUrl);
+  const sorobanRpcUrl = await askValidated("Soroban RPC URL", networkDefaults.soroban, isValidUrl);
+
+  console.log("\nGenerate a keypair at https://laboratory.stellar.org/#account-creator if you don't have one.");
+  const agentSecretKey = await askValidated(
+    "Agent secret key (AGENT_SECRET_KEY, S...)",
+    undefined,
+    isValidSecretKey
+  );
+
+  const x402AssetCode = await askValidated("x402 asset code (X402_ASSET_CODE)", "USDC", isValidAssetCode);
+  const x402AssetIssuer = await askValidated(
+    "x402 asset issuer (X402_ASSET_ISSUER, G...)",
+    undefined,
+    isValidPublicKey
+  );
+
+  const spendingLimit = await askValidated(
+    "Max spending limit per operation (AGENT_SPENDING_LIMIT)",
+    "100",
+    isPositiveDecimal
+  );
+
+  const logLevel = await askValidated(
+    "Log level (debug | info | warn | error)",
+    "info",
+    (v) => (["debug", "info", "warn", "error"].includes(v) ? null : "Must be one of: debug | info | warn | error")
+  );
+
+  const contents = `# =============================================================================
+# Nodal AI — Environment Configuration
+# Generated by scripts/setup.ts
+# =============================================================================
+
+STELLAR_NETWORK=${network}
+HORIZON_URL=${horizonUrl}
+SOROBAN_RPC_URL=${sorobanRpcUrl}
+
+AGENT_SECRET_KEY=${agentSecretKey}
+
+X402_ASSET_CODE=${x402AssetCode}
+X402_ASSET_ISSUER=${x402AssetIssuer}
+
+AGENT_SPENDING_LIMIT=${spendingLimit}
+
+LOG_LEVEL=${logLevel}
+
+# -----------------------------------------------------------------------------
+# Remaining settings use the defaults documented in .env.example.
+# Uncomment and edit any of these to override them.
+# -----------------------------------------------------------------------------
+# MAX_RETRIES=3
+# RETRY_DELAY_MS=1500
+# MAX_CONCURRENT_TASKS=10
+# MAX_X402_PAYMENTS_PER_MINUTE=10
+# MAX_SOROBAN_FEE_STROOPS=1000000
+# DB_PATH=./agent.db
+`;
+
+  writeFileSync(ENV_PATH, contents, { mode: 0o600 });
+
+  console.log(`\n✅ Wrote ${ENV_PATH}`);
+  console.log("Next steps:");
+  console.log("  npm install");
+  console.log("  npm run build");
+  console.log("  npm run test:all");
+
+  rl.close();
+}
+
+main().catch((err) => {
+  console.error("Setup failed:", err instanceof Error ? err.message : err);
+  rl.close();
+  process.exitCode = 1;
+});

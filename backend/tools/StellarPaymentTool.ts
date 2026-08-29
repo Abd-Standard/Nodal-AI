@@ -21,7 +21,6 @@ import { config } from "../config";
 import { logger } from "../logger";
 import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
 import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
-import { buildMemo } from "./MemoAttachmentTool";
 import { createLogger } from "../utils/logger";
 
 const log = createLogger("stellar-payment");
@@ -82,7 +81,7 @@ function buildMemo(memoType: string, memoValue: string | number | undefined): Me
   }
 
   switch (memoType) {
-    case "id":
+    case "id": {
       if (typeof memoValue !== "number") {
         throw new Error("Memo ID must be a number");
       }
@@ -92,7 +91,8 @@ function buildMemo(memoType: string, memoValue: string | number | undefined): Me
         throw new Error("Memo ID must be a 64-bit unsigned integer (0 to 2^64-1)");
       }
       return Memo.id(id.toString());
-    case "hash":
+    }
+    case "hash": {
       if (typeof memoValue !== "string") {
         throw new Error("Memo hash must be a string");
       }
@@ -105,7 +105,8 @@ function buildMemo(memoType: string, memoValue: string | number | undefined): Me
         throw new Error("Memo hash must contain only valid hex characters");
       }
       return Memo.hash(hashHex);
-    case "return":
+    }
+    case "return": {
       if (typeof memoValue !== "string") {
         throw new Error("Memo return must be a string");
       }
@@ -118,8 +119,9 @@ function buildMemo(memoType: string, memoValue: string | number | undefined): Me
         throw new Error("Memo return must contain only valid hex characters");
       }
       return Memo.return(returnHex);
+    }
     case "text":
-    default:
+    default: {
       if (typeof memoValue !== "string") {
         throw new Error("Memo text must be a string");
       }
@@ -127,6 +129,7 @@ function buildMemo(memoType: string, memoValue: string | number | undefined): Me
         throw new Error("Memo text must be at most 28 bytes");
       }
       return Memo.text(memoValue);
+    }
   }
 }
 
@@ -206,8 +209,11 @@ export class StellarPaymentTool {
           })
         );
 
-      if (input.memo) {
-        builder.addMemo(buildMemo({ type: "MEMO_TEXT", value: input.memo }));
+      if (input.memo !== undefined) {
+        const memo = buildMemo(input.memoType, input.memo);
+        if (memo) {
+          builder.addMemo(memo);
+        }
       }
 
       return builder.setTimeout(SOROBAN_TX_TIMEOUT).build();

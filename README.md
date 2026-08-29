@@ -234,13 +234,27 @@ Wraps a transaction in a fee-bump envelope for sponsored retry flows. This is us
 INNER_TX_XDR=AAAA... npx ts-node scripts/examples/fee_bump.ts
 ```
 
-### `escrow_lifecycle.ts` — soroban_deploy + soroban_invoke
+### `anchor_deposit.ts` — SEP-0010 + SEP-0006 anchor deposit
 
-Walks the escrow contract through its full lifecycle against testnet: deploys the compiled WASM, initializes it with 5 XLM locked (depositor = this agent), registers a `ContractEventListener` for the contract's `released` event, triggers `release` signed by a dedicated arbiter keypair, and waits for the listener to confirm the event fired. Requires a built WASM at `CONTRACT_WASM_PATH` (see `.env.example`):
+Demonstrates a complete PayFi onboarding scenario by combining `StellarIdentityTool` (SEP-0010 web auth) with an anchor USDC deposit flow:
+
+1. Fetches the anchor's `stellar.toml` to discover `WEB_AUTH_ENDPOINT` and `TRANSFER_SERVER`.
+2. Authenticates with the anchor via SEP-0010 challenge-response and obtains a JWT.
+3. Initiates a SEP-0006 deposit to obtain the anchor's deposit address (and optional memo).
+4. Sends a test asset payment to the deposit address via `stellar_payment`.
+5. Prints a deposit confirmation summary.
+
+Tested against the [Stellar Demo Anchor](https://testanchor.stellar.org) on testnet.
+
+**Required .env vars** (in addition to the standard set):
+
+| Variable | Description |
+|---|---|
+| `ANCHOR_URL` | Base URL of the anchor (e.g. `https://testanchor.stellar.org`) |
+| `ANCHOR_ASSET_ISSUER` | Issuer account of the anchor asset |
 
 ```bash
-cargo build --manifest-path contracts/escrow/Cargo.toml --target wasm32-unknown-unknown --release
-npx ts-node scripts/examples/escrow_lifecycle.ts
+npx ts-node scripts/examples/anchor_deposit.ts
 ```
 
 ---
