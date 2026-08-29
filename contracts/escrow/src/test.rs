@@ -22,7 +22,7 @@
 mod tests {
     extern crate std;
 
-    use crate::{EscrowContract, EscrowContractClient, EscrowState};
+    use crate::{EscrowContract, EscrowContractClient, EscrowState, MIN_ROTATION_DELAY};
     use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger},
@@ -998,6 +998,48 @@ mod tests {
             .with_mut(|li| li.timestamp = now + 86_401);
         client.accept_arbiter_rotation();
         // Verify the new arbiter is now active
+        let state = client.get_state();
+        assert_eq!(state.arbiter, new_arbiter);
+    }
+
+    // 35b. the minimum rotation delay is enforced exactly at its boundary, so
+    //      an accept just before `MIN_ROTATION_DELAY` stays locked while accept
+    //      exactly at or after it succeeds. This documents that the rotation
+    //      floor is a fixed contract constant a depositor cannot shorten.
+    #[test]
+    fn test_arbiter_rotation_min_delay_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let new_arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let now = env.ledger().timestamp();
+        let expiry = now + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        client.propose_new_arbiter(&depositor, &new_arbiter);
+
+        // 1 second before the minimum floor elapses, acceptance must still panic
+        // (proving no sub-24h/near-instant rotation window can be opened).
+        env.ledger()
+            .with_mut(|li| li.timestamp = now + MIN_ROTATION_DELAY - 1);
+        let locked = std::panic::catch_unwind(|| client.accept_arbiter_rotation());
+        assert!(
+            locked.is_err(),
+            "rotation must remain locked until MIN_ROTATION_DELAY fully elapses"
+        );
+        // Any proposal keeps the full floor active — the arbiter cannot change yet.
+        let state = client.get_state();
+        assert_eq!(state.arbiter, arbiter);
+
+        // Exactly at the minimum floor the rotation is permitted.
+        env.ledger()
+            .with_mut(|li| li.timestamp = now + MIN_ROTATION_DELAY);
+        client.accept_arbiter_rotation();
         let state = client.get_state();
         assert_eq!(state.arbiter, new_arbiter);
     }
