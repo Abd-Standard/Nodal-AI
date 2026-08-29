@@ -38,10 +38,21 @@ Nodal AI is built on a clean, three-pillar separation of concerns. For a deep di
    ```bash
    git clone https://github.com/your-username/nodal-ai.git
    cd nodal-ai
+   npm run setup
+   ```
+
+   `npm run setup` runs an interactive onboarding script (`scripts/setup.ts`) that prompts for each
+   required value — validating Stellar key formats for `AGENT_SECRET_KEY` and `X402_ASSET_ISSUER` as
+   you type — and writes the result to `.env`. It will ask before overwriting an existing `.env`.
+
+   Prefer to do it by hand? Copy `.env.example` to `.env` instead and fill in at minimum
+   `AGENT_SECRET_KEY`, `HORIZON_URL`, `SOROBAN_RPC_URL`, and `X402_ASSET_ISSUER`:
+
+   ```bash
    cp .env.example .env
    ```
 
-   Open `.env` and fill in at minimum `AGENT_SECRET_KEY`, `HORIZON_URL`, `SOROBAN_RPC_URL`, and `X402_ASSET_ISSUER`. See [`.env.example`](./.env.example) for the full list of variables and their descriptions.
+   See [`.env.example`](./.env.example) for the full list of variables and their descriptions.
 
 2. **Install Dependencies:**
 
@@ -153,7 +164,7 @@ We are actively participating in the **Stellar Wave** program! We welcome contri
 
 ## Examples
 
-Three runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `.env.example` to `.env` and fill in your values, then run any script with:
+Runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `.env.example` to `.env` and fill in your values, then run any script with:
 
 ```bash
 npx ts-node scripts/examples/<script>.ts
@@ -181,6 +192,17 @@ Responds to a sample x402 payment challenge and prints the resulting `X402Paymen
 
 ```bash
 npx ts-node scripts/examples/respond_x402.ts
+```
+
+### `batch_payment_csv.ts` — batch_payment
+
+Reads payment targets from a CSV file (`destination,amount,assetCode` columns) and dispatches
+them as a single atomic `batch_payment` transaction. Prints a summary of the outcome — since the
+batch is atomic, it is either all payments succeeded or all failed. A sample CSV is provided at
+`scripts/examples/sample_payments.csv`.
+
+```bash
+npx ts-node scripts/examples/batch_payment_csv.ts scripts/examples/sample_payments.csv
 ```
 
 ---

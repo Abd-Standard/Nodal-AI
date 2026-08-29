@@ -4,6 +4,7 @@
   "description": "Modular, secure Stellar Agent Kit with PayFi / x402 support",
   "private": true,
   "scripts": {
+    "setup": "npx ts-node scripts/setup.ts",
     "build": "tsc",
     "pretest": "tsc --noEmit",
     "test:fuzz": "vitest run tests/fuzz/**",

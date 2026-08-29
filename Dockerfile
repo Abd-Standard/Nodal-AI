@@ -4,7 +4,8 @@
 # Stages:
 #   1. rust-builder   — compiles Soroban contract → .wasm
 #   2. node-builder   — installs deps + compiles TypeScript → dist/
-#   3. production     — slim Node runtime with compiled artefacts only
+#   3. prod-deps      — installs production-only node_modules on Alpine/musl
+#   4. production     — node:20-alpine runtime with compiled artefacts only
 # =============================================================================
 
 # ─── Stage 1: Soroban / Rust contract build ───────────────────────────────────
@@ -63,27 +64,36 @@ COPY backend/ ./backend/
 
 RUN npm run build
 
-# ─── Stage 3: Production image ────────────────────────────────────────────────
-FROM node:20-slim AS production
+# ─── Stage 3: Production dependencies (Alpine / musl) ─────────────────────────
+# Installed on the same musl base as the final image so native modules
+# (e.g. better-sqlite3) resolve/link correctly; kept out of the final stage
+# so no compiler toolchain ships in the production image.
+FROM node:20-alpine AS prod-deps
+
+WORKDIR /build
+
+COPY package.json package-lock.json* ./
+RUN npm ci --omit=dev --ignore-scripts && \
+    npm cache clean --force
+
+# ─── Stage 4: Production image ────────────────────────────────────────────────
+FROM node:20-alpine AS production
 
 LABEL org.opencontainers.image.title="Nodal AI Agent"
 LABEL org.opencontainers.image.description="Stellar PayFi Agent Kit"
 
-# Non-root user for security
-RUN addgroup --system agent && adduser --system --ingroup agent agent
+# Non-root user for security (Alpine/busybox adduser syntax)
+RUN addgroup -S agent && adduser -S -G agent agent
 
 WORKDIR /app
 
-# ── Runtime deps only ─────────────────────────────────────────────────────────
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --ignore-scripts && \
-    npm cache clean --force
+# ── Runtime deps only — pre-built in prod-deps, nothing compiled here ────────
+COPY --from=prod-deps /build/node_modules ./node_modules
 
 # ── Compiled TypeScript ───────────────────────────────────────────────────────
 COPY --from=node-builder /build/dist ./dist
 
 # ── Compiled WASM contract ────────────────────────────────────────────────────
-RUN mkdir -p contracts/escrow
 COPY --from=rust-builder \
     /build/contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm \
     ./contracts/escrow/stellar_payfi_escrow.wasm

@@ -1,0 +1,8 @@
+# =============================================================================
+# CODEOWNERS
+#
+# Default reviewers for pull requests, including automated dependency update
+# PRs opened by Dependabot (see .github/dependabot.yml).
+# =============================================================================
+
+* @Dami24-hub
