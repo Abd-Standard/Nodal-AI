@@ -272,4 +272,55 @@ describe("backend/server.ts — health check HTTP server", () => {
       expect(res._statusCode).toBe(500);
     });
   });
+
+  // ── Docker / container health check contract (#463) ────────────────────────
+  // The Docker Compose health check polls GET /health and greps for
+  // `"status":"ok"` in the response body.  These tests pin that exact
+  // contract so a refactor cannot silently break container readiness probes.
+  describe("Docker health check contract", () => {
+    it("GET /health returns 200 so curl exits 0", () => {
+      createHealthServer();
+      const req = makeReq("GET", "/health");
+      const res = makeRes();
+
+      capturedHandler!(req, res);
+
+      expect(res._statusCode).toBe(200);
+    });
+
+    it('GET /health body contains "status":"ok" for the grep probe', () => {
+      createHealthServer();
+      const req = makeReq("GET", "/health");
+      const res = makeRes();
+
+      capturedHandler!(req, res);
+
+      // The Compose health check runs:
+      //   curl -sf http://localhost:3000/health | grep -q '"status":"ok"'
+      // The body must contain that exact substring.
+      expect(res._body).toContain('"status":"ok"');
+    });
+
+    it("GET /health body contains the STELLAR_NETWORK value", () => {
+      createHealthServer();
+      const req = makeReq("GET", "/health");
+      const res = makeRes();
+
+      capturedHandler!(req, res);
+
+      const body = JSON.parse(res._body);
+      // config.STELLAR_NETWORK is "testnet" in the test mock
+      expect(body.network).toBe("testnet");
+    });
+
+    it("GET /health responds with Content-Type: application/json", () => {
+      createHealthServer();
+      const req = makeReq("GET", "/health");
+      const res = makeRes();
+
+      capturedHandler!(req, res);
+
+      expect(res._headers["Content-Type"]).toBe("application/json");
+    });
+  });
 });
