@@ -100,6 +100,131 @@ The entry point for all agent tasks is `PayFiAgent.run(task)` inside [backend/ag
 
 ---
 
+## Tool Dispatch Lifecycle
+
+This section documents the complete lifecycle of a task from the moment `PayFiAgent.run()` is called through to result serialisation, webhook delivery, and persistence. It covers the `AgentTask → AgentResult` contract, every registered task type, and the hooks that fire at each stage.
+
+### Sequence Diagram
+
+```mermaid
+sequenceDiagram
+    participant C as Caller
+    participant PA as PayFiAgent
+    participant SC as SpendingCheck
+    participant MW as Middleware Chain
+    participant T as Tool (e.g. StellarPaymentTool)
+    participant N as Network (Horizon / Soroban RPC)
+    participant WH as Webhook
+
+    C->>PA: run({ type, payload, correlationId? })
+    PA->>PA: generate correlationId (if absent)
+    PA->>PA: check isDraining → reject if true
+    PA->>PA: check activeTasks < MAX_CONCURRENT_TASKS<br/>(queue or reject if at capacity)
+
+    Note over PA: Concurrency slot acquired
+
+    PA->>MW: compose middleware chain → executeTask()
+    MW->>PA: executeTask()
+
+    alt payment task (stellar_payment | x402_respond | batch_payment)
+        PA->>SC: assertWithinSpendingLimit(payload.amount)
+        SC-->>PA: pass or throw SpendingLimitError
+    end
+
+    PA->>T: tool.execute(payload) / tool.respond(payload) / tool.fetch()
+    T->>N: loadAccount → build tx → [simulate] → sign → submit
+    N-->>T: txHash / ledger / simulationResult
+    T-->>PA: tool result
+
+    PA->>PA: emit "task:complete"
+    PA->>PA: saveResult(result) — persist to local DB
+    PA->>WH: dispatchWebhook(result) — fire-and-forget
+
+    PA-->>C: AgentResult { success, taskType, data, correlationId, durationMs }
+
+    Note over PA,WH: On any thrown error the same path runs<br/>but emits "task:failed" and populates error / errorType
+```
+
+### `AgentTask` → `AgentResult` Contract
+
+**`AgentTask`** is the input envelope:
+
+```typescript
+interface AgentTask {
+  type: TaskType;          // identifies which tool receives the payload
+  payload: unknown;        // validated inside the tool via a Zod schema
+  correlationId?: string;  // optional caller-supplied ID; auto-generated if absent
+}
+```
+
+**`AgentResult`** is the output envelope:
+
+```typescript
+interface AgentResult {
+  success: boolean;        // true if the tool completed without throwing
+  taskType: TaskType;      // echoes back the dispatched type
+  data?: unknown;          // tool-specific success payload (txHash, proof, etc.)
+  error?: string;          // human-readable failure message (secrets redacted)
+  errorType?: string;      // machine-readable error category for programmatic branching
+  correlationId?: string;  // ties every log line / webhook / DB row for this execution
+  durationMs?: number;     // wall-clock time from dispatch to completion
+  sequenceIndex?: number;  // zero-based position in a runSequence() call; absent on run()
+}
+```
+
+On failure, `error` contains the redacted exception message. If the error is a `StructuredError` carrying context (e.g. which signer was expected vs. presented), that context is JSON-appended as `| context: {...}`. Signing material is stripped from the context before serialisation.
+
+### Registered Task Types
+
+Every `TaskType` value accepted by `PayFiAgent.run()` is listed below, together with the tool class that handles it and a brief description.
+
+| `TaskType` | Tool class | Description |
+|---|---|---|
+| `stellar_payment` | `StellarPaymentTool` | Native XLM or custom Stellar asset payment via Horizon. Spending limit enforced before dispatch. |
+| `soroban_invoke` | `SorobanInvokeTool` | Mutable Soroban smart contract invocation. Mandatory simulation gate before broadcast; `simulateOnly: true` for dry-run. |
+| `soroban_query` | `SorobanQueryTool` | Read-only Soroban contract state inspection. Always simulates, never broadcasts. |
+| `x402_respond` | `X402PaymentTool` | Respond to an x402 `402 Payment Required` challenge. Validates challenge schema, enforces spending limit, delegates payment to `StellarPaymentTool`, returns `X402PaymentProof`. |
+| `account_info` | `AccountInfoTool` | Fetch the agent's balances, sequence number, and subentry count from Horizon. Read-only. |
+| `change_trust` | `TrustlineTool` | Add or remove a custom asset trustline on the agent's account. |
+| `multisig_payment` | `MultiSigPaymentTool` | Build M-of-N multisig payment transactions. Returns `unsignedXDR` until enough signatures are collected, then submits. |
+| `batch_payment` | `BatchPaymentTool` | Submit up to 100 payments in a single atomic transaction envelope. Aggregate spending limit enforced. |
+| `balance_check` | `BalanceCheckTool` | Query asset balances for any Stellar account (not just the agent). |
+| `path_payment` | `PathPaymentTool` | Cross-asset `pathPaymentStrictSend` via the Stellar DEX. |
+| `fee_bump` | `FeeBumpTool` | Wrap a pre-built transaction XDR in a fee-bump envelope for sponsored retry flows. |
+| `dex_offer` | `DexOfferTool` | Create, update, or delete a manage-sell offer on the Stellar DEX. |
+| `liquidity_pool` | `LiquidityPoolTool` | Interact with Stellar AMM liquidity pools (deposit, withdraw, query). |
+| `stellar_toml` | `StellarTomlTool` | Fetch and parse a `stellar.toml` from a domain's well-known endpoint. |
+| `data_entry` | `DataEntryTool` | Set or delete arbitrary key-value data entries on the agent's account. |
+| `sequence_number` | `SequenceNumberTool` | Fetch or bump the agent's current sequence number. |
+| `sponsored_account` | `SponsoredAccountTool` | Create a new Stellar account with sponsored reserves. |
+| `anchor_quote` | `AnchorQuoteTool` | Fetch an SEP-38 quote from an anchor for asset conversion. |
+| `inflation` | `InflationTool` | Set or query the account's inflation destination. |
+
+### Lifecycle Hooks
+
+The following hooks fire in order around every task execution:
+
+1. **Draining check** — if `agent.drain()` has been called, new tasks are rejected immediately with `"Agent is shutting down — task rejected"`.
+2. **Concurrency gate** — tasks that arrive while `activeTasks >= MAX_CONCURRENT_TASKS` are either queued (bounded by `QUEUE_CAPACITY`) or rejected.
+3. **Middleware chain** — registered via `agent.use(fn)`. Runs in FIFO registration order; each middleware calls `next()` to continue. A middleware can short-circuit by returning a result without calling `next()`.
+4. **Spending limit guard** — called inside `executeTask()` for payment-bearing task types before the tool is invoked. Throws synchronously on violation.
+5. **Tool execution** — the matching tool's method is called with `task.payload`.
+6. **`task:complete` / `task:failed` event** — emitted on the `PayFiAgent` EventEmitter so external listeners can react without polling.
+7. **`saveResult`** — persists the `AgentResult` (plus a `timestamp`) to the local DB via `backend/persistence.ts`.
+8. **`dispatchWebhook`** — fire-and-forget POST to `WEBHOOK_URL` (if configured) with the serialised `AgentResult`. Errors in webhook delivery are logged but do not affect the returned result.
+
+### Error Serialisation
+
+All errors thrown inside a tool are caught by `executeTask()`'s `try/catch`. The error message is processed as follows before it reaches `AgentResult.error`:
+
+1. `describeError(err)` — extracts the `.message` string; if the error is a `StructuredError` with a `.cause`, the sanitised cause is JSON-appended.
+2. `sanitizeCause(cause)` — strips keys matching `secretKey | privateKey | seed | _secretKey` from the cause before serialisation.
+3. `redactSecretString(message)` — regex-replaces any bare Stellar secret key (56-char `S…` string) with `[REDACTED]` as a final safety net.
+
+The resulting string is stored in `AgentResult.error` and forwarded verbatim to the webhook payload and the persisted DB row.
+
+---
+
 ## The Mandatory Simulation Gate
 
 To prevent lost fees and broadcast failures, all Soroban contract transactions must pass through a simulation gate prior to network submission. This logic is centered in [backend/rpc_client.ts](file:///Users/owner/Documents/Code/drip/Nodal-AI/backend/rpc_client.ts) inside the `prepareSorobanTx` function:
