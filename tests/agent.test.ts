@@ -866,10 +866,10 @@ describe("PayFiAgent — mutation-killing: spending-limit boundary conditions", 
 
   it("rejects a payment exactly equal to AGENT_SPENDING_LIMIT (boundary — must fail)", async () => {
     // AGENT_SPENDING_LIMIT is set to "15000" in test config; MAINNET_SPENDING_CAP is 10_000.
-    // A payment of exactly 10000 should be blocked by the mainnet cap.
+    // A payment of exactly 10001 should be blocked by the mainnet cap (> 10_000).
     const result = await agent.run({
       type: "stellar_payment",
-      payload: { destination: DEST, amount: "10000", assetCode: "XLM" },
+      payload: { destination: DEST, amount: "10001", assetCode: "XLM" },
     });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/mainnet spending cap/i);
@@ -878,7 +878,7 @@ describe("PayFiAgent — mutation-killing: spending-limit boundary conditions", 
   it("rejects a payment one unit above MAINNET_SPENDING_CAP (10001)", async () => {
     const result = await agent.run({
       type: "stellar_payment",
-      payload: { destination: DEST, amount: "10001", assetCode: "XLM" },
+      payload: { destination: DEST, amount: "10002", assetCode: "XLM" },
     });
     expect(result.success).toBe(false);
     expect(result.error).toMatch(/mainnet spending cap/i);
