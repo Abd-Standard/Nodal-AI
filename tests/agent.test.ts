@@ -846,3 +846,142 @@ describe("PayFiAgent — payload sanitisation", () => {
     expect(result.error).toBe("Invalid payment parameters");
   });
 });
+
+// ─── Mutation-killing assertions for backend/agent.ts (#456) ─────────────────
+// These tests are specifically designed to eliminate surviving mutants that
+// Stryker identifies in the spending-limit guards, spending-cap boundary checks,
+// and task-dispatch branching in PayFiAgent.
+
+describe("PayFiAgent — mutation-killing: spending-limit boundary conditions", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "ok", ledger: 1 }) }) as any,
+    );
+    agent = new PayFiAgent();
+  });
+
+  it("rejects a payment exactly equal to AGENT_SPENDING_LIMIT (boundary — must fail)", async () => {
+    // AGENT_SPENDING_LIMIT is set to "15000" in test config; MAINNET_SPENDING_CAP is 10_000.
+    // A payment of exactly 10000 should be blocked by the mainnet cap.
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "10000", assetCode: "XLM" },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/mainnet spending cap/i);
+  });
+
+  it("rejects a payment one unit above MAINNET_SPENDING_CAP (10001)", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "10001", assetCode: "XLM" },
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/mainnet spending cap/i);
+  });
+
+  it("allows a payment strictly below MAINNET_SPENDING_CAP (9999)", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "9999", assetCode: "XLM" },
+    });
+    // The mock resolves, so this should succeed (assuming spending tracker starts empty)
+    expect(result.success).toBe(true);
+  });
+
+  it("result.taskType always equals the dispatched task type", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "1", assetCode: "XLM" },
+    });
+    // Mutants that swap or delete the taskType assignment would break this.
+    expect(result.taskType).toBe("stellar_payment");
+  });
+
+  it("result.success is exactly false (not truthy-falsy) when the payment fails", async () => {
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockRejectedValue(new Error("forced failure")) }) as any,
+    );
+    const agent2 = new PayFiAgent();
+    const result = await agent2.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "1", assetCode: "XLM" },
+    });
+    expect(result.success).toBe(false);  // strict false, not just falsy
+    expect(result.success).not.toBe(true);
+  });
+
+  it("result.success is exactly true (not truthy) when the payment succeeds", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "1", assetCode: "XLM" },
+    });
+    expect(result.success).toBe(true);  // strict true
+    expect(result.success).not.toBe(false);
+  });
+
+  it("run() rejects unknown task types with an error result (not a thrown exception)", async () => {
+    const result = await agent.run({
+      type: "unknown_type" as any,
+      payload: {},
+    });
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/unknown task type/i);
+  });
+
+  it("correlationId is always a non-empty string on success", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "1", assetCode: "XLM" },
+    });
+    expect(typeof result.correlationId).toBe("string");
+    expect(result.correlationId!.length).toBeGreaterThan(0);
+  });
+
+  it("correlationId is always a non-empty string on failure", async () => {
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockRejectedValue(new Error("forced")) }) as any,
+    );
+    const a2 = new PayFiAgent();
+    const result = await a2.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "1", assetCode: "XLM" },
+    });
+    expect(typeof result.correlationId).toBe("string");
+    expect(result.correlationId!.length).toBeGreaterThan(0);
+  });
+});
+
+describe("PayFiAgent — mutation-killing: StellarPaymentTool data passthrough", () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: "hash_passthrough", ledger: 42 }) }) as any,
+    );
+    agent = new PayFiAgent();
+  });
+
+  it("result.data.txHash matches the value returned by StellarPaymentTool.execute", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "1", assetCode: "XLM" },
+    });
+    expect(result.success).toBe(true);
+    expect((result.data as any).txHash).toBe("hash_passthrough");
+  });
+
+  it("result.data.ledger matches the value returned by StellarPaymentTool.execute", async () => {
+    const result = await agent.run({
+      type: "stellar_payment",
+      payload: { destination: DEST, amount: "1", assetCode: "XLM" },
+    });
+    expect((result.data as any).ledger).toBe(42);
+  });
+});
