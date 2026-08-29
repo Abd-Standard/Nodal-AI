@@ -38,6 +38,18 @@ use soroban_sdk::{
     token::Client as TokenClient, Address, BytesN, Env, Symbol,
 };
 
+// ─── Security constants ───────────────────────────────────────────────────────
+
+/// Minimum delay (in seconds) that must elapse between proposing an arbiter
+/// rotation and accepting it (24 hours).
+///
+/// This is the security-critical floor for `accept_arbiter_rotation`: it is a
+/// hard-coded constant, never caller-supplied or read from storage, so no
+/// party — depositor or otherwise — can shorten the hostile-takeover window
+/// below this value. Keep any future configurability above this constant and
+/// reject proposals requesting less than `MIN_ROTATION_DELAY`.
+pub const MIN_ROTATION_DELAY: u64 = 86_400; // 24 hours in seconds
+
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
 #[contracttype]
@@ -585,7 +597,10 @@ impl EscrowContract {
     /// Propose a new arbiter. Only callable by the stored depositor.
     ///
     /// Initiates a time-locked arbiter rotation to prevent instant hostile takeover.
-    /// After the 24-hour time-lock, `accept_arbiter_rotation` must be called to finalize.
+    /// The proposal is locked for at least `MIN_ROTATION_DELAY` (24 hours) seconds;
+    /// only after that floor elapses can `accept_arbiter_rotation` finalize the change.
+    /// This minimum is enforced by the contract, not chosen by the caller, so no
+    /// proposal can solicit a near-instant rotation.
     ///
     /// # Arguments
     /// * `env`        - The execution environment.
@@ -623,10 +638,11 @@ impl EscrowContract {
         );
     }
 
-    /// Accept the pending arbiter rotation after the 24-hour time-lock.
+    /// Accept the pending arbiter rotation after the minimum time-lock.
     ///
-    /// Finalizes the arbiter change if 24 hours have passed since `propose_new_arbiter` was called.
-    /// Can be called by anyone once the time-lock has expired.
+    /// Finalizes the arbiter change if at least `MIN_ROTATION_DELAY` (24 hours)
+    /// have passed since `propose_new_arbiter` was called. Can be called by anyone
+    /// once the time-lock has expired.
     ///
     /// # Arguments
     /// * `env` - The execution environment.
@@ -638,8 +654,6 @@ impl EscrowContract {
     /// # Return Value
     /// None.
     pub fn accept_arbiter_rotation(env: Env) {
-        const ROTATION_DELAY: u64 = 86_400; // 24 hours in seconds
-
         if !env.storage().instance().has(&DataKey::PendingArbiter) {
             panic_with_error!(&env, EscrowError::NoPendingRotation);
         }
@@ -651,7 +665,14 @@ impl EscrowContract {
             .expect("escrow: state corrupted");
         let now = env.ledger().timestamp();
 
-        if now < pending_time + ROTATION_DELAY {
+        // The minimum rotation delay is a fixed constant, so no caller-controlled
+        // duration can ever shorten it. Use checked addition so an overflow cannot
+        // wrap around and accidentally unlock the rotation early.
+        let lock_expires = pending_time
+            .checked_add(MIN_ROTATION_DELAY)
+            .expect("escrow: rotation deadline overflow");
+
+        if now < lock_expires {
             panic_with_error!(&env, EscrowError::RotationLocked);
         }
 
