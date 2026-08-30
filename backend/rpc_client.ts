@@ -91,7 +91,7 @@ export function resolveNetworkPassphrase(network: string): string {
   if (network === "mainnet") return Networks.PUBLIC;
   if (network === "futurenet") return Networks.FUTURENET;
   if (network === "testnet") return Networks.TESTNET;
-  throw new Error("Unsupported network: ");
+  throw new Error(`Unsupported network: ${network}`);
 }
 
 export class TimeoutError extends Error {
@@ -174,7 +174,7 @@ export async function withRetry<T>(
   const lastErrorMessage =
     lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
   throw new StellarRPCError(
-    "RPC call failed after  attempt: ",
+    `RPC call failed after ${retries} attempt${retries === 1 ? "" : "s"}: ${lastErrorMessage}`,
     lastErr
   );
 }
@@ -237,7 +237,35 @@ export async function simulateSorobanTx(tx: Transaction) {
 export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
   const simResult = await simulateSorobanTx(tx);
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error("Soroban simulation failed: ");
+    throw new Error(`Soroban simulation failed: ${(simResult as rpc.Api.SimulateTransactionErrorResponse).error}`);
   }
-  return rpc.assembleTransaction(tx, simResult).build();
+  const assembled = rpc.assembleTransaction(tx, simResult).build();
+
+  // ── Auth-signer guard ────────────────────────────────────────────────────
+  // Inspect every Soroban auth entry on the assembled transaction. Reject any
+  // address-based credential that does not belong to the agent — an unexpected
+  // signer would indicate a simulation result tampered with by a malicious RPC
+  // node, which could drain funds from a third-party account.
+  const agentPubKey = config.AGENT_PUBLIC_KEY;
+  for (const op of (assembled as any).operations ?? []) {
+    for (const authEntry of op.auth ?? []) {
+      const creds = authEntry.credentials();
+      if (creds.switch() === xdr.SorobanCredentialsType.sorobanCredentialsAddress()) {
+        const addr = creds.address().address();
+        if (addr.switch() === xdr.ScAddressType.scAddressTypeAccount()) {
+          const signerPubKey = StrKey.encodeEd25519PublicKey(
+            addr.accountId().ed25519()
+          );
+          if (signerPubKey !== agentPubKey) {
+            throw new Error(
+              `prepareSorobanTx: unexpected signer in auth entry: ${signerPubKey}. ` +
+              `Only the agent account (${agentPubKey}) is permitted.`
+            );
+          }
+        }
+      }
+    }
+  }
+
+  return assembled;
 }

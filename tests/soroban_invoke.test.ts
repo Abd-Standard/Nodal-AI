@@ -70,7 +70,6 @@ vi.mock("../backend/utils/logger", () => ({
   createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
   generateCorrelationId: vi.fn(() => "mock-correlation-id"),
 }));
-}));
 
 /**
  * Mock the config module to provide a predictable environment.
@@ -150,7 +149,11 @@ function makeMockAccount(publicKey: string) {
  * sign() mutates `signatures` in place (matching real Stellar SDK behaviour).
  */
 function makeMockPreparedTx(): any {
-  const obj: any = { signatures: [] };
+  const obj: any = {
+    signatures: [],
+    timeBounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 300 },
+    fee: "100",
+  };
   obj.sign = vi.fn().mockImplementation(() => {
     obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
   });
@@ -297,6 +300,8 @@ describe("SorobanInvokeTool", () => {
     it("throws when Soroban fee exceeds MAX_SOROBAN_FEE_STROOPS", async () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
         sign: vi.fn(),
+        signatures: [],
+        timeBounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 300 },
         fee: 2_000_000,
       } as any);
 
@@ -313,8 +318,12 @@ describe("SorobanInvokeTool", () => {
 
     it("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-        sign: vi.fn(),
-        fee: 500_000,
+        sign: vi.fn().mockImplementation(function(this: any) {
+          (this as any).signatures = [{ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) }];
+        }),
+        signatures: [],
+        timeBounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 300 },
+        fee: "500000",
       } as any);
       vi.mocked(
         rpcClient.sorobanServer.sendTransaction as any,
@@ -571,10 +580,13 @@ describe("SorobanInvokeTool", () => {
 
     it("throws 'Transaction signing produced no signatures' when sign() is a no-op", async () => {
       // Mock prepareSorobanTx to return a transaction whose sign() does nothing,
-      // leaving the signatures array empty.
+      // leaving the signatures array empty. timeBounds is set so the time-bounds
+      // guard passes and the signature guard fires.
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
         sign: vi.fn(), // no-op — does NOT push to signatures
         signatures: [], // empty signatures list — guard must catch this
+        timeBounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 300 },
+        fee: "100",
       } as any);
 
       await expect(

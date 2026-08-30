@@ -52,6 +52,21 @@ vi.mock("../backend/tools/BatchPaymentTool", () => ({
   })),
 }));
 
+vi.mock("../backend/tools/SorobanQueryTool", () => ({
+  SorobanQueryTool: vi.fn().mockImplementation(() => ({
+    query: vi.fn(),
+  })),
+}));
+
+// Mock SpendingTracker so cumulative spend never bleeds across tests
+vi.mock("../backend/spending_tracker", () => ({
+  SpendingTracker: vi.fn().mockImplementation(() => ({
+    record: vi.fn(),
+    total: vi.fn().mockReturnValue(0),
+    getWindowStatus: vi.fn().mockReturnValue({ total: 0, recordCount: 0, windowMs: 86400000, oldestTimestamp: null }),
+  })),
+}));
+
 vi.mock("../backend/persistence", () => ({
   saveResult: vi.fn(),
 }));
@@ -292,11 +307,14 @@ describe("PayFiAgent — payload sanitisation", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 
   it("scrubs secretKey from payload before logging on failure", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
     mockInstance.execute.mockRejectedValueOnce(
       new Error("simulated payment failure")
     );

@@ -4,7 +4,7 @@
  * Tests for withRetry and DEFAULT_IS_RETRYABLE in backend/rpc_client.ts.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { ZodError, z } from "zod";
 import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, sorobanServer } from "../backend/rpc_client";
 import { Networks, rpc, xdr, StrKey, Keypair } from "@stellar/stellar-sdk";
@@ -20,18 +20,22 @@ vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
   };
 });
 
-const rpcClientLog = {
-  info: vi.fn(),
-  warn: vi.fn(),
-  error: vi.fn(),
-  debug: vi.fn(),
-};
-
-vi.mock("../backend/utils/logger", () => ({
-  logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
-  createLogger: vi.fn(() => rpcClientLog),
-  generateCorrelationId: vi.fn(() => "mock-id"),
-}));
+vi.mock("../backend/utils/logger", () => {
+  // Use a module-level log object that is safe to create inside the factory
+  const _log = {
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    debug: vi.fn(),
+  };
+  // Store on globalThis so beforeEach can clear it
+  (globalThis as any).__rpcClientLog = _log;
+  return {
+    logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
+    createLogger: vi.fn(() => _log),
+    generateCorrelationId: vi.fn(() => "mock-id"),
+  };
+});
 
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk");
@@ -56,10 +60,13 @@ vi.mock("../backend/config", () => {
 });
 
 beforeEach(() => {
-  rpcClientLog.info.mockClear();
-  rpcClientLog.warn.mockClear();
-  rpcClientLog.error.mockClear();
-  rpcClientLog.debug.mockClear();
+  const log = (globalThis as any).__rpcClientLog;
+  if (log) {
+    log.info.mockClear();
+    log.warn.mockClear();
+    log.error.mockClear();
+    log.debug.mockClear();
+  }
 });
 
 afterEach(() => {

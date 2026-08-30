@@ -26,6 +26,12 @@ import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase, sorobanServer 
 // without time bounds that can be replayed indefinitely on the network.
 export const SOROBAN_TX_TIMEOUT = 30;
 
+/**
+ * Alias for SOROBAN_TX_TIMEOUT — exported under both names so that callers
+ * importing either identifier resolve to the same value.
+ */
+export const SOROBAN_TX_TIMEOUT_SECONDS = SOROBAN_TX_TIMEOUT;
+
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
 /**

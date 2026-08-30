@@ -37,6 +37,31 @@ export class SpendingTracker {
     return this.records.reduce((sum, r) => sum + r.amount, 0);
   }
 
+  /**
+   * Return a snapshot of the current window state.
+   *
+   * @returns An object with:
+   *   - `total` – cumulative spend within the active window
+   *   - `recordCount` – number of records still within the window
+   *   - `windowMs` – the configured window duration in milliseconds
+   *   - `oldestTimestamp` – timestamp of the oldest in-window record, or `null` when empty
+   */
+  getWindowStatus(): {
+    total: number;
+    recordCount: number;
+    windowMs: number;
+    oldestTimestamp: number | null;
+  } {
+    const now = Date.now();
+    this.pruneOld(now);
+    return {
+      total: this.records.reduce((sum, r) => sum + r.amount, 0),
+      recordCount: this.records.length,
+      windowMs: this.windowMs,
+      oldestTimestamp: this.records.length > 0 ? this.records[0]!.timestamp : null,
+    };
+  }
+
   private pruneOld(now: number) {
     const cutoff = now - this.windowMs;
     while (this.records.length && this.records[0].timestamp < cutoff) {
