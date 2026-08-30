@@ -36,7 +36,7 @@ Nodal AI is built on a clean, three-pillar separation of concerns. For a deep di
 1. **Clone & Configure:**
 
    ```bash
-   git clone https://github.com/your-username/nodal-ai.git
+   git clone https://github.com/Nodal-stellar/Nodal-AI.git
    cd nodal-ai
    cp .env.example .env
    ```
@@ -111,11 +111,29 @@ docker-compose --profile test up --build
 
 ---
 
+## Development Environment (Devcontainer & Codespaces)
+
+For zero-setup provisioning, Nodal AI ships a [VS Code Dev Container](https://containers.dev/) configuration in [`.devcontainer/`](./.devcontainer/devcontainer.json). It gives you Node 20, the Rust toolchain (with the `wasm32-unknown-unknown` target), and the Stellar CLI, pre-installed, with no local setup required.
+
+**Using VS Code:**
+
+1. Install the [Dev Containers extension](https://marketplace.visualstudio.com/items?itemName=ms-vscode-remote.remote-containers).
+2. Open the repository in VS Code and select **"Reopen in Container"** when prompted (or run the **Dev Containers: Reopen in Container** command).
+3. Wait for [`.devcontainer/post-create.sh`](./.devcontainer/post-create.sh) to finish installing `rustup`, the `wasm32-unknown-unknown` target, `stellar-cli`, and `npm install` — then you're ready to build, test, and run the example scripts.
+
+**Using GitHub Codespaces:**
+
+Open the repository on GitHub and select **Code → Codespaces → Create codespace on main** — the same `.devcontainer/` configuration provisions the Codespace automatically.
+
+The container forwards port `3000` and preinstalls `dbaeumer.vscode-eslint`, `esbenp.prettier-vscode`, `rust-lang.rust-analyzer`, and `tamasfe.even-better-toml` as recommended extensions.
+
+---
+
 ## Security Policy
 
 Security is the foundation of PayFi. See [SECURITY.md](./SECURITY.md) for the full responsible disclosure policy, response SLAs, core security invariants, and secret management guidelines.
 
-To report a vulnerability privately, use [GitHub Security Advisories](https://github.com/Dami24-hub/nodal-ai/security/advisories/new).
+To report a vulnerability privately, use [GitHub Security Advisories](https://github.com/Nodal-stellar/Nodal-AI/security/advisories/new).
 
 ### Spending Limit Enforcement
 
@@ -127,6 +145,7 @@ PayFiAgent enforces two layers of spending limits to prevent runaway payments:
 These limits apply to:
 - Direct `stellar_payment` tasks via `StellarPaymentTool`
 - `x402_respond` tasks that trigger automatic payment via `X402PaymentTool`
+- `soroban_invoke` tasks whose contract calls internally move funds. A contract invocation can trigger Stellar Asset Contract (SAC) transfers (`transfer`, `transfer_from`, `burn`) that are invisible in the request payload, so `SorobanInvokeTool` derives the amount from the mandatory Soroban simulation: it sums the simulated SAC events that debit the agent, rejects the invocation when the total exceeds the limit (error: `"Contract invocation transfers X ... exceeds AGENT_SPENDING_LIMIT of Y"`), and records within-limit spends into the same rolling spending window as payments. Dry-runs (`simulateOnly: true`) are checked but never recorded, since no funds move.
 
 ### Mainnet Checklist
 
@@ -145,7 +164,7 @@ All four checks are enforced at startup via `backend/config.ts` validation and a
 
 We are actively participating in the **Stellar Wave** program! We welcome contributions ranging from bug fixes to new tool modules.
 
-1.  Check the [Issues](https://github.com/your-username/nodal-ai/issues) tab for tickets tagged `good first issue` or `help wanted`.
+1.  Check the [Issues](https://github.com/Nodal-stellar/Nodal-AI/issues) tab for tickets tagged `good first issue` or `help wanted`.
 2.  Follow the [CONTRIBUTING.md](./CONTRIBUTING.md) guide.
 3.  Submit a Pull Request and join our community in the next Wave sprint to earn Drips points for your contributions!
 
@@ -153,7 +172,7 @@ We are actively participating in the **Stellar Wave** program! We welcome contri
 
 ## Examples
 
-Three runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `.env.example` to `.env` and fill in your values, then run any script with:
+Runnable scripts in `scripts/examples/` demonstrate each `TaskType` with real payloads. Copy `.env.example` to `.env` and fill in your values, then run any script with:
 
 ```bash
 npx ts-node scripts/examples/<script>.ts
@@ -181,6 +200,61 @@ Responds to a sample x402 payment challenge and prints the resulting `X402Paymen
 
 ```bash
 npx ts-node scripts/examples/respond_x402.ts
+```
+
+### `multisig_payment.ts` — multisig_payment
+
+Demonstrates the two-phase multisig workflow: first dispatch returns an unsigned XDR for external signature collection, then re-dispatch with collected signatures to submit (simulate-only in this example).
+
+```bash
+npx ts-node scripts/examples/multisig_payment.ts
+```
+
+### `place_dex_offer.ts` — dex_offer
+
+Places a manage-sell offer on the Stellar DEX. This example creates an offer to sell XLM for USDC at a specified price. Use `action: "create"` to place, `"update"` to modify, or `"delete"` to cancel.
+
+```bash
+npx ts-node scripts/examples/place_dex_offer.ts
+```
+
+### `query_contract.ts` — soroban_query
+
+Performs a read-only query on a Soroban contract without broadcasting. This example calls `get_state` on a deployed escrow contract to verify state after deployment. Pass the contract address via `CONTRACT_ID`:
+
+```bash
+CONTRACT_ID=C... npx ts-node scripts/examples/query_contract.ts
+```
+
+### `fee_bump.ts` — fee_bump
+
+Wraps a transaction in a fee-bump envelope for sponsored retry flows. This is useful when the agent needs to pay fees on behalf of a transaction signed by a different account. Pass the inner transaction XDR via `INNER_TX_XDR`:
+
+```bash
+INNER_TX_XDR=AAAA... npx ts-node scripts/examples/fee_bump.ts
+```
+
+### `anchor_deposit.ts` — SEP-0010 + SEP-0006 anchor deposit
+
+Demonstrates a complete PayFi onboarding scenario by combining `StellarIdentityTool` (SEP-0010 web auth) with an anchor USDC deposit flow:
+
+1. Fetches the anchor's `stellar.toml` to discover `WEB_AUTH_ENDPOINT` and `TRANSFER_SERVER`.
+2. Authenticates with the anchor via SEP-0010 challenge-response and obtains a JWT.
+3. Initiates a SEP-0006 deposit to obtain the anchor's deposit address (and optional memo).
+4. Sends a test asset payment to the deposit address via `stellar_payment`.
+5. Prints a deposit confirmation summary.
+
+Tested against the [Stellar Demo Anchor](https://testanchor.stellar.org) on testnet.
+
+**Required .env vars** (in addition to the standard set):
+
+| Variable | Description |
+|---|---|
+| `ANCHOR_URL` | Base URL of the anchor (e.g. `https://testanchor.stellar.org`) |
+| `ANCHOR_ASSET_ISSUER` | Issuer account of the anchor asset |
+
+```bash
+npx ts-node scripts/examples/anchor_deposit.ts
 ```
 
 ---
@@ -222,9 +296,18 @@ The primary integration surface for developers. Dispatch tasks to the agent via 
 ### TaskType
 
 ```typescript
-type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump"
+type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump" | "account_info"
 ```
 
+All three values are wired into `PayFiAgent.run()` in `backend/agent.ts`. Any unrecognised type throws `"Unknown task type: <value>"` immediately at dispatch time.
+
+| Value | Tool | Description |
+|-------|------|-------------|
+| `stellar_payment` | `StellarPaymentTool` | Submit a native XLM or custom Stellar asset payment via Horizon. Enforces the per-transaction `AGENT_SPENDING_LIMIT` and the mainnet spending cap before execution. |
+| `soroban_invoke` | `SorobanInvokeTool` | Invoke any Soroban smart contract function. Always runs a mandatory simulation pass via Soroban RPC before broadcast; set `simulateOnly: true` for a dry-run that skips submission. |
+| `x402_respond` | `X402PaymentTool` | Respond to an [x402](https://github.com/x402-foundation/x402) `402 Payment Required` challenge. Validates the challenge schema, enforces spending limits, delegates to `StellarPaymentTool`, and returns an `X402PaymentProof`. |
+
+> **Standalone utilities:** `BalanceCheckTool` (`backend/tools/BalanceCheckTool.ts`) and `SorobanQueryTool` (`backend/tools/SorobanQueryTool.ts`) are importable directly and are not dispatched through `PayFiAgent.run()`. Use them outside the agent task loop when you only need a read-only query.
 | Value | Description |
 |-------|-------------|
 | `stellar_payment` | Native XLM or custom asset payment via Horizon |
@@ -232,6 +315,7 @@ type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_pa
 | `x402_respond` | Respond to an x402 payment challenge with spending limit guard |
 | `path_payment` | Cross-asset path payment strict send via the Stellar DEX |
 | `fee_bump` | Wrap an existing transaction in a fee-bump envelope for sponsored retry |
+| `account_info` | Fetch the agent's account balances, sequence number, and trustlines from Horizon |
 
 ### AgentTask
 
@@ -244,8 +328,18 @@ interface AgentTask {
 
 Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }`
-- `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; ... }`
+- `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; simulateOnly?: boolean; ... }`
 - `x402_respond`: `{ resource: string; amount: string; assetCode?: string; assetIssuer?: string; payTo: string; nonce: string; expiresAt: string }`
+- `change_trust`: `{ assetCode: string; assetIssuer: string; action: "add" | "remove"; limit?: string }`
+- `batch_payment`: `{ payments: PaymentInput[] }` (max 100 payments; aggregate spending limit enforced)
+- `multisig_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string; additionalSigners: string[]; minSignatures: number; signatures?: string[] }`
+- `dex_offer`: `{ action: "create" | "update" | "delete"; selling: Asset; buying: Asset; amount: string; price: string; offerId?: string | number }`
+- `path_payment`: `{ destination: string; sendAsset: Asset; sendMax: string; destAsset: Asset; destAmount: string; ... }`
+- `fee_bump`: `{ innerTx: string; feeAccount: string; maxFee: string }`
+- `account_info`: `{ publicKey?: string }`
+- `inflation`: `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
+- `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
+- `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
 
 ### AgentResult
 
@@ -255,10 +349,25 @@ interface AgentResult {
   taskType: TaskType;
   data?: unknown;
   error?: string;
+  errorType?: string;
+  correlationId?: string;
+  durationMs?: number;
+  sequenceIndex?: number;
 }
 ```
 
 Task execution result. On success, `data` contains the tool's output. On failure, `error` is populated.
+
+| Field | Present | Meaning |
+|---|---|---|
+| `success` | always | Whether the task completed. |
+| `taskType` | always | The task type that was dispatched. |
+| `data` | on success | The tool's output. |
+| `error` | on failure | Failure message. For a `StructuredError` carrying context, the context is appended as `\| context: {...}` JSON — an auth rejection, for example, reports the signer that was presented and the one expected. Signing material is stripped before serialisation. |
+| `errorType` | on failure | Machine-readable category (`UNAUTHORIZED_ERROR`, `TRANSACTION_FAILURE`, …) so callers can branch without string matching. |
+| `correlationId` | always | Ties together every log line, persisted result, and webhook for this execution. |
+| `durationMs` | usually | Wall-clock execution time. |
+| `sequenceIndex` | `runSequence` only | Zero-based position of the task within the `runSequence` call. Since the sequence stops at the first failure, the last entry's `sequenceIndex` is the index of the task that failed — and it stays correct after the results are filtered or sorted, which array position does not. Absent on `run()`. |
 
 ### Usage Example
 

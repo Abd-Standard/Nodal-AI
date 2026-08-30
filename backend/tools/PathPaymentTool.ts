@@ -16,8 +16,10 @@ import {
 import { z } from "zod";
 import { config } from "../config";
 import { logger } from "../logger";
-import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { horizonServer, loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { ValidationError } from "../errors";
 import { createLogger } from "../utils/logger";
+import { SubmitResultSchema } from "./StellarPaymentTool";
 
 const log = createLogger("path-payment");
 
@@ -41,22 +43,82 @@ export const PathPaymentInputSchema = z.object({
     .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "destMinAmount must be a valid Stellar decimal")
     .refine((v) => parseFloat(v) > 0, "destMinAmount must be greater than zero"),
   path: z.array(AssetSchema).optional().default([]),
-  memo: z
-    .string()
-    .refine((v) => Buffer.byteLength(v, "utf8") <= 28, "Memo must be at most 28 bytes")
-    .optional(),
+  allowSelfPayment: z.boolean().optional().default(false),
+  memoType: z.enum(["text", "id", "hash", "return"]).optional().default("text"),
+  memo: z.union([z.string(), z.number()]).optional(),
 });
 
 export type PathPaymentInput = z.infer<typeof PathPaymentInputSchema>;
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
-function toAsset(a: { code: string; issuer?: string }): Asset {
+function toAsset(a: { code: string; issuer?: string | undefined }): Asset {
   if (a.code === "XLM") return Asset.native();
   if (!a.issuer) {
     throw new Error(`Asset issuer is required for non-native asset ${a.code}`);
   }
   return new Asset(a.code, a.issuer);
+}
+
+/**
+ * Build a Stellar Memo object based on memoType and value.
+ *
+ * @param memoType - Type of memo: "text", "id", "hash", or "return"
+ * @param memoValue - Memo value (string for text/return/hash, number for id)
+ * @returns Memo instance or null if memoValue is undefined
+ */
+function buildMemo(memoType: string, memoValue: string | number | undefined): Memo | null {
+  if (memoValue === undefined) {
+    return null;
+  }
+
+  switch (memoType) {
+    case "id":
+      if (typeof memoValue !== "number") {
+        throw new Error("Memo ID must be a number");
+      }
+      // Convert to unsigned 64-bit integer
+      const id = BigInt(memoValue);
+      if (id < 0n || id > 18446744073709551615n) {
+        throw new Error("Memo ID must be a 64-bit unsigned integer (0 to 2^64-1)");
+      }
+      return Memo.id(id.toString());
+    case "hash":
+      if (typeof memoValue !== "string") {
+        throw new Error("Memo hash must be a string");
+      }
+      // Remove 0x prefix if present and validate length
+      const hashHex = memoValue.replace(/^0x/, "");
+      if (hashHex.length !== 64) {
+        throw new Error("Memo hash must be a 32-byte hex string (64 hex characters)");
+      }
+      if (!/^[0-9a-fA-F]{64}$/.test(hashHex)) {
+        throw new Error("Memo hash must contain only valid hex characters");
+      }
+      return Memo.hash(hashHex);
+    case "return":
+      if (typeof memoValue !== "string") {
+        throw new Error("Memo return must be a string");
+      }
+      // Remove 0x prefix if present and validate length
+      const returnHex = memoValue.replace(/^0x/, "");
+      if (returnHex.length !== 64) {
+        throw new Error("Memo return must be a 32-byte hex string (64 hex characters)");
+      }
+      if (!/^[0-9a-fA-F]{64}$/.test(returnHex)) {
+        throw new Error("Memo return must contain only valid hex characters");
+      }
+      return Memo.return(returnHex);
+    case "text":
+    default:
+      if (typeof memoValue !== "string") {
+        throw new Error("Memo text must be a string");
+      }
+      if (Buffer.byteLength(memoValue, "utf8") > 28) {
+        throw new Error("Memo text must be at most 28 bytes");
+      }
+      return Memo.text(memoValue);
+  }
 }
 
 // ─── Tool implementation ──────────────────────────────────────────────────────
@@ -77,13 +139,29 @@ export class PathPaymentTool {
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = PathPaymentInputSchema.parse(rawInput);
 
-    if (input.destination === this.keypair.publicKey()) {
+    if (!input.allowSelfPayment && input.destination === this.keypair.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 
     const sendAsset = toAsset(input.sendAsset);
     const destAsset = toAsset(input.destAsset);
-    const pathAssets = input.path.map(toAsset);
+    let pathAssets = input.path.map(toAsset);
+
+    if (pathAssets.length === 0 && typeof (horizonServer as any)?.strictSendPaths === "function") {
+      const paths = await horizonServer
+        .strictSendPaths(sendAsset, input.sendAmount, [destAsset])
+        .call();
+      if (!paths || !paths.records || paths.records.length === 0) {
+        throw new ValidationError("No path found between assets");
+      }
+      const bestRecord = paths.records[0];
+      if (bestRecord && Array.isArray(bestRecord.path)) {
+        pathAssets = bestRecord.path.map((p: any) => {
+          if (p.asset_type === "native" || p.code === "XLM") return Asset.native();
+          return new Asset(p.asset_code || p.code, p.asset_issuer || p.issuer);
+        });
+      }
+    }
 
     let sourceAccount = await loadAccount(this.keypair.publicKey());
 
@@ -102,8 +180,11 @@ export class PathPaymentTool {
         })
       );
 
-      if (input.memo) {
-        builder.addMemo(Memo.text(input.memo));
+      if (input.memo !== undefined) {
+        const memo = buildMemo(input.memoType, input.memo);
+        if (memo) {
+          builder.addMemo(memo);
+        }
       }
 
       return builder.setTimeout(30).build();
@@ -122,17 +203,19 @@ export class PathPaymentTool {
     tx.sign(this.keypair);
 
     try {
-      const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
+      const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes("tx_bad_seq")) {
         logger.warn("tx_bad_seq detected, reloading account and retrying once", {
           source: this.keypair.publicKey(),
         });
-        sourceAccount = await loadAccount(this.keypair.publicKey());
+        // Bypass the account cache: the whole point of this retry is that the
+        // sequence we used was wrong, so a cached record must not be reused.
+        sourceAccount = await loadAccount(this.keypair.publicKey(), { forceRefresh: true });
         tx = buildTx();
         tx.sign(this.keypair);
-        const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
+        const result = SubmitResultSchema.parse(await submitTransaction(tx));
         return { txHash: result.hash, ledger: result.ledger };
       }
       throw err;

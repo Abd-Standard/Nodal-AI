@@ -13,6 +13,8 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { createHmac, timingSafeEqual } from "crypto";
 import { signPayload, dispatchWebhook } from "../backend/webhook";
+import { createHmac } from "crypto";
+import { signPayload, dispatchWebhook, verifyWebhookSignature } from "../backend/webhook";
 import type { AgentResult } from "../backend/agent";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -60,6 +62,62 @@ describe("signPayload", () => {
   });
 });
 
+describe("verifyWebhookSignature", () => {
+  it("returns true for a valid signature", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const sig = signPayload(payload, secret);
+    expect(verifyWebhookSignature(payload, sig, secret)).toBe(true);
+  });
+
+  it("returns false for an invalid signature", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const sig = "incorrectsignature";
+    expect(verifyWebhookSignature(payload, sig, secret)).toBe(false);
+  });
+
+  it("returns false for a signature with incorrect length", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const sig = "abc";
+    expect(verifyWebhookSignature(payload, sig, secret)).toBe(false);
+  });
+
+  it("returns false for a valid signature signed with a different secret", () => {
+    const payload = '{"foo":"bar"}';
+    const sig = signPayload(payload, "wrongsecret");
+    expect(verifyWebhookSignature(payload, sig, "mysecret")).toBe(false);
+  });
+
+  it("returns false for a tampered payload", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const sig = signPayload(payload, secret);
+    const tamperedPayload = '{"foo":"baz"}';
+    expect(verifyWebhookSignature(tamperedPayload, sig, secret)).toBe(false);
+  });
+
+  it("returns false for a wrong secret", () => {
+    const payload = '{"foo":"bar"}';
+    const correctSecret = "mysecret";
+    const wrongSecret = "incorrectsecret";
+    const sig = signPayload(payload, correctSecret);
+    expect(verifyWebhookSignature(payload, sig, wrongSecret)).toBe(false);
+  });
+
+  it("returns false for signatures of different lengths without throwing", () => {
+    const payload = '{"foo":"bar"}';
+    const secret = "mysecret";
+    const shortSig = "short";
+    const longSig = signPayload(payload, secret) + "extra";
+    expect(() => verifyWebhookSignature(payload, shortSig, secret)).not.toThrow();
+    expect(verifyWebhookSignature(payload, shortSig, secret)).toBe(false);
+    expect(() => verifyWebhookSignature(payload, longSig, secret)).not.toThrow();
+    expect(verifyWebhookSignature(payload, longSig, secret)).toBe(false);
+  });
+});
+
 describe("dispatchWebhook", () => {
   let axiosPost: ReturnType<typeof vi.fn>;
 
@@ -84,9 +142,13 @@ describe("dispatchWebhook", () => {
     await dispatchWebhook(successResult);
 
     expect(axiosPost).toHaveBeenCalledOnce();
-    const [url, body] = axiosPost.mock.calls[0];
+    const calls = axiosPost.mock.calls;
+    const call = calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    const [url, body] = call;
     expect(url).toBe("https://example.com/webhook");
-    expect(JSON.parse(body)).toMatchObject({ success: true, taskType: "stellar_payment" });
+    expect(JSON.parse(body as string)).toMatchObject({ success: true, taskType: "stellar_payment" });
   });
 
   it("includes X-Nodal-Signature header when WEBHOOK_SECRET is set", async () => {
@@ -96,8 +158,11 @@ describe("dispatchWebhook", () => {
 
     await dispatchWebhook(successResult);
 
-    const [, body, opts] = axiosPost.mock.calls[0];
-    const expectedSig = signPayload(body, "supersecret");
+    const call = axiosPost.mock.calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    const [, body, opts] = call;
+    const expectedSig = signPayload(body as string, "supersecret");
     expect(opts.headers["X-Nodal-Signature"]).toBe(expectedSig);
   });
 
@@ -107,15 +172,113 @@ describe("dispatchWebhook", () => {
 
     await dispatchWebhook(failureResult);
 
-    const [, body] = axiosPost.mock.calls[0];
-    expect(JSON.parse(body)).toMatchObject({ success: false, taskType: "x402_respond" });
+    const call = axiosPost.mock.calls[0];
+    expect(call).toBeDefined();
+    if (!call) return;
+    const [, body] = call;
+    expect(JSON.parse(body as string)).toMatchObject({ success: false, taskType: "x402_respond" });
   });
 
   it("does not throw when axios.post rejects (swallows delivery errors)", async () => {
     (globalThis as any).__webhookUrl = "https://example.com/webhook";
-    axiosPost.mockRejectedValueOnce(new Error("network error"));
+    axiosPost.mockRejectedValue(new Error("network error"));
 
-    await expect(dispatchWebhook(successResult)).resolves.toBeUndefined();
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await expect(promise).resolves.toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries 503 responses with exponential backoff and delivers on 200 (503 -> 503 -> 200)", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockResolvedValueOnce({ status: 200 });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries when subscriber resolves with non-2xx status (503 -> 503 -> 200)", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost
+      .mockResolvedValueOnce({ status: 503 })
+      .mockResolvedValueOnce({ status: 503 })
+      .mockResolvedValueOnce({ status: 200 });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not retry on HTTP 4xx (e.g. 400, 404) responses", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost.mockRejectedValueOnce({ response: { status: 404 } });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("retries on HTTP 429 rate limit responses", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost
+      .mockRejectedValueOnce({ response: { status: 429, headers: { "retry-after": "1" } } })
+      .mockResolvedValueOnce({ status: 200 });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("ceases retrying after 3 failed attempts on persistent 5xx errors", async () => {
+    (globalThis as any).__webhookUrl = "https://example.com/webhook";
+    axiosPost.mockRejectedValue({ response: { status: 500 } });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+
+      expect(axiosPost).toHaveBeenCalledTimes(3);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

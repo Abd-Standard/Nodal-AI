@@ -9,12 +9,64 @@ import {
   Operation,
   Asset,
   BASE_FEE,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { z } from "zod";
+import { NotFoundError } from "@stellar/stellar-sdk";
 import { config } from "../config";
-import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
+import { ValidationError } from "../errors";
+import { horizonServer, loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
 import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
 import { SubmitResultSchema } from "./StellarPaymentTool";
+
+/**
+ * Extract offer ID from the transaction result XDR.
+ * For manageSellOffer create operations, the result contains the offerID.
+ */
+function extractOfferIdFromTxResult(
+  resultXdr: string,
+  action: string
+): string | null {
+  if (action !== "create") return null;
+
+  try {
+    const txResult = xdr.TransactionResult.fromXDR(resultXdr, "base64");
+    const result = txResult.result();
+    if (result.switch() !== xdr.TransactionResultCode.txSuccess()) return null;
+
+    const opResults = result.results();
+    if (opResults.length === 0) return null;
+
+    // opResults[0] is the OperationResult union
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const opResult: any = opResults[0];
+    if (opResult.switch() !== xdr.OperationResultCode.opInner()) {
+      return null;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const tr: any = opResult.tr();
+    if (tr.switch() !== xdr.OperationType.manageSellOffer()) {
+      return null;
+    }
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const manageSellOfferResult: any = tr.manageSellOfferResult();
+    const successResult = manageSellOfferResult.success();
+    if (!successResult) return null;
+
+    const offerUnion = successResult.offer();
+    if (!offerUnion) return null;
+
+    // After deserialization, the union arm is "offer", so use .value()
+    const offer = offerUnion.value();
+    if (!offer) return null;
+
+    return offer.offerId().toString();
+  } catch {
+    return null;
+  }
+}
 
 // ─── Schemas ──────────────────────────────────────────────────────────────────
 
@@ -49,8 +101,19 @@ export type DexOfferInput = z.infer<typeof DexOfferInputSchema>;
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
-function resolveAsset(a: { code: string; issuer?: string }): Asset {
+function resolveAsset(a: { code: string; issuer?: string | undefined }): Asset {
   return a.code === "XLM" ? Asset.native() : new Asset(a.code, a.issuer!);
+}
+
+async function verifyOfferExists(offerId: string): Promise<void> {
+  try {
+    await horizonServer.offers().offer(offerId).call();
+  } catch (err) {
+    if (err instanceof NotFoundError) {
+      throw new ValidationError(`Offer ${offerId} not found on Stellar network`);
+    }
+    throw err;
+  }
 }
 
 // ─── Tool ─────────────────────────────────────────────────────────────────────
@@ -78,6 +141,10 @@ export class DexOfferTool {
     const offerAmount = input.action === "delete" ? "0" : input.amount;
     const offerId = input.offerId != null ? String(input.offerId) : "0";
 
+    if (input.action === "update" || input.action === "delete") {
+      await verifyOfferExists(offerId);
+    }
+
     const sourceAccount = await loadAccount(this.keypair.publicKey());
 
     const tx = new TransactionBuilder(sourceAccount, {
@@ -98,10 +165,22 @@ export class DexOfferTool {
 
     tx.sign(this.keypair);
 
-    const result = SubmitResultSchema.parse(await submitTransaction(tx));
+    const submitResult = await submitTransaction(tx);
+    const result = SubmitResultSchema.parse(submitResult);
 
-    // Extract offerId from the transaction result meta if available;
-    // fall back to the input offerId (or "0" for new offers — the network assigns the real id).
-    return { txHash: result.hash, ledger: result.ledger, offerId };
+    // For create actions, extract the network-assigned offerId from the transaction result.
+    // For update/delete actions, return the input offerId.
+    let finalOfferId = offerId;
+    if (input.action === "create" && "result_xdr" in submitResult) {
+      const extractedOfferId = extractOfferIdFromTxResult(
+        (submitResult as { result_xdr: string }).result_xdr,
+        input.action
+      );
+      if (extractedOfferId) {
+        finalOfferId = extractedOfferId;
+      }
+    }
+
+    return { txHash: result.hash, ledger: result.ledger, offerId: finalOfferId };
   }
 }

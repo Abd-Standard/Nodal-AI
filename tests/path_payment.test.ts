@@ -8,13 +8,26 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { Keypair } from "@stellar/stellar-sdk";
 import { PathPaymentTool } from "../backend/tools/PathPaymentTool";
 import * as rpcClient from "../backend/rpc_client";
+import { ValidationError } from "../backend/errors";
+import { PayFiAgent } from "../backend/agent";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
   submitTransaction: vi.fn(),
-  horizonServer: {},
+  horizonServer: {
+    strictSendPaths: vi.fn(() => ({
+      call: vi.fn().mockResolvedValue({
+        records: [
+          {
+            path: [],
+            destination_amount: "9",
+          },
+        ],
+      }),
+    })),
+  },
   sorobanServer: {},
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
@@ -24,7 +37,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -42,7 +55,7 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const VALID_DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
@@ -118,6 +131,48 @@ describe("PathPaymentTool", () => {
       destAsset: { code: "USDC", issuer: USDC_ISSUER },
       destMinAmount: "4",
       memo: "swap-ref-123",
+    });
+
+    expect(result.txHash).toBe("path_tx_hash");
+  });
+
+  it("accepts memo type 'id' with numeric value", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "5",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "4",
+      memoType: "id",
+      memo: 987654321,
+    });
+
+    expect(result.txHash).toBe("path_tx_hash");
+  });
+
+  it("accepts memo type 'hash' with 32-byte hex string", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "5",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "4",
+      memoType: "hash",
+      memo: "b".repeat(64),
+    });
+
+    expect(result.txHash).toBe("path_tx_hash");
+  });
+
+  it("accepts memo type 'return' with 32-byte hex string", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: "XLM" },
+      sendAmount: "5",
+      destAsset: { code: "USDC", issuer: USDC_ISSUER },
+      destMinAmount: "4",
+      memoType: "return",
+      memo: "c".repeat(64),
     });
 
     expect(result.txHash).toBe("path_tx_hash");
@@ -205,5 +260,60 @@ describe("PathPaymentTool", () => {
 
     expect(result.txHash).toBe("retry_hash");
     expect(rpcClient.submitTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Empty path array (#377) ──────────────────────────────────────────────────
+
+  it("throws ValidationError when Horizon returns an empty paths array", async () => {
+    vi.mocked(rpcClient.horizonServer.strictSendPaths as any).mockReturnValueOnce({
+      call: vi.fn().mockResolvedValue({ records: [] }),
+    });
+
+    await expect(
+      tool.execute({
+        destination: VALID_DEST,
+        sendAsset: { code: "XLM" },
+        sendAmount: "10",
+        destAsset: { code: "USDC", issuer: USDC_ISSUER },
+        destMinAmount: "9",
+      })
+    ).rejects.toThrow(ValidationError);
+
+    vi.mocked(rpcClient.horizonServer.strictSendPaths as any).mockReturnValueOnce({
+      call: vi.fn().mockResolvedValue({ records: [] }),
+    });
+
+    await expect(
+      tool.execute({
+        destination: VALID_DEST,
+        sendAsset: { code: "XLM" },
+        sendAmount: "10",
+        destAsset: { code: "USDC", issuer: USDC_ISSUER },
+        destMinAmount: "9",
+      })
+    ).rejects.toThrow("No path found between assets");
+  });
+
+  it("ensures empty path ValidationError propagates to AgentResult.error as a string", async () => {
+    vi.mocked(rpcClient.horizonServer.strictSendPaths as any).mockReturnValueOnce({
+      call: vi.fn().mockResolvedValue({ records: [] }),
+    });
+
+    const agent = new PayFiAgent();
+    const result = await agent.run({
+      type: "path_payment",
+      payload: {
+        destination: VALID_DEST,
+        sendAsset: { code: "XLM" },
+        sendAmount: "10",
+        destAsset: { code: "USDC", issuer: USDC_ISSUER },
+        destMinAmount: "9",
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain("No path found between assets");
+    expect(typeof result.error).toBe("string");
+    agent.destroy();
   });
 });

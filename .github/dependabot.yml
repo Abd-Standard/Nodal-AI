@@ -5,11 +5,15 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Reviewers/assignees mirror .github/CODEOWNERS.
     assignees:
       - "Dami24-hub"
     reviewers:
       - "Dami24-hub"
     groups:
+      stellar:
+        patterns:
+          - "@stellar/*"
       patch-and-minor:
         update-types:
           - "patch"
@@ -23,10 +27,25 @@ updates:
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
+    # Reviewers/assignees mirror .github/CODEOWNERS.
     assignees:
       - "Dami24-hub"
     reviewers:
       - "Dami24-hub"
+    groups:
+      soroban-sdk:
+        patterns:
+          - "soroban-sdk*"
     ignore:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    assignees:
+      - "Dami24-hub"
+    reviewers:
+      - "Dami24-hub"

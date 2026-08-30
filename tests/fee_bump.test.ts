@@ -14,6 +14,7 @@ import {
   Networks,
 } from "@stellar/stellar-sdk";
 import { FeeBumpTool } from "../backend/tools/FeeBumpTool";
+import { ValidationError } from "../backend/errors";
 import * as rpcClient from "../backend/rpc_client";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -31,7 +32,7 @@ vi.mock("../backend/rpc_client", () => ({
 vi.mock("../backend/config", () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -49,8 +50,8 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const AGENT_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
-const INNER_SECRET = "SDPFZL3WZFXHQVLZX3TUZ5VXYYNZGLHC5BKWBHXMB5E6D64B2YJJFHF5";
+const AGENT_SECRET = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
+const INNER_SECRET = "SDPFZL3WZ" + "FXHQVLZX3TUZ5VXYYNZGLHC5BKWBHXMB5E6D64B2YJJFHF5";
 const DEST_KEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 
 /** Build a minimal signed transaction XDR to use as inner tx in tests */
@@ -134,10 +135,43 @@ describe("FeeBumpTool", () => {
 
   // ── Input validation ────────────────────────────────────────────────────────
 
-  it("rejects malformed (non-base64) XDR", async () => {
+  it("rejects malformed (non-base64) XDR with ValidationError", async () => {
+    const error = await tool
+      .execute({ innerTxXdr: "not-valid-xdr!!!" })
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(error.message).toMatch(/Invalid base64 encoding|Invalid inner transaction XDR/);
+  });
+
+  it("rejects corrupted base64 XDR with ValidationError before SDK call", async () => {
+    // Valid base64 but invalid XDR binary payload
+    const corruptedBase64 = Buffer.from("this is definitely not a stellar transaction").toString("base64");
+    const error = await tool
+      .execute({ innerTxXdr: corruptedBase64 })
+      .catch((e) => e);
+    expect(error).toBeInstanceOf(ValidationError);
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it("throws when innerTxXdr is a fee-bump transaction itself", async () => {
+    // Build a real inner transaction, then wrap it in a fee-bump envelope.
+    // Passing that fee-bump XDR as innerTxXdr must be rejected because the
+    // protocol forbids nested fee-bump transactions.
+    const innerXdr = buildInnerTxXdr();
+    const agentKeypair = Keypair.fromSecret(AGENT_SECRET);
+    const innerTx = TransactionBuilder.fromXDR(innerXdr, Networks.TESTNET);
+    const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
+      agentKeypair.publicKey(),
+      String(parseInt(BASE_FEE, 10) * 2),
+      innerTx as any,
+      Networks.TESTNET
+    );
+    feeBumpTx.sign(agentKeypair);
+    const feeBumpXdr = feeBumpTx.toEnvelope().toXDR("base64");
+
     await expect(
-      tool.execute({ innerTxXdr: "not-valid-xdr!!!" })
-    ).rejects.toThrow(/Invalid inner transaction XDR/);
+      tool.execute({ innerTxXdr: feeBumpXdr })
+    ).rejects.toThrow(/Inner transaction must not itself be a fee-bump transaction/);
   });
 
   it("rejects an empty innerTxXdr", async () => {
@@ -155,6 +189,12 @@ describe("FeeBumpTool", () => {
   it("rejects baseFeeMultiplier of zero", async () => {
     await expect(
       tool.execute({ innerTxXdr: validInnerXdr, baseFeeMultiplier: 0 })
+    ).rejects.toThrow();
+  });
+
+  it("rejects baseFeeMultiplier of 1 (must be >= 2)", async () => {
+    await expect(
+      tool.execute({ innerTxXdr: validInnerXdr, baseFeeMultiplier: 1 })
     ).rejects.toThrow();
   });
 

@@ -10,15 +10,15 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi } from "vitest";
 import { PayFiAgent } from "../backend/agent";
 
-// Mock only the RPC layer to test the full tool chain
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn().mockResolvedValue({
     id: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
     accountId: () => "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
     sequenceNumber: () => "100",
-    incrementSequenceNumber: () => {},
+    incrementSequenceNumber: vi.fn(),
     sequence: "100",
     incrementedSequenceNumber: () => "101",
     thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
@@ -51,16 +51,12 @@ vi.mock("../backend/rpc_client", () => ({
     };
     return Promise.resolve(obj);
   }),
+  submitTransaction: vi.fn().mockResolvedValue({ hash: "test_tx_hash_123456789", ledger: 1000 }),
+  resolveNetworkPassphrase: vi.fn(() => "Test SDF Network ; September 2015"),
   horizonServer: {},
   sorobanServer: {
-    sendTransaction: vi.fn().mockResolvedValue({
-      hash: "soroban_tx_hash_123456789",
-      status: "PENDING",
-    }),
-    getTransaction: vi.fn().mockResolvedValue({
-      status: "SUCCESS",
-      returnValue: null,
-    }),
+    sendTransaction: vi.fn(),
+    getTransaction: vi.fn(),
   },
 }));
 
@@ -77,14 +73,9 @@ vi.mock("../backend/config", () => ({
     RETRY_DELAY_MS: 100,
     agentKeypair: () => ({
       publicKey: () => "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-      secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73",
+      secret: () => "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X",
     }),
   },
-  MAINNET_SPENDING_CAP: 10000,
-}));
-
-vi.mock("../backend/persistence", () => ({
-  saveResult: vi.fn(),
 }));
 
 describe("PayFiAgent integration", () => {
@@ -477,3 +468,9 @@ describe("PayFiAgent — runSequence() integration (issue #441)", () => {
     expect(results[0]!.success).toBe(false);
   });
 });
+  it("constructs PayFiAgent successfully", () => {
+    const agent = new PayFiAgent();
+    expect(agent).toBeDefined();
+  });
+});
+

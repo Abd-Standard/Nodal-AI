@@ -25,6 +25,9 @@ jobs:
       - name: Build TypeScript
         run: npm run build
 
+      - name: Type-check test files
+        run: npx tsc --project tsconfig.test.json --noEmit
+
   lint:
     runs-on: ubuntu-latest
 
@@ -105,6 +108,31 @@ jobs:
       - name: Run cargo-tarpaulin
         run: cargo tarpaulin --manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust
 
+  wasm-size-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: file
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Build contract WASM
+        run: cargo build --manifest-path contracts/escrow/Cargo.toml --target wasm32-unknown-unknown --release
+
+      # Fails if the compiled WASM exceeds the size budget, detecting
+      # supply-chain bloat (e.g. injected data segments) before deployment.
+      # See contracts/escrow/WASM_SIZE_BUDGET.md for the rationale.
+      - name: Enforce WASM size budget
+        run: bash scripts/check_wasm_size.sh
+        env:
+          MAX_WASM_SIZE_BYTES: 200000
+
   secret-scan:
     runs-on: ubuntu-latest
 
@@ -148,3 +176,47 @@ jobs:
 
       - name: Run cargo audit
         run: cargo audit --manifest-path contracts/escrow/Cargo.toml
+
+  docs:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci --legacy-peer-deps
+
+      - name: Generate API docs (TypeDoc)
+        run: npm run docs:generate
+
+      - name: Upload API docs artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: api-docs
+          path: docs/api/
+          retention-days: 30
+
+  check-links:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # Validates every relative and external Markdown link across the repo's
+      # root docs and the escrow contract docs, so stale references (renamed
+      # files, dead external URLs) fail CI instead of rotting silently.
+      - name: Check Markdown links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: >-
+            --no-progress
+            --exclude "^https?://localhost(:[0-9]+)?"
+            --exclude "^#"
+            ./*.md
+            ./contracts/escrow/*.md
+          fail: true

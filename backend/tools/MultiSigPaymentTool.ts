@@ -10,27 +10,41 @@ import {
   Asset,
   BASE_FEE,
   Memo,
+  StrKey,
+  xdr,
 } from "@stellar/stellar-sdk";
 import { z } from "zod";
 import { config } from "../config";
 import { loadAccount, submitTransaction, resolveNetworkPassphrase } from "../rpc_client";
+import { ValidationError } from "../errors";
+import { SubmitResultSchema } from "./StellarPaymentTool";
 
-export const MultiSigInputSchema = z.object({
-  destination: z.string().length(56, "Invalid Stellar public key"),
-  amount: z
-    .string()
-    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "Amount must be a valid Stellar decimal")
-    .refine((v) => parseFloat(v) > 0, "Amount must be greater than zero"),
-  assetCode: z.string().default("XLM"),
-  assetIssuer: z.string().optional(),
-  memo: z
-    .string()
-    .refine((v) => Buffer.byteLength(v, "utf8") <= 28, "Memo must be at most 28 bytes")
-    .optional(),
-  additionalSigners: z.array(z.string().length(56, "Invalid signer public key")),
-  minSignatures: z.number().int().min(1),
-  signatures: z.array(z.string()).optional(),
-});
+export const MultiSigInputSchema = z
+  .object({
+    destination: z.string().length(56, "Invalid Stellar public key"),
+    amount: z
+      .string()
+      .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "Amount must be a valid Stellar decimal")
+      .refine((v) => parseFloat(v) > 0, "Amount must be greater than zero"),
+    assetCode: z.string().default("XLM"),
+    assetIssuer: z.string().optional(),
+    memo: z
+      .string()
+      .refine((v) => Buffer.byteLength(v, "utf8") <= 28, "Memo must be at most 28 bytes")
+      .optional(),
+    additionalSigners: z.array(
+      z
+        .string()
+        .length(56, "Invalid signer public key")
+        .refine((value) => StrKey.isValidEd25519PublicKey(value), "Invalid signer public key")
+    ),
+    minSignatures: z.number().int().min(1),
+    signatures: z.array(z.string()).optional(),
+  })
+  .refine((data) => data.minSignatures <= data.additionalSigners.length + 1, {
+    message: "minSignatures exceeds total available signers (additionalSigners + 1)",
+    path: ["minSignatures"],
+  });
 
 export type MultiSigInput = z.infer<typeof MultiSigInputSchema>;
 
@@ -52,10 +66,15 @@ export class MultiSigPaymentTool {
   }
 
   async execute(rawInput: unknown): Promise<MultiSigResult> {
-    const input = MultiSigInputSchema.parse(rawInput);
+    const parsed = MultiSigInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new ValidationError(issue ? issue.message : parsed.error.message);
+    }
+    const input = parsed.data;
 
     if (input.minSignatures > input.additionalSigners.length + 1) {
-      throw new Error(
+      throw new ValidationError(
         `minSignatures (${input.minSignatures}) exceeds total available signers (${input.additionalSigners.length + 1})`
       );
     }
@@ -91,14 +110,13 @@ export class MultiSigPaymentTool {
       // Apply additional signatures from provided decorated signatures (XDR-encoded)
       for (const sigXdr of input.signatures) {
         try {
-          const decorated = Keypair.fromPublicKey(sigXdr);
-          // sigXdr is treated as a public key here only for type checking;
-          // external signers attach their signature to the XDR directly.
-        } catch {
-          // Not a public key — skip (external signer format)
+          const decoratedSig = xdr.DecoratedSignature.fromXDR(sigXdr, "base64");
+          tx.addDecoratedSignature(decoratedSig);
+        } catch (err) {
+          throw new Error(`Invalid signature XDR: ${err instanceof Error ? err.message : String(err)}`);
         }
       }
-      const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
+      const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     }
 

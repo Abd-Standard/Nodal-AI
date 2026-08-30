@@ -17,6 +17,7 @@ export interface BackoffState {
   until: number;         // timestamp (ms) when the lock expires
   retryAfterSeconds: number;
   queue: Array<() => void>; // callbacks waiting for the lock to clear
+  generation: number;    // incremented on each new backoff activation
 }
 
 const globalBackoff: BackoffState = {
@@ -24,6 +25,7 @@ const globalBackoff: BackoffState = {
   until: 0,
   retryAfterSeconds: 0,
   queue: [],
+  generation: 0,
 };
 
 // ─── Public API ────────────────────────────────────────────────────
@@ -59,13 +61,18 @@ export function handleRateLimitResponse(retryAfterHeader?: string | null): void 
   globalBackoff.active = true;
   globalBackoff.retryAfterSeconds = waitSeconds;
   globalBackoff.until = Date.now() + waitSeconds * 1000;
+  globalBackoff.generation += 1;
+  const generation = globalBackoff.generation;
 
   log.warn(`[Network] Rate limit reached. Throttling outbound traffic for ${waitSeconds} seconds.`);
 
-  // Schedule auto-clear when the backoff expires
+  // Schedule auto-clear when the backoff expires. The generation is captured
+  // here so that if a newer backoff activation supersedes this one before
+  // this timer fires, the stale timer becomes a no-op instead of clearing
+  // (and draining the queue of) the newer, still-active backoff.
   const remaining = globalBackoff.until - Date.now();
   setTimeout(() => {
-    clearBackoff();
+    clearBackoff(generation);
   }, remaining);
 }
 
@@ -78,9 +85,17 @@ export async function withBackoffGuard<T>(fn: () => Promise<T>): Promise<T> {
     return fn();
   }
 
-  // Enqueue and wait for lock to clear
+  // Enqueue and wait for lock to clear. The generation is captured at
+  // enqueue time so a callback that outlives its own backoff activation
+  // (superseded by a newer one before it gets drained) is rejected instead
+  // of running under a since-changed backoff state.
+  const enqueuedGeneration = globalBackoff.generation;
   return new Promise<T>((resolve, reject) => {
     globalBackoff.queue.push(() => {
+      if (globalBackoff.generation !== enqueuedGeneration) {
+        reject(new Error("Backoff superseded before queued callback could run"));
+        return;
+      }
       fn().then(resolve).catch(reject);
     });
   });
@@ -99,7 +114,12 @@ export function getBackoffStatus(): { active: boolean; retryAfterSeconds: number
 
 // ─── Internal ──────────────────────────────────────────────────────
 
-function clearBackoff(): void {
+function clearBackoff(generation?: number): void {
+  if (generation !== undefined && generation !== globalBackoff.generation) {
+    // A newer backoff activation has superseded this timer; skip clearing.
+    return;
+  }
+
   globalBackoff.active = false;
   globalBackoff.retryAfterSeconds = 0;
   globalBackoff.until = 0;
@@ -112,7 +132,7 @@ function clearBackoff(): void {
     try {
       cb();
     } catch (err) {
-      log.error("[Network] Error executing queued callback", { error: (err as Error).message });
+      log.error({ error: (err as Error).message }, "[Network] Error executing queued callback");
     }
   }
 }

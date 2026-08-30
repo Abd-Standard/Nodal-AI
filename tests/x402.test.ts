@@ -8,9 +8,12 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { hash, Keypair } from "@stellar/stellar-sdk";
+import { createHash } from "crypto";
 import { X402PaymentTool } from "../backend/tools/X402PaymentTool";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
 import { config } from "../backend/config";
+import { TransactionFailureError, ErrorType } from "../backend/errors";
+import { horizonServer } from "../backend/rpc_client";
 
 // ─── Mock rpc_client so horizonServer.ledgers() is interceptable ──────────────
 
@@ -19,6 +22,16 @@ vi.mock("../backend/rpc_client", () => ({
     ledgers: vi.fn().mockReturnValue({
       ledger: vi.fn().mockReturnValue({
         call: vi.fn().mockResolvedValue({ closed_at: "2024-01-01T00:00:00Z" }),
+      }),
+    }),
+    transactions: vi.fn().mockReturnValue({
+      transaction: vi.fn().mockReturnValue({
+        call: vi.fn().mockResolvedValue({ memo: "" }),
+      }),
+    }),
+    operations: vi.fn().mockReturnValue({
+      forTransaction: vi.fn().mockReturnValue({
+        call: vi.fn().mockResolvedValue({ records: [] }),
       }),
     }),
   },
@@ -30,7 +43,7 @@ vi.mock("../backend/tools/StellarPaymentTool");
 
 vi.mock("../backend/config", () => {
   const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
   return {
     config: {
       STELLAR_NETWORK: "testnet",
@@ -52,7 +65,7 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const TEST_SECRET   = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+const TEST_SECRET   = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
 const VALID_PAY_TO  = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const VALID_ISSUER  = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
 
@@ -173,22 +186,31 @@ describe("X402PaymentTool", () => {
     });
 
     it("accepts a challenge expiring 1 ms from now", async () => {
+      vi.useFakeTimers();
+      const now = Date.now();
       const proof = await tool.respond({
         ...VALID_CHALLENGE,
-        expiresAt: futureIso(1),
+        nonce: "770e8400-e29b-41d4-a716-446655440099",
+        expiresAt: new Date(now + 1).toISOString(),
       });
       expect(proof.txHash).toBeTruthy();
+      vi.useRealTimers();
     });
   });
 
   // ── Rate limiting ────────────────────────────────────────────────────────────
 
   describe("Rate limiting", () => {
+    function uniqueNonce(i: number): string {
+      return `a0000000-0000-4000-8000-${String(i).padStart(12, "0")}`;
+    }
+
     it("allows up to MAX_X402_PAYMENTS_PER_MINUTE calls within the window", async () => {
       for (let i = 0; i < 10; i++) {
         // Each call must use a unique nonce — nonce replay protection fires before rate-limit
         const nonce = `550e8400-e29b-41d4-a716-${String(i).padStart(12, "0")}`;
         const proof = await tool.respond({ ...VALID_CHALLENGE, nonce });
+        const proof = await tool.respond({ ...VALID_CHALLENGE, nonce: uniqueNonce(i) });
         expect(proof.txHash).toBe("x402_mock_tx_hash");
       }
       expect(mockPaymentTool.execute).toHaveBeenCalledTimes(10);
@@ -202,6 +224,10 @@ describe("X402PaymentTool", () => {
       // 11th call — unique nonce but rate limit already hit
       await expect(
         tool.respond({ ...VALID_CHALLENGE, nonce: "660e8400-e29b-41d4-a716-000000000010" })
+        await tool.respond({ ...VALID_CHALLENGE, nonce: uniqueNonce(i) });
+      }
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, nonce: uniqueNonce(10) })
       ).rejects.toThrow("x402: rate limit exceeded");
     });
 
@@ -217,6 +243,10 @@ describe("X402PaymentTool", () => {
       // 11th call within same window — should hit rate limit
       await expect(
         tool.respond({ ...VALID_CHALLENGE, nonce: "660e8400-e29b-41d4-a716-000000000010", expiresAt: farFutureExpiry })
+        await tool.respond({ ...challenge, nonce: uniqueNonce(i) });
+      }
+      await expect(
+        tool.respond({ ...challenge, nonce: uniqueNonce(10) })
       ).rejects.toThrow("rate limit exceeded");
 
       // Advance past the 60s rate-limit window
@@ -228,6 +258,7 @@ describe("X402PaymentTool", () => {
         nonce: "770e8400-e29b-41d4-a716-000000000011",
         expiresAt: farFutureExpiry,
       });
+      const proof = await tool.respond({ ...challenge, nonce: uniqueNonce(11) });
       expect(proof.txHash).toBe("x402_mock_tx_hash");
       vi.useRealTimers();
     });
@@ -339,6 +370,55 @@ describe("X402PaymentTool", () => {
 
       await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow(/no_trust/);
     });
+
+    // ── #371: Horizon detail must survive as a structured error ──────────────
+
+    it("wraps a Horizon submission failure as TransactionFailureError", async () => {
+      getMockExecute().mockRejectedValueOnce(
+        new Error("Horizon: op_underfunded — insufficient balance")
+      );
+
+      await expect(tool.respond(VALID_CHALLENGE)).rejects.toBeInstanceOf(
+        TransactionFailureError
+      );
+    });
+
+    it("keeps the Horizon result code and the original error as cause", async () => {
+      const horizonError = new Error("Horizon: op_no_trust — missing trust line");
+      getMockExecute().mockRejectedValueOnce(horizonError);
+
+      const err = await tool.respond(VALID_CHALLENGE).catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(TransactionFailureError);
+      const failure = err as TransactionFailureError;
+      expect(failure.errorType).toBe(ErrorType.TransactionFailure);
+      // The result code is what tells an operator *why* it failed, so it has to
+      // survive the wrap rather than being flattened to a generic message.
+      expect(failure.message).toContain("op_no_trust");
+      expect(failure.cause).toBe(horizonError);
+    });
+
+    it("preserves a txHash when Horizon rejected an already-submitted tx", async () => {
+      const horizonError = Object.assign(
+        new Error("Horizon: tx_failed"),
+        { txHash: "abc123def456" }
+      );
+      getMockExecute().mockRejectedValueOnce(horizonError);
+
+      const err = await tool.respond(VALID_CHALLENGE).catch((e: unknown) => e);
+
+      expect((err as TransactionFailureError).txHash).toBe("abc123def456");
+    });
+
+    it("leaves txHash undefined when the failure never reached Horizon", async () => {
+      getMockExecute().mockRejectedValueOnce(new Error("ECONNABORTED: network timeout"));
+
+      const err = await tool.respond(VALID_CHALLENGE).catch((e: unknown) => e);
+
+      // Nothing was submitted, so there is no hash to report — inventing one
+      // would send an operator looking for a transaction that never existed.
+      expect((err as TransactionFailureError).txHash).toBeUndefined();
+    });
   });
 
   // ── Nonce replay protection ─────────────────────────────────────────────────
@@ -360,10 +440,14 @@ describe("X402PaymentTool", () => {
     });
   });
 
-  // ── Snapshot tests for X402PaymentProof shape ──────────────────────────────
+  // ── X402PaymentProof snapshot ──────────────────────────────────────────────
 
   describe("X402PaymentProof snapshot", () => {
     it("X402PaymentProof has expected shape and fields", async () => {
+      // Pin the clock so signedAt is deterministic across runs
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-06-25T12:00:19.497Z"));
+
       vi.useFakeTimers();
       vi.setSystemTime(new Date("2026-01-01T00:00:00.000Z"));
       const proof = await tool.respond(VALID_CHALLENGE);
@@ -384,6 +468,177 @@ describe("X402PaymentTool", () => {
       expect(proof).toHaveProperty("nonce");
       expect(proof).toHaveProperty("payer");
       expect(proof).toHaveProperty("signedAt");
+
+      vi.useRealTimers();
+    });
+  });
+
+  // ── verify() ──────────────────────────────────────────────────────────────
+
+  describe("verify()", () => {
+    const NONCE = "550e8400-e29b-41d4-a716-446655440000";
+    const EXPECTED_MEMO = createHash("sha256").update(NONCE).digest("hex").slice(0, 28);
+
+    function getHorizonMock() {
+      return vi.mocked(horizonServer);
+    }
+
+    function setupValidMocks() {
+      const horizon = getHorizonMock();
+      horizon.transactions.mockReturnValue({
+        transaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({ memo: EXPECTED_MEMO }),
+        }),
+      } as any);
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "1.5000000",
+                asset_code: "USDC",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+    }
+
+    const VALID_PROOF = {
+      protocol: "x402" as const,
+      network: "testnet",
+      txHash: "abc123",
+      nonce: NONCE,
+      payer: Keypair.fromSecret(TEST_SECRET).publicKey(),
+      signedAt: new Date().toISOString(),
+    };
+
+    it("passes for a valid proof and matching challenge", async () => {
+      setupValidMocks();
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).resolves.toBeUndefined();
+    });
+
+    it("throws when destination does not match originalChallenge.payTo", async () => {
+      setupValidMocks();
+      const badChallenge = { ...VALID_CHALLENGE, payTo: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5" };
+      // Override mock to return a different destination
+      const horizon = getHorizonMock();
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                amount: "1.5000000",
+                asset_code: "USDC",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, badChallenge)).rejects.toThrow("destination mismatch");
+    });
+
+    it("throws when amount does not match", async () => {
+      setupValidMocks();
+      const horizon = getHorizonMock();
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "99.0000000",
+                asset_code: "USDC",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("amount mismatch");
+    });
+
+    it("throws when assetCode does not match", async () => {
+      setupValidMocks();
+      const horizon = getHorizonMock();
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "1.5000000",
+                asset_code: "XLM",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("asset mismatch");
+    });
+
+    it("throws when memo does not match SHA-256(nonce)[0:28]", async () => {
+      const horizon = getHorizonMock();
+      horizon.transactions.mockReturnValue({
+        transaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({ memo: "wrongmemovalue123456789012" }),
+        }),
+      } as any);
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "1.5000000",
+                asset_code: "USDC",
+                from: Keypair.fromSecret(TEST_SECRET).publicKey(),
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("nonce mismatch");
+    });
+
+    it("throws when payer does not match proof.payer", async () => {
+      setupValidMocks();
+      const horizon = getHorizonMock();
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({
+            records: [
+              {
+                to: VALID_PAY_TO,
+                amount: "1.5000000",
+                asset_code: "USDC",
+                from: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+              },
+            ],
+          }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("payer mismatch");
+    });
+
+    it("throws when the transaction has no operations", async () => {
+      const horizon = getHorizonMock();
+      horizon.transactions.mockReturnValue({
+        transaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({ memo: EXPECTED_MEMO }),
+        }),
+      } as any);
+      horizon.operations.mockReturnValue({
+        forTransaction: vi.fn().mockReturnValue({
+          call: vi.fn().mockResolvedValue({ records: [] }),
+        }),
+      } as any);
+      await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).rejects.toThrow("missing operation");
     });
   });
 });
