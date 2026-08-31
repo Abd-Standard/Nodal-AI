@@ -6,8 +6,8 @@
  * Pass ":memory:" for in-process testing via _setDb().
  */
 
-import Database from "better-sqlite3";
-import type { AgentResult } from "./agent";
+import Database from 'better-sqlite3';
+import type { AgentResult } from './agent';
 
 export type PersistedResult = AgentResult & { timestamp: string };
 
@@ -47,7 +47,7 @@ function applySchema(db: Database.Database): void {
     `);
   // Idempotent migration for databases created before correlationId existed.
   const cols = db.prepare(`PRAGMA table_info(agent_results)`).all() as Array<{ name: string }>;
-  if (!cols.some((c) => c.name === "correlationId")) {
+  if (!cols.some((c) => c.name === 'correlationId')) {
     db.exec(`ALTER TABLE agent_results ADD COLUMN correlationId TEXT`);
   }
 }
@@ -56,7 +56,7 @@ function getDb(): Database.Database {
   if (!_db) {
     // Lazy import of config so that tests can inject via _setDb() before any DB access
     // eslint-disable-next-line @typescript-eslint/no-var-requires
-    const { config } = require("./config") as typeof import("./config");
+    const { config } = require('./config') as typeof import('./config');
     _db = new Database(config.DB_PATH);
     applySchema(_db);
   }
@@ -74,7 +74,7 @@ function getDb(): Database.Database {
  * which is exactly what an in-memory boolean cannot detect.
  */
 export function probeDb(): void {
-  getDb().prepare("SELECT 1").get();
+  getDb().prepare('SELECT 1').get();
 }
 
 export function saveResult(result: PersistedResult): void {
@@ -84,11 +84,11 @@ export function saveResult(result: PersistedResult): void {
        VALUES (@timestamp, @taskType, @success, @data, @error, @correlationId)`
     )
     .run({
-      timestamp:     result.timestamp,
-      taskType:      result.taskType,
-      success:       result.success ? 1 : 0,
-      data:          result.data !== undefined ? JSON.stringify(result.data) : null,
-      error:         result.error ?? null,
+      timestamp: result.timestamp,
+      taskType: result.taskType,
+      success: result.success ? 1 : 0,
+      data: result.data !== undefined ? JSON.stringify(result.data) : null,
+      error: result.error ?? null,
       correlationId: result.correlationId ?? null,
     });
 }
@@ -100,18 +100,18 @@ export function getResults(limit = 100, offset = 0): PersistedResult[] {
        FROM agent_results ORDER BY id DESC LIMIT ? OFFSET ?`
     )
     .all(limit, offset) as Array<{
-      timestamp:     string;
-      taskType:      string;
-      success:       number;
-      data:          string | null;
-      error:         string | null;
-      correlationId: string | null;
-    }>;
+    timestamp: string;
+    taskType: string;
+    success: number;
+    data: string | null;
+    error: string | null;
+    correlationId: string | null;
+  }>;
 
   return rows.map((r) => {
     const result: PersistedResult = {
       timestamp: r.timestamp,
-      taskType: r.taskType as AgentResult["taskType"],
+      taskType: r.taskType as AgentResult['taskType'],
       success: r.success === 1,
       data: r.data !== null ? JSON.parse(r.data) : undefined,
     };
@@ -130,9 +130,7 @@ export interface SpendingRecord {
 /** Append a payment to the persisted spending window. */
 export function saveSpendingRecord(record: SpendingRecord): void {
   getDb()
-    .prepare(
-      `INSERT INTO spending_records (amount, timestamp) VALUES (@amount, @timestamp)`
-    )
+    .prepare(`INSERT INTO spending_records (amount, timestamp) VALUES (@amount, @timestamp)`)
     .run({ amount: record.amount, timestamp: record.timestamp });
 }
 

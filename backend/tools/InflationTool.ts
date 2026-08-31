@@ -9,29 +9,29 @@
  * `get` action backed by a Horizon account lookup.
  */
 
-import { Keypair, TransactionBuilder, Operation, BASE_FEE, StrKey } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { loadAccount, submitTransaction, resolveNetworkPassphrase } from "../rpc_client";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+import { Keypair, TransactionBuilder, Operation, BASE_FEE, StrKey } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
+import { SubmitResultSchema } from './StellarPaymentTool';
 
-export const InflationInputSchema = z.discriminatedUnion("action", [
+export const InflationInputSchema = z.discriminatedUnion('action', [
   z.object({
-    action: z.literal("set"),
+    action: z.literal('set'),
     inflationDestination: z
       .string()
-      .length(56, "Invalid inflation destination address")
+      .length(56, 'Invalid inflation destination address')
       .refine(
         (val) => StrKey.isValidEd25519PublicKey(val),
-        "Inflation destination must be a valid Stellar public key (G...)"
+        'Inflation destination must be a valid Stellar public key (G...)'
       ),
   }),
   z.object({
-    action: z.literal("get"),
+    action: z.literal('get'),
     accountId: z
       .string()
-      .length(56, "Invalid Stellar public key")
-      .refine((val) => StrKey.isValidEd25519PublicKey(val), "Invalid Stellar public key")
+      .length(56, 'Invalid Stellar public key')
+      .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid Stellar public key')
       .optional(),
   }),
 ]);
@@ -39,14 +39,14 @@ export const InflationInputSchema = z.discriminatedUnion("action", [
 export type InflationInput = z.infer<typeof InflationInputSchema>;
 
 export interface InflationSetResult {
-  action: "set";
+  action: 'set';
   txHash: string;
   ledger: number;
   inflationDestination: string;
 }
 
 export interface InflationGetResult {
-  action: "get";
+  action: 'get';
   accountId: string;
   /** The account's inflation destination, or null when none is set. */
   inflationDestination: string | null;
@@ -71,7 +71,7 @@ export class InflationTool {
     const inflationDestination = account.inflation_destination ?? null;
 
     return {
-      action: "get",
+      action: 'get',
       accountId: targetAccount,
       inflationDestination,
       isSet: inflationDestination !== null,
@@ -98,7 +98,7 @@ export class InflationTool {
     const result = SubmitResultSchema.parse(await submitTransaction(tx));
 
     return {
-      action: "set",
+      action: 'set',
       txHash: result.hash,
       ledger: result.ledger,
       inflationDestination,
@@ -108,7 +108,7 @@ export class InflationTool {
   async execute(rawInput: unknown): Promise<InflationResult> {
     const input = InflationInputSchema.parse(rawInput);
 
-    if (input.action === "get") {
+    if (input.action === 'get') {
       return this.get(input.accountId);
     }
 

@@ -5,9 +5,9 @@
  * HTTP status code that describes it. Register this after all route handlers.
  */
 
-import { ZodError, ZodIssue } from "zod";
+import { ZodError, ZodIssue } from 'zod';
 
-import { ErrorType, RateLimitError, StructuredError } from "../errors";
+import { ErrorType, RateLimitError, StructuredError } from '../errors';
 
 export interface ErrorDetail {
   field: string;
@@ -40,7 +40,7 @@ const DEFAULT_RETRY_AFTER_SECONDS = 60;
 
 function mapZodIssues(issues: ZodIssue[]): ErrorDetail[] {
   return issues.map((issue) => ({
-    field: issue.path.length > 0 ? issue.path.join(".") : "root",
+    field: issue.path.length > 0 ? issue.path.join('.') : 'root',
     message: issue.message,
     code: issue.code,
   }));
@@ -54,7 +54,7 @@ export function handleError(err: unknown): ErrorResponse {
   if (err instanceof ZodError) {
     return {
       status: 400,
-      type: "ValidationError",
+      type: 'ValidationError',
       details: mapZodIssues(err.issues),
     };
   }
@@ -66,20 +66,18 @@ export function handleError(err: unknown): ErrorResponse {
       type: err.name,
       details: [
         {
-          field: "root",
+          field: 'root',
           // 5xx responses stay generic: an internal fault must not leak its
           // message to the caller. Client-side errors describe themselves.
-          message:
-            status >= 500 ? "An unexpected error occurred" : err.message,
+          message: status >= 500 ? 'An unexpected error occurred' : err.message,
           code: err.errorType,
         },
       ],
     };
 
     if (err instanceof RateLimitError) {
-      const retryAfter =
-        err.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS;
-      response.headers = { "Retry-After": String(retryAfter) };
+      const retryAfter = err.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS;
+      response.headers = { 'Retry-After': String(retryAfter) };
     }
 
     return response;
@@ -87,12 +85,12 @@ export function handleError(err: unknown): ErrorResponse {
 
   return {
     status: 500,
-    type: "InternalServerError",
+    type: 'InternalServerError',
     details: [
       {
-        field: "unknown",
-        message: "An unexpected error occurred",
-        code: "internal_error",
+        field: 'unknown',
+        message: 'An unexpected error occurred',
+        code: 'internal_error',
       },
     ],
   };

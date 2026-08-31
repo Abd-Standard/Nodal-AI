@@ -11,39 +11,39 @@
  */
 
 // Updated imports
-import { EventEmitter } from "events";
-import { rpc } from "@stellar/stellar-sdk";
-import { config, MAINNET_SPENDING_CAP } from "./config";
-import { logger } from "./logger";
-import { saveResult } from "./persistence";
-import { StructuredError, ErrorType, getErrorType, sanitizeCause } from "./errors";
-import { StellarPaymentTool } from "./tools/StellarPaymentTool";
-import { SorobanInvokeTool } from "./tools/SorobanInvokeTool";
-import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from "./tools/X402PaymentTool";
-import { AccountInfoTool } from "./tools/AccountInfoTool";
-import { TrustlineTool } from "./tools/TrustlineTool";
-import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
-import { BatchPaymentTool } from "./tools/BatchPaymentTool";
-import { SorobanQueryTool } from "./tools/SorobanQueryTool";
-import { BalanceCheckTool } from "./tools/BalanceCheckTool";
-import { PathPaymentTool } from "./tools/PathPaymentTool";
-import { FeeBumpTool } from "./tools/FeeBumpTool";
-import { DexOfferTool } from "./tools/DexOfferTool";
-import { LiquidityPoolTool } from "./tools/LiquidityPoolTool";
-import { StellarTomlTool } from "./tools/StellarTomlTool";
-import { DataEntryTool } from "./tools/DataEntryTool";
-import { SequenceNumberTool } from "./tools/SequenceNumberTool";
-import { InflationTool } from "./tools/InflationTool";
-import { SponsoredAccountTool } from "./tools/SponsoredAccountTool";
-import { AnchorQuoteTool } from "./tools/AnchorQuoteTool";
-import { SorobanDeployTool } from "./tools/SorobanDeployTool";
-import { listen as listenContractEvents } from "./tools/ContractEventListener";
+import { EventEmitter } from 'events';
+import { rpc } from '@stellar/stellar-sdk';
+import { config, MAINNET_SPENDING_CAP } from './config';
+import { logger } from './logger';
+import { saveResult } from './persistence';
+import { StructuredError, ErrorType, getErrorType, sanitizeCause } from './errors';
+import { StellarPaymentTool } from './tools/StellarPaymentTool';
+import { SorobanInvokeTool } from './tools/SorobanInvokeTool';
+import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from './tools/X402PaymentTool';
+import { AccountInfoTool } from './tools/AccountInfoTool';
+import { TrustlineTool } from './tools/TrustlineTool';
+import { MultiSigPaymentTool } from './tools/MultiSigPaymentTool';
+import { BatchPaymentTool } from './tools/BatchPaymentTool';
+import { SorobanQueryTool } from './tools/SorobanQueryTool';
+import { BalanceCheckTool } from './tools/BalanceCheckTool';
+import { PathPaymentTool } from './tools/PathPaymentTool';
+import { FeeBumpTool } from './tools/FeeBumpTool';
+import { DexOfferTool } from './tools/DexOfferTool';
+import { LiquidityPoolTool } from './tools/LiquidityPoolTool';
+import { StellarTomlTool } from './tools/StellarTomlTool';
+import { DataEntryTool } from './tools/DataEntryTool';
+import { SequenceNumberTool } from './tools/SequenceNumberTool';
+import { InflationTool } from './tools/InflationTool';
+import { SponsoredAccountTool } from './tools/SponsoredAccountTool';
+import { AnchorQuoteTool } from './tools/AnchorQuoteTool';
+import { SorobanDeployTool } from './tools/SorobanDeployTool';
+import { listen as listenContractEvents } from './tools/ContractEventListener';
 
-import { horizonServer } from "./rpc_client";
-import * as rpcClient from "./rpc_client";
-import { createLogger, generateCorrelationId } from "./utils/logger";
-import { spendingTracker } from "./spending_tracker";
-import { dispatchWebhook } from "./webhook";
+import { horizonServer } from './rpc_client';
+import * as rpcClient from './rpc_client';
+import { createLogger, generateCorrelationId } from './utils/logger';
+import { spendingTracker } from './spending_tracker';
+import { dispatchWebhook } from './webhook';
 
 // Re-exported so existing importers (`server.ts`, tests) keep working after the
 // singleton moved to spending_tracker.ts.
@@ -56,7 +56,7 @@ export { spendingTracker };
  * Also enforces cumulative spending within the sliding window.
  */
 function assertWithinSpendingLimit(amount: unknown): void {
-  if (typeof amount !== "string") return; // let the tool's own schema catch this
+  if (typeof amount !== 'string') return; // let the tool's own schema catch this
 
   const parsed = parseFloat(amount);
   const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
@@ -67,7 +67,7 @@ function assertWithinSpendingLimit(amount: unknown): void {
         `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
     );
   }
-  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
+  if (!isNaN(parsed) && config.STELLAR_NETWORK === 'mainnet' && parsed > MAINNET_SPENDING_CAP) {
     throw new Error(
       `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
         `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
@@ -78,32 +78,31 @@ function assertWithinSpendingLimit(amount: unknown): void {
   spendingTracker.record(amount);
 }
 
-const log = createLogger("orchestrator");
+const log = createLogger('orchestrator');
 
 // ─── Task types ───────────────────────────────────────────────────────────────
 
 export type TaskType =
-  | "stellar_payment"
-  | "soroban_invoke"
-  | "soroban_query"
-  | "x402_respond"
-  | "account_info"
-  | "change_trust"
-  | "multisig_payment"
-  | "batch_payment"
-  | "balance_check"
-  | "path_payment"
-  | "fee_bump"
-  | "dex_offer"
-  | "liquidity_pool"
-  | "stellar_toml"
-  | "data_entry"
-  | "sequence_number"
-  | "sponsored_account"
-  | "anchor_quote"
-  | "inflation"
-  | "soroban_deploy";
-
+  | 'stellar_payment'
+  | 'soroban_invoke'
+  | 'soroban_query'
+  | 'x402_respond'
+  | 'account_info'
+  | 'change_trust'
+  | 'multisig_payment'
+  | 'batch_payment'
+  | 'balance_check'
+  | 'path_payment'
+  | 'fee_bump'
+  | 'dex_offer'
+  | 'liquidity_pool'
+  | 'stellar_toml'
+  | 'data_entry'
+  | 'sequence_number'
+  | 'sponsored_account'
+  | 'anchor_quote'
+  | 'inflation'
+  | 'soroban_deploy';
 
 export interface AgentTask {
   type: TaskType;
@@ -182,7 +181,7 @@ export type TaskMiddleware = (
 const SECRET_KEY_RE = /^(?<prefix>.*?["':\s]?)(?<secret>S[ A-Z2-7]{55})(?<suffix>["'\s]?.*)$/i;
 
 function redactSecretString(value: string): string {
-  return value.replace(SECRET_KEY_RE, "$<prefix>[REDACTED]$<suffix>");
+  return value.replace(SECRET_KEY_RE, '$<prefix>[REDACTED]$<suffix>');
 }
 
 /**
@@ -215,7 +214,7 @@ function describeError(err: unknown): string {
 }
 
 function sanitizePayload(payload: unknown): unknown {
-  if (payload === null || typeof payload !== "object") return payload;
+  if (payload === null || typeof payload !== 'object') return payload;
   if (Array.isArray(payload)) return payload.map(sanitizePayload);
 
   const sanitized: Record<string, unknown> = {};
@@ -277,7 +276,7 @@ export class PayFiAgent extends EventEmitter {
     this.paymentTool = new StellarPaymentTool(config.agentKeypair().secret());
     this.sorobanTool = new SorobanInvokeTool(config.agentKeypair().secret());
     this.sorobanQueryTool = new SorobanQueryTool(config.agentKeypair().secret());
-    this.x402Tool    = new X402PaymentTool(config.agentKeypair().secret());
+    this.x402Tool = new X402PaymentTool(config.agentKeypair().secret());
     this.accountInfoTool = new AccountInfoTool();
     this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
     this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
@@ -295,29 +294,28 @@ export class PayFiAgent extends EventEmitter {
     this.inflationTool = new InflationTool(config.agentKeypair().secret());
     this.sorobanDeployTool = new SorobanDeployTool();
 
-
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
-      const safe = err.message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
-      logger.error("Unhandled agent error", { error: safe });
+      const safe = err.message.replace(/S[A-Z2-7]{55}/g, '[REDACTED]');
+      logger.error('Unhandled agent error', { error: safe });
     };
     const onTaskComplete = (result: AgentResult) => {
-      logger.info("Task complete", { taskType: result.taskType });
+      logger.info('Task complete', { taskType: result.taskType });
     };
     const onTaskFailed = (result: AgentResult) => {
-      logger.warn("Task failed", { taskType: result.taskType, error: result.error });
+      logger.warn('Task failed', { taskType: result.taskType, error: result.error });
     };
 
-    this.on("error", onError);
-    this.on("task:complete", onTaskComplete);
-    this.on("task:failed", onTaskFailed);
+    this.on('error', onError);
+    this.on('task:complete', onTaskComplete);
+    this.on('task:failed', onTaskFailed);
 
-    this._boundHandlers.set("error", onError as (...args: unknown[]) => void);
-    this._boundHandlers.set("task:complete", onTaskComplete as (...args: unknown[]) => void);
-    this._boundHandlers.set("task:failed", onTaskFailed as (...args: unknown[]) => void);
+    this._boundHandlers.set('error', onError as (...args: unknown[]) => void);
+    this._boundHandlers.set('task:complete', onTaskComplete as (...args: unknown[]) => void);
+    this._boundHandlers.set('task:failed', onTaskFailed as (...args: unknown[]) => void);
 
     // Log only safe fields — public key is derived, not the secret
-    logger.info("PayFiAgent initialised", {
+    logger.info('PayFiAgent initialised', {
       network: config.STELLAR_NETWORK,
       horizon: config.HORIZON_URL,
       soroban: config.SOROBAN_RPC_URL,
@@ -339,12 +337,10 @@ export class PayFiAgent extends EventEmitter {
       .forAccount(config.AGENT_PUBLIC_KEY)
       .stream({
         onmessage: (payment: any) => {
-          const memo: string = payment.memo ?? "";
-          if (!memo.startsWith("x402:")) return;
+          const memo: string = payment.memo ?? '';
+          if (!memo.startsWith('x402:')) return;
           try {
-            const raw: unknown = JSON.parse(
-              Buffer.from(memo.slice(5), "base64").toString("utf8")
-            );
+            const raw: unknown = JSON.parse(Buffer.from(memo.slice(5), 'base64').toString('utf8'));
             const challenge: X402Challenge = X402ChallengeSchema.parse(raw);
             onChallenge(challenge);
           } catch (err) {
@@ -352,18 +348,18 @@ export class PayFiAgent extends EventEmitter {
             // forwarding to onChallenge (or letting Zod's error surface
             // deep inside respond(), where it can't be attributed to the
             // stream that produced it).
-            logger.warn("Dropped invalid x402 challenge memo", {
+            logger.warn('Dropped invalid x402 challenge memo', {
               error: err instanceof Error ? err.message : String(err),
             });
           }
         },
         onerror: (event: MessageEvent) => {
-          logger.warn("Payment stream error", { error: String(event) });
+          logger.warn('Payment stream error', { error: String(event) });
         },
       });
 
     this._streamStop = closeStream as unknown as () => void;
-    logger.info("Payment stream started", { resourceUrl });
+    logger.info('Payment stream started', { resourceUrl });
   }
 
   /** Stop the active Horizon payment stream subscription. */
@@ -371,7 +367,7 @@ export class PayFiAgent extends EventEmitter {
     if (this._streamStop) {
       this._streamStop();
       this._streamStop = null;
-      logger.info("Payment stream stopped");
+      logger.info('Payment stream stopped');
     }
   }
 
@@ -393,7 +389,7 @@ export class PayFiAgent extends EventEmitter {
       this._contractListenerStop();
     }
     this._contractListenerStop = listenContractEvents(contractId, eventTypes, onEvent);
-    logger.info("Contract event listener started", { contractId });
+    logger.info('Contract event listener started', { contractId });
   }
 
   /** Stop the active contract event listener. */
@@ -401,7 +397,7 @@ export class PayFiAgent extends EventEmitter {
     if (this._contractListenerStop) {
       this._contractListenerStop();
       this._contractListenerStop = null;
-      logger.info("Contract event listener stopped");
+      logger.info('Contract event listener stopped');
     }
   }
 
@@ -427,12 +423,12 @@ export class PayFiAgent extends EventEmitter {
     this._boundHandlers.clear();
     // Remove any listeners added externally after construction
     this.removeAllListeners();
-    logger.info("Agent destroyed — all event listeners removed");
+    logger.info('Agent destroyed — all event listeners removed');
   }
 
   drain(): void {
     this.isDraining = true;
-    logger.info("Agent draining — rejecting new tasks");
+    logger.info('Agent draining — rejecting new tasks');
   }
 
   /**
@@ -448,12 +444,12 @@ export class PayFiAgent extends EventEmitter {
    */
   use(middleware: TaskMiddleware): void {
     this.middlewares.push(middleware);
-    logger.info("Middleware registered", { totalMiddlewares: this.middlewares.length });
+    logger.info('Middleware registered', { totalMiddlewares: this.middlewares.length });
   }
 
   async waitForPendingTasks(): Promise<void> {
     if (this.activeTasks === 0 && this.taskQueue.length === 0) return;
-    logger.info("Waiting for pending tasks to finish", {
+    logger.info('Waiting for pending tasks to finish', {
       activeTasks: this.activeTasks,
       queuedTasks: this.taskQueue.length,
     });
@@ -495,13 +491,13 @@ export class PayFiAgent extends EventEmitter {
     // Correlation ID ties together every log line, event, persisted result,
     // and webhook for this single task execution. Reuse the caller's if given.
     const correlationId = task.correlationId ?? generateCorrelationId();
-    const taskLog = createLogger("orchestrator", correlationId);
+    const taskLog = createLogger('orchestrator', correlationId);
 
     if (this.isDraining) {
       return {
         success: false,
         taskType: task.type,
-        error: "Agent is shutting down — task rejected",
+        error: 'Agent is shutting down — task rejected',
         correlationId,
       };
     }
@@ -516,7 +512,7 @@ export class PayFiAgent extends EventEmitter {
             activeTasks: this.activeTasks,
             queueLength: this.taskQueue.length + 1,
           },
-          "Agent at capacity — task queued"
+          'Agent at capacity — task queued'
         );
         return new Promise<AgentResult>((resolve) => {
           this.taskQueue.push({ task, correlationId, resolve });
@@ -529,7 +525,7 @@ export class PayFiAgent extends EventEmitter {
           activeTasks: this.activeTasks,
           maxConcurrentTasks: config.MAX_CONCURRENT_TASKS,
         },
-        "Task rejected — max concurrent tasks reached"
+        'Task rejected — max concurrent tasks reached'
       );
       return {
         success: false,
@@ -553,9 +549,11 @@ export class PayFiAgent extends EventEmitter {
     if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) return;
     const next = this.taskQueue.shift();
     if (!next) return;
-    void this.executeTask(next.task, next.correlationId, createLogger("orchestrator", next.correlationId)).then(
-      next.resolve
-    );
+    void this.executeTask(
+      next.task,
+      next.correlationId,
+      createLogger('orchestrator', next.correlationId)
+    ).then(next.resolve);
   }
 
   /** Run a task's tool logic — assumes the concurrency slot has already been reserved. */
@@ -566,7 +564,7 @@ export class PayFiAgent extends EventEmitter {
   ): Promise<AgentResult> {
     this.activeTasks++;
     const startMs = Date.now();
-    taskLog.info({ taskType: task.type }, "Running task");
+    taskLog.info({ taskType: task.type }, 'Running task');
 
     // ── Compose middleware chain ────────────────────────────────────────────────
     const executeTask = async (): Promise<AgentResult> => {
@@ -574,7 +572,7 @@ export class PayFiAgent extends EventEmitter {
         let data: unknown;
 
         switch (task.type) {
-          case "stellar_payment": {
+          case 'stellar_payment': {
             const p = task.payload as Record<string, unknown>;
             assertWithinSpendingLimit(p?.amount);
             const paymentResult = await this.paymentTool.execute(task.payload);
@@ -585,113 +583,112 @@ export class PayFiAgent extends EventEmitter {
             break;
           }
 
-          case "soroban_invoke": {
+          case 'soroban_invoke': {
             data = await this.sorobanTool.execute(task.payload);
             break;
           }
 
-          case "soroban_query":
+          case 'soroban_query':
             data = await this.sorobanQueryTool.query(task.payload);
             break;
 
-          case "x402_respond": {
+          case 'x402_respond': {
             const p = task.payload as Record<string, unknown>;
             assertWithinSpendingLimit(p?.amount);
             data = await this.x402Tool.respond(task.payload);
             break;
           }
 
-          case "account_info":
+          case 'account_info':
             data = await this.accountInfoTool.fetch();
             break;
 
-          case "change_trust":
+          case 'change_trust':
             data = await this.trustlineTool.execute(task.payload);
             break;
 
-          case "multisig_payment":
+          case 'multisig_payment':
             data = await this.multiSigTool.execute(task.payload);
-          break;
+            break;
 
-
-          case "batch_payment":
+          case 'batch_payment':
             data = await this.batchPaymentTool.execute(task.payload);
             break;
 
-          case "balance_check": {
+          case 'balance_check': {
             const balanceCheckTool = this.balanceCheckTool as {
               execute?: (payload: unknown) => Promise<unknown>;
               getBalance?: (payload: unknown) => Promise<unknown>;
             };
-            if (typeof balanceCheckTool.execute === "function") {
+            if (typeof balanceCheckTool.execute === 'function') {
               data = await balanceCheckTool.execute(task.payload);
-            } else if (typeof balanceCheckTool.getBalance === "function") {
+            } else if (typeof balanceCheckTool.getBalance === 'function') {
               data = await balanceCheckTool.getBalance(task.payload);
             } else {
-              throw new Error("Balance check tool does not implement execute() or getBalance().");
+              throw new Error('Balance check tool does not implement execute() or getBalance().');
             }
             break;
           }
 
-          case "path_payment":
+          case 'path_payment':
             data = await this.pathPaymentTool.execute(task.payload);
             break;
 
-          case "fee_bump":
+          case 'fee_bump':
             data = await this.feeBumpTool.execute(task.payload);
             break;
 
-          case "dex_offer":
+          case 'dex_offer':
             data = await this.dexOfferTool.execute(task.payload);
             break;
 
-          case "swap":
+          case 'swap':
             data = await this.swapTool.execute(task.payload);
             break;
 
-          case "account_history":
+          case 'account_history':
             data = await this.accountHistoryTool.fetch(task.payload);
             break;
 
-          case "soroban_deploy":
+          case 'soroban_deploy':
             data = await this.sorobanDeployTool.execute(task.payload);
             break;
 
-        case "liquidity_pool":
-          data = await this.liquidityPoolTool.execute(task.payload);
-          break;
+          case 'liquidity_pool':
+            data = await this.liquidityPoolTool.execute(task.payload);
+            break;
 
-        case "stellar_toml":
-          data = await this.stellarTomlTool.fetchToml(task.payload);
-          break;
+          case 'stellar_toml':
+            data = await this.stellarTomlTool.fetchToml(task.payload);
+            break;
 
-        case "data_entry":
-          data = await this.dataEntryTool.execute(task.payload);
-          break;
+          case 'data_entry':
+            data = await this.dataEntryTool.execute(task.payload);
+            break;
 
-        case "sequence_number":
-          data = await this.sequenceNumberTool.execute(task.payload);
-          break;
+          case 'sequence_number':
+            data = await this.sequenceNumberTool.execute(task.payload);
+            break;
 
-        case "sponsored_account":
-          data = await this.sponsoredAccountTool.execute(task.payload);
-          break;
+          case 'sponsored_account':
+            data = await this.sponsoredAccountTool.execute(task.payload);
+            break;
 
-        case "anchor_quote":
-          data = await this.anchorQuoteTool.execute(task.payload);
-          break;
+          case 'anchor_quote':
+            data = await this.anchorQuoteTool.execute(task.payload);
+            break;
 
-        case "inflation":
-          data = await this.inflationTool.execute(task.payload);
-          break;
+          case 'inflation':
+            data = await this.inflationTool.execute(task.payload);
+            break;
 
-        default:
-          throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
-      }
+          default:
+            throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
+        }
 
-        taskLog.info({ taskType: task.type }, "Task completed");
+        taskLog.info({ taskType: task.type }, 'Task completed');
         const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
-        this.emit("task:complete", result);
+        this.emit('task:complete', result);
 
         saveResult({ ...result, timestamp: new Date().toISOString() });
         void dispatchWebhook(result);
@@ -702,7 +699,7 @@ export class PayFiAgent extends EventEmitter {
         const sanitized = sanitizePayload(task.payload);
         taskLog.error(
           { taskType: task.type, error: safe, sanitizedPayload: sanitized },
-          "Task failed"
+          'Task failed'
         );
         const result: AgentResult = {
           success: false,
@@ -711,7 +708,7 @@ export class PayFiAgent extends EventEmitter {
           errorType: getErrorType(err),
           correlationId,
         };
-        this.emit("task:failed", result);
+        this.emit('task:failed', result);
         void dispatchWebhook(result);
         return result;
       }
@@ -734,11 +731,12 @@ export class PayFiAgent extends EventEmitter {
       const sanitized = sanitizePayload(task.payload);
       taskLog.error(
         { taskType: task.type, error: safe, sanitizedPayload: sanitized, durationMs },
-        "Task failed"
+        'Task failed'
       );
-      const isStellarRpcError = !!rpcClient.StellarRPCError && err instanceof rpcClient.StellarRPCError;
+      const isStellarRpcError =
+        !!rpcClient.StellarRPCError && err instanceof rpcClient.StellarRPCError;
       if (isStellarRpcError) {
-        this.emit("task:retry_exhausted", { taskType: task.type, attempts: config.MAX_RETRIES });
+        this.emit('task:retry_exhausted', { taskType: task.type, attempts: config.MAX_RETRIES });
       }
       const result: AgentResult = {
         success: false,
@@ -748,7 +746,7 @@ export class PayFiAgent extends EventEmitter {
         correlationId,
         durationMs,
       };
-      this.emit("task:failed", result);
+      this.emit('task:failed', result);
       void dispatchWebhook(result);
       return result;
     } finally {

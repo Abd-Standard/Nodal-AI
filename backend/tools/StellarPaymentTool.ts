@@ -15,15 +15,15 @@ import {
   BASE_FEE,
   Memo,
   StrKey,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { logger } from "../logger";
-import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
-import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
-import { createLogger } from "../utils/logger";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { logger } from '../logger';
+import { loadAccount, resolveNetworkPassphrase, submitTransaction } from '../rpc_client';
+import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { createLogger } from '../utils/logger';
 
-const log = createLogger("stellar-payment");
+const log = createLogger('stellar-payment');
 
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
@@ -46,21 +46,22 @@ export type SubmitResult = z.infer<typeof SubmitResultSchema>;
  * @property memo - Optional memo value (string for text/return/hash, number for id)
  */
 export const PaymentInputSchema = z.object({
-  destination: z.string()
-    .length(56, "Invalid Stellar public key")
+  destination: z
+    .string()
+    .length(56, 'Invalid Stellar public key')
     .refine(
       (val) => StrKey.isValidEd25519PublicKey(val),
-      "Destination must be a valid Stellar public key (G...)",
+      'Destination must be a valid Stellar public key (G...)'
     ),
   amount: z
     .string()
     // Negative-lookahead rejects "0" and all zero-value decimals ("0.0", "0.0000000")
-    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "Amount must be a valid Stellar decimal")
+    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, 'Amount must be a valid Stellar decimal')
     // Belt-and-suspenders guard: parseFloat catches any edge cases the regex misses
-    .refine((v) => parseFloat(v) > 0, "Amount must be greater than zero"),
-  assetCode: z.string().default("XLM"),
+    .refine((v) => parseFloat(v) > 0, 'Amount must be greater than zero'),
+  assetCode: z.string().default('XLM'),
   assetIssuer: z.string().optional(),
-  memoType: z.enum(["text", "id", "hash", "return"]).optional().default("text"),
+  memoType: z.enum(['text', 'id', 'hash', 'return']).optional().default('text'),
   memo: z.union([z.string(), z.number()]).optional(),
 });
 
@@ -81,52 +82,52 @@ function buildMemo(memoType: string, memoValue: string | number | undefined): Me
   }
 
   switch (memoType) {
-    case "id": {
-      if (typeof memoValue !== "number") {
-        throw new Error("Memo ID must be a number");
+    case 'id': {
+      if (typeof memoValue !== 'number') {
+        throw new Error('Memo ID must be a number');
       }
       // Convert to unsigned 64-bit integer
       const id = BigInt(memoValue);
       if (id < 0n || id > 18446744073709551615n) {
-        throw new Error("Memo ID must be a 64-bit unsigned integer (0 to 2^64-1)");
+        throw new Error('Memo ID must be a 64-bit unsigned integer (0 to 2^64-1)');
       }
       return Memo.id(id.toString());
     }
-    case "hash": {
-      if (typeof memoValue !== "string") {
-        throw new Error("Memo hash must be a string");
+    case 'hash': {
+      if (typeof memoValue !== 'string') {
+        throw new Error('Memo hash must be a string');
       }
       // Remove 0x prefix if present and validate length
-      const hashHex = memoValue.replace(/^0x/, "");
+      const hashHex = memoValue.replace(/^0x/, '');
       if (hashHex.length !== 64) {
-        throw new Error("Memo hash must be a 32-byte hex string (64 hex characters)");
+        throw new Error('Memo hash must be a 32-byte hex string (64 hex characters)');
       }
       if (!/^[0-9a-fA-F]{64}$/.test(hashHex)) {
-        throw new Error("Memo hash must contain only valid hex characters");
+        throw new Error('Memo hash must contain only valid hex characters');
       }
       return Memo.hash(hashHex);
     }
-    case "return": {
-      if (typeof memoValue !== "string") {
-        throw new Error("Memo return must be a string");
+    case 'return': {
+      if (typeof memoValue !== 'string') {
+        throw new Error('Memo return must be a string');
       }
       // Remove 0x prefix if present and validate length
-      const returnHex = memoValue.replace(/^0x/, "");
+      const returnHex = memoValue.replace(/^0x/, '');
       if (returnHex.length !== 64) {
-        throw new Error("Memo return must be a 32-byte hex string (64 hex characters)");
+        throw new Error('Memo return must be a 32-byte hex string (64 hex characters)');
       }
       if (!/^[0-9a-fA-F]{64}$/.test(returnHex)) {
-        throw new Error("Memo return must contain only valid hex characters");
+        throw new Error('Memo return must contain only valid hex characters');
       }
       return Memo.return(returnHex);
     }
-    case "text":
+    case 'text':
     default: {
-      if (typeof memoValue !== "string") {
-        throw new Error("Memo text must be a string");
+      if (typeof memoValue !== 'string') {
+        throw new Error('Memo text must be a string');
       }
-      if (Buffer.byteLength(memoValue, "utf8") > 28) {
-        throw new Error("Memo text must be at most 28 bytes");
+      if (Buffer.byteLength(memoValue, 'utf8') > 28) {
+        throw new Error('Memo text must be at most 28 bytes');
       }
       return Memo.text(memoValue);
     }
@@ -170,9 +171,7 @@ export class StellarPaymentTool {
    * @throws {z.ZodError} If input fails validation
    * @throws {Error} If source account not found or transaction submission fails
    */
-  async execute(
-    rawInput: unknown
-  ): Promise<{ txHash: string; ledger: number }> {
+  async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     // 1. Validate input
     const input = PaymentInputSchema.parse(rawInput);
 
@@ -182,15 +181,11 @@ export class StellarPaymentTool {
     }
 
     // 2. Resolve asset
-    if (input.assetCode !== "XLM" && !input.assetIssuer) {
-      throw new Error(
-        `Asset issuer is required for non-native asset ${input.assetCode}`
-      );
+    if (input.assetCode !== 'XLM' && !input.assetIssuer) {
+      throw new Error(`Asset issuer is required for non-native asset ${input.assetCode}`);
     }
     const asset =
-      input.assetCode === "XLM"
-        ? Asset.native()
-        : new Asset(input.assetCode, input.assetIssuer);
+      input.assetCode === 'XLM' ? Asset.native() : new Asset(input.assetCode, input.assetIssuer);
 
     // 3. Load source account (latest sequence number)
     let sourceAccount = await loadAccount(this.keypair.publicKey());
@@ -200,14 +195,13 @@ export class StellarPaymentTool {
       const builder = new TransactionBuilder(sourceAccount, {
         fee: BASE_FEE, // BASE_FEE (100 stroops) is the actual fee for classic Stellar payments — not overwritten
         networkPassphrase: this.networkPassphrase,
-      })
-        .addOperation(
-          Operation.payment({
-            destination: input.destination,
-            asset,
-            amount: input.amount,
-          })
-        );
+      }).addOperation(
+        Operation.payment({
+          destination: input.destination,
+          asset,
+          amount: input.amount,
+        })
+      );
 
       if (input.memo !== undefined) {
         const memo = buildMemo(input.memoType, input.memo);
@@ -224,7 +218,7 @@ export class StellarPaymentTool {
     // 5. Fee estimation / simulation via Horizon dry-run
     //    (Horizon doesn't expose simulation like Soroban, so we validate
     //     the transaction envelope locally before submission)
-    logger.info("Validating payment envelope", {
+    logger.info('Validating payment envelope', {
       source: this.keypair.publicKey(),
       destination: input.destination,
       amount: input.amount,
@@ -239,8 +233,8 @@ export class StellarPaymentTool {
       const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
-      if (err instanceof Error && err.message.includes("tx_bad_seq")) {
-        logger.warn("tx_bad_seq detected, reloading account and retrying once", {
+      if (err instanceof Error && err.message.includes('tx_bad_seq')) {
+        logger.warn('tx_bad_seq detected, reloading account and retrying once', {
           source: this.keypair.publicKey(),
         });
         // Bypass the account cache: the whole point of this retry is that the

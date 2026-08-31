@@ -19,6 +19,8 @@
     "test:all": "npm run test:rust && npm run test:ts",
     "test:mutation": "stryker run stryker.config.mjs",
     "lint": "eslint backend/**/*.ts tests/**/*.ts",
+    "format": "prettier --write \"backend/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\"",
+    "format:check": "prettier --check \"backend/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\"",
     "audit": "npm audit --audit-level=high",
     "prepare": "husky install",
     "changelog:update": "conventional-changelog -p angular -i CHANGELOG.md -s",
@@ -58,6 +60,7 @@
     "husky": "9.1.7",
     "lint-staged": "17.0.8",
     "pino-pretty": "13.1.3",
+    "prettier": "3.9.6",
     "typedoc": "0.27.9",
     "typescript": "5.9.3",
     "vitest": "3.2.7"

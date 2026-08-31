@@ -3,11 +3,11 @@
  * Manage account flags, thresholds, and home domain via SET_OPTIONS.
  */
 
-import { Keypair, TransactionBuilder, Operation, BASE_FEE } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { loadAccount, submitTransaction, resolveNetworkPassphrase } from "../rpc_client";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+import { Keypair, TransactionBuilder, Operation, BASE_FEE } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
+import { SubmitResultSchema } from './StellarPaymentTool';
 
 export const SetOptionsInputSchema = z.object({
   homeDomain: z.string().max(32).optional(),

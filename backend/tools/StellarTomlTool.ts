@@ -3,13 +3,13 @@
  * Tool for fetching, parsing SEP-0001 stellar.toml files with caching.
  */
 
-import axios from "axios";
-import toml from "toml";
-import { z } from "zod";
-import { config } from "../config";
+import axios from 'axios';
+import toml from 'toml';
+import { z } from 'zod';
+import { config } from '../config';
 
 export const StellarTomlInputSchema = z.object({
-  domain: z.string().min(1, "Domain is required"),
+  domain: z.string().min(1, 'Domain is required'),
 });
 
 export type StellarTomlInput = z.infer<typeof StellarTomlInputSchema>;
@@ -46,7 +46,7 @@ export class StellarTomlTool {
     }
 
     const url = `https://${domain}/.well-known/stellar.toml`;
-    const response = await axios.get(url, { responseType: "text", timeout: 10_000 });
+    const response = await axios.get(url, { responseType: 'text', timeout: 10_000 });
     const parsed = toml.parse(response.data);
 
     const result: StellarTomlFields = {

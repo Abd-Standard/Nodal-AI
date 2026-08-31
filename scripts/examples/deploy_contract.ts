@@ -11,10 +11,10 @@
  *   AGENT_SECRET_KEY, SOROBAN_RPC_URL
  */
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { PayFiAgent } from "../../backend/agent";
+import { PayFiAgent } from '../../backend/agent';
 
 const agent = new PayFiAgent();
 
@@ -22,9 +22,9 @@ const agent = new PayFiAgent();
 const sampleWasm = Buffer.from([0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00]);
 
 const result = await agent.run({
-  type: "soroban_deploy",
+  type: 'soroban_deploy',
   payload: {
-    action: "deploy",
+    action: 'deploy',
     wasm: sampleWasm,
   },
 });

@@ -45,7 +45,7 @@
  *   and the `isolate: true` config option.
  */
 
-import { afterEach, vi } from "vitest";
+import { afterEach, vi } from 'vitest';
 
 afterEach(() => {
   // Restore the real timer implementation after every test.

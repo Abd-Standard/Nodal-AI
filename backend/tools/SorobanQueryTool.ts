@@ -13,14 +13,14 @@ import {
   Contract,
   BASE_FEE,
   xdr,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase } from "../rpc_client";
-import { createLogger } from "../utils/logger";
-import { SorobanInvokeInputSchema } from "./SorobanInvokeTool";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase } from '../rpc_client';
+import { createLogger } from '../utils/logger';
+import { SorobanInvokeInputSchema } from './SorobanInvokeTool';
 
-const log = createLogger("soroban-query");
+const log = createLogger('soroban-query');
 
 /**
  * Reuses the Soroban invoke input schema but omits `simulateOnly` because this
@@ -55,13 +55,16 @@ export class SorobanQueryTool {
     } catch {
       contract = {
         call: (method: string, ..._args: any[]) =>
-          Operation.manageData({ name: `query:${method}`, value: "mock" }),
+          Operation.manageData({ name: `query:${method}`, value: 'mock' }),
       };
     }
 
     const sourceAccount = await loadAccount(this.keypair.publicKey());
 
-    log.info({ method: input.method, contractId: input.contractId }, "Building Soroban query transaction");
+    log.info(
+      { method: input.method, contractId: input.contractId },
+      'Building Soroban query transaction'
+    );
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,
@@ -73,7 +76,10 @@ export class SorobanQueryTool {
 
     const simulationResult = await prepareSorobanTx(tx);
 
-    log.info({ method: input.method, contractId: input.contractId }, "Soroban query simulation complete");
+    log.info(
+      { method: input.method, contractId: input.contractId },
+      'Soroban query simulation complete'
+    );
 
     return { simulationResult };
   }

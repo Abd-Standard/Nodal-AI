@@ -3,14 +3,14 @@
  * Tool for querying the Stellar DEX order book and computing spread.
  */
 
-import { Asset } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { horizonServer, withRetry } from "../rpc_client";
-import { withBackoffGuard } from "../network";
-import { createLogger } from "../utils/logger";
+import { Asset } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { horizonServer, withRetry } from '../rpc_client';
+import { withBackoffGuard } from '../network';
+import { createLogger } from '../utils/logger';
 
-const log = createLogger("offer-book-tool");
+const log = createLogger('offer-book-tool');
 
 // ─── Schemas & Types ──────────────────────────────────────────────────────────
 
@@ -50,21 +50,21 @@ export interface OfferBookResult {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
-export function resolveAsset(input: OfferBookInput["sellingAsset"]): Asset {
+export function resolveAsset(input: OfferBookInput['sellingAsset']): Asset {
   if (input instanceof Asset) {
     return input;
   }
-  if (typeof input === "string") {
-    if (input.toUpperCase() === "XLM" || input.toLowerCase() === "native") {
+  if (typeof input === 'string') {
+    if (input.toUpperCase() === 'XLM' || input.toLowerCase() === 'native') {
       return Asset.native();
     }
-    if (input.includes(":")) {
-      const [code, issuer] = input.split(":");
+    if (input.includes(':')) {
+      const [code, issuer] = input.split(':');
       return new Asset(code, issuer);
     }
     return new Asset(input, config.X402_ASSET_ISSUER);
   }
-  if (input.code.toUpperCase() === "XLM" || !input.issuer) {
+  if (input.code.toUpperCase() === 'XLM' || !input.issuer) {
     return Asset.native();
   }
   return new Asset(input.code, input.issuer);
@@ -84,11 +84,11 @@ export class OfferBookTool {
 
     log.info(
       {
-        selling: selling.isNative() ? "native" : `${selling.getCode()}:${selling.getIssuer()}`,
-        buying: buying.isNative() ? "native" : `${buying.getCode()}:${buying.getIssuer()}`,
+        selling: selling.isNative() ? 'native' : `${selling.getCode()}:${selling.getIssuer()}`,
+        buying: buying.isNative() ? 'native' : `${buying.getCode()}:${buying.getIssuer()}`,
         limit: input.limit,
       },
-      "Querying Stellar DEX order book"
+      'Querying Stellar DEX order book'
     );
 
     let builder = horizonServer.orderbook(selling, buying);
@@ -97,17 +97,13 @@ export class OfferBookTool {
     }
 
     const response = await withBackoffGuard(() =>
-      withRetry(
-        () => builder.call(),
-        config.MAX_RETRIES,
-        config.RETRY_DELAY_MS
-      )
+      withRetry(() => builder.call(), config.MAX_RETRIES, config.RETRY_DELAY_MS)
     );
 
     const bids: PriceLevel[] = response.bids ?? [];
     const asks: PriceLevel[] = response.asks ?? [];
 
-    let spread = "0";
+    let spread = '0';
     if (bids.length > 0 && asks.length > 0) {
       const bestBid = parseFloat(bids[0].price);
       const bestAsk = parseFloat(asks[0].price);
@@ -115,10 +111,7 @@ export class OfferBookTool {
       spread = diff.toFixed(7);
     }
 
-    log.info(
-      { bidCount: bids.length, askCount: asks.length, spread },
-      "Order book query complete"
-    );
+    log.info({ bidCount: bids.length, askCount: asks.length, spread }, 'Order book query complete');
 
     return {
       bids,

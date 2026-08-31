@@ -3,11 +3,11 @@
  * Atomic DEX swap via strict-send path discovery and path payment submission.
  */
 
-import { Asset } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { ValidationError } from "../errors";
-import { horizonServer } from "../rpc_client";
-import { PathPaymentTool } from "./PathPaymentTool";
+import { Asset } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { ValidationError } from '../errors';
+import { horizonServer } from '../rpc_client';
+import { PathPaymentTool } from './PathPaymentTool';
 
 const AssetSchema = z.object({
   code: z.string(),
@@ -19,18 +19,18 @@ export const SwapInputSchema = z.object({
   buyAsset: AssetSchema,
   sellAmount: z
     .string()
-    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "sellAmount must be a valid Stellar decimal")
-    .refine((v) => parseFloat(v) > 0, "sellAmount must be greater than zero"),
+    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, 'sellAmount must be a valid Stellar decimal')
+    .refine((v) => parseFloat(v) > 0, 'sellAmount must be greater than zero'),
   maxSlippagePct: z
     .number()
-    .min(0, "maxSlippagePct must be at least 0")
-    .max(100, "maxSlippagePct must be at most 100"),
+    .min(0, 'maxSlippagePct must be at least 0')
+    .max(100, 'maxSlippagePct must be at most 100'),
 });
 
 export type SwapInput = z.infer<typeof SwapInputSchema>;
 
 function toAsset(a: { code: string; issuer?: string | undefined }): Asset {
-  if (a.code === "XLM") return Asset.native();
+  if (a.code === 'XLM') return Asset.native();
   if (!a.issuer) {
     throw new ValidationError(`Asset issuer is required for non-native asset ${a.code}`);
   }
@@ -41,8 +41,8 @@ function pathAssetsFromRecord(
   path: Array<{ asset_code: string; asset_issuer?: string; asset_type: string }>
 ): Array<{ code: string; issuer?: string }> {
   return path.map((step) => {
-    if (step.asset_type === "native") {
-      return { code: "XLM" };
+    if (step.asset_type === 'native') {
+      return { code: 'XLM' };
     }
     const asset: { code: string; issuer?: string } = { code: step.asset_code };
     if (step.asset_issuer) {
@@ -74,7 +74,7 @@ export class SwapTool {
       .call();
 
     if (response.records.length === 0) {
-      throw new ValidationError("No swap path found for the requested assets");
+      throw new ValidationError('No swap path found for the requested assets');
     }
 
     const amounts = response.records.map((record) => parseFloat(record.destination_amount));
@@ -82,7 +82,7 @@ export class SwapTool {
     const worstAmount = Math.min(...amounts);
 
     if (bestAmount <= 0) {
-      throw new ValidationError("Swap path returned zero destination amount");
+      throw new ValidationError('Swap path returned zero destination amount');
     }
 
     const deviationPct = ((bestAmount - worstAmount) / bestAmount) * 100;

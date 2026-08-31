@@ -3,24 +3,26 @@
  * Fetch and bump Stellar account sequence numbers via BUMP_SEQUENCE.
  */
 
-import { Keypair, TransactionBuilder, Operation, BASE_FEE, StrKey } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { loadAccount, submitTransaction, resolveNetworkPassphrase } from "../rpc_client";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+import { Keypair, TransactionBuilder, Operation, BASE_FEE, StrKey } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
+import { SubmitResultSchema } from './StellarPaymentTool';
 
-export const SequenceNumberInputSchema = z.discriminatedUnion("action", [
+export const SequenceNumberInputSchema = z.discriminatedUnion('action', [
   z.object({
-    action: z.literal("get"),
+    action: z.literal('get'),
     accountId: z
       .string()
-      .length(56, "Invalid Stellar public key")
-      .refine((val) => StrKey.isValidEd25519PublicKey(val), "Invalid Stellar public key")
+      .length(56, 'Invalid Stellar public key')
+      .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid Stellar public key')
       .optional(),
   }),
   z.object({
-    action: z.literal("bump"),
-    bumpTo: z.union([z.string().min(1), z.number().int().positive(), z.bigint()]).transform((v) => String(v)),
+    action: z.literal('bump'),
+    bumpTo: z
+      .union([z.string().min(1), z.number().int().positive(), z.bigint()])
+      .transform((v) => String(v)),
   }),
 ]);
 
@@ -87,7 +89,7 @@ export class SequenceNumberTool {
   async execute(rawInput: unknown): Promise<SequenceNumberResult> {
     const input = SequenceNumberInputSchema.parse(rawInput);
 
-    if (input.action === "get") {
+    if (input.action === 'get') {
       return this.get(input.accountId);
     }
 

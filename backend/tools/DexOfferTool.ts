@@ -3,34 +3,29 @@
  * Place, update, or delete a manage-sell offer on the Stellar DEX.
  */
 
+import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE, xdr } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { NotFoundError } from '@stellar/stellar-sdk';
+import { config } from '../config';
+import { ValidationError } from '../errors';
 import {
-  Keypair,
-  TransactionBuilder,
-  Operation,
-  Asset,
-  BASE_FEE,
-  xdr,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { NotFoundError } from "@stellar/stellar-sdk";
-import { config } from "../config";
-import { ValidationError } from "../errors";
-import { horizonServer, loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
-import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+  horizonServer,
+  loadAccount,
+  resolveNetworkPassphrase,
+  submitTransaction,
+} from '../rpc_client';
+import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { SubmitResultSchema } from './StellarPaymentTool';
 
 /**
  * Extract offer ID from the transaction result XDR.
  * For manageSellOffer create operations, the result contains the offerID.
  */
-function extractOfferIdFromTxResult(
-  resultXdr: string,
-  action: string
-): string | null {
-  if (action !== "create") return null;
+function extractOfferIdFromTxResult(resultXdr: string, action: string): string | null {
+  if (action !== 'create') return null;
 
   try {
-    const txResult = xdr.TransactionResult.fromXDR(resultXdr, "base64");
+    const txResult = xdr.TransactionResult.fromXDR(resultXdr, 'base64');
     const result = txResult.result();
     if (result.switch() !== xdr.TransactionResultCode.txSuccess()) return null;
 
@@ -77,22 +72,22 @@ const AssetSchema = z.object({
 
 export const DexOfferInputSchema = z
   .object({
-    action: z.enum(["create", "update", "delete"]),
+    action: z.enum(['create', 'update', 'delete']),
     selling: AssetSchema,
     buying: AssetSchema,
     amount: z
       .string()
-      .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "Amount must be a valid Stellar decimal")
-      .refine((v) => parseFloat(v) > 0, "Amount must be greater than zero"),
-    price: z.string().regex(/^\d+(\.\d+)?$/, "Price must be a positive decimal"),
+      .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, 'Amount must be a valid Stellar decimal')
+      .refine((v) => parseFloat(v) > 0, 'Amount must be greater than zero'),
+    price: z.string().regex(/^\d+(\.\d+)?$/, 'Price must be a positive decimal'),
     offerId: z.union([z.string(), z.number()]).optional(),
   })
   .superRefine((data, ctx) => {
-    if ((data.action === "update" || data.action === "delete") && data.offerId == null) {
+    if ((data.action === 'update' || data.action === 'delete') && data.offerId == null) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "offerId is required for update and delete actions",
-        path: ["offerId"],
+        message: 'offerId is required for update and delete actions',
+        path: ['offerId'],
       });
     }
   });
@@ -102,7 +97,7 @@ export type DexOfferInput = z.infer<typeof DexOfferInputSchema>;
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 function resolveAsset(a: { code: string; issuer?: string | undefined }): Asset {
-  return a.code === "XLM" ? Asset.native() : new Asset(a.code, a.issuer!);
+  return a.code === 'XLM' ? Asset.native() : new Asset(a.code, a.issuer!);
 }
 
 async function verifyOfferExists(offerId: string): Promise<void> {
@@ -138,10 +133,10 @@ export class DexOfferTool {
     const buying = resolveAsset(input.buying);
 
     // For delete: amount must be "0" regardless of the validated input amount
-    const offerAmount = input.action === "delete" ? "0" : input.amount;
-    const offerId = input.offerId != null ? String(input.offerId) : "0";
+    const offerAmount = input.action === 'delete' ? '0' : input.amount;
+    const offerId = input.offerId != null ? String(input.offerId) : '0';
 
-    if (input.action === "update" || input.action === "delete") {
+    if (input.action === 'update' || input.action === 'delete') {
       await verifyOfferExists(offerId);
     }
 
@@ -171,7 +166,7 @@ export class DexOfferTool {
     // For create actions, extract the network-assigned offerId from the transaction result.
     // For update/delete actions, return the input offerId.
     let finalOfferId = offerId;
-    if (input.action === "create" && "result_xdr" in submitResult) {
+    if (input.action === 'create' && 'result_xdr' in submitResult) {
       const extractedOfferId = extractOfferIdFromTxResult(
         (submitResult as { result_xdr: string }).result_xdr,
         input.action

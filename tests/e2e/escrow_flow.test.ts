@@ -13,7 +13,7 @@
  *   - Network access to Friendbot and Soroban RPC
  */
 
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll } from 'vitest';
 import {
   Keypair,
   rpc,
@@ -23,19 +23,17 @@ import {
   nativeToScVal,
   Address,
   xdr,
-} from "@stellar/stellar-sdk";
-import axios from "axios";
-import * as fs from "fs";
-import * as path from "path";
+} from '@stellar/stellar-sdk';
+import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
 
-const SOROBAN_RPC_URL =
-  process.env.SOROBAN_RPC_URL ?? "https://soroban-testnet.stellar.org";
-const HORIZON_URL =
-  process.env.HORIZON_URL ?? "https://horizon-testnet.stellar.org";
+const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org';
+const HORIZON_URL = process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org';
 const NETWORK_PASSPHRASE = Networks.TESTNET;
 const WASM_PATH = path.resolve(
   __dirname,
-  "../../contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm"
+  '../../contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm'
 );
 
 const sorobanServer = new rpc.Server(SOROBAN_RPC_URL, { allowHttp: false });
@@ -53,8 +51,8 @@ async function pollTx(
   for (let i = 0; i < maxAttempts; i++) {
     await new Promise((r) => setTimeout(r, intervalMs));
     const status = await server.getTransaction(hash);
-    if (status.status === "SUCCESS") return status as rpc.Api.GetSuccessfulTransactionResponse;
-    if (status.status === "FAILED") throw new Error(`Transaction failed: ${hash}`);
+    if (status.status === 'SUCCESS') return status as rpc.Api.GetSuccessfulTransactionResponse;
+    if (status.status === 'FAILED') throw new Error(`Transaction failed: ${hash}`);
   }
   throw new Error(`Transaction not confirmed within polling window: ${hash}`);
 }
@@ -70,8 +68,8 @@ async function sendTx(
   const prepared = rpc.assembleTransaction(tx, sim).build();
   prepared.sign(deployerKp);
   const result = await server.sendTransaction(prepared);
-  if (result.status === "ERROR") {
-    throw new Error(`Submit error: ${result.errorResult?.toXDR("base64")}`);
+  if (result.status === 'ERROR') {
+    throw new Error(`Submit error: ${result.errorResult?.toXDR('base64')}`);
   }
   return pollTx(server, result.hash);
 }
@@ -81,24 +79,23 @@ let deployerKp: Keypair;
 let recipientKp: Keypair;
 let contractId: string;
 
-describe("Escrow E2E — testnet", () => {
+describe('Escrow E2E — testnet', () => {
   beforeAll(async () => {
     deployerKp = Keypair.random();
     recipientKp = Keypair.random();
 
     // Fund both keypairs via Friendbot
-    await Promise.all([
-      friendbot(deployerKp.publicKey()),
-      friendbot(recipientKp.publicKey()),
-    ]);
+    await Promise.all([friendbot(deployerKp.publicKey()), friendbot(recipientKp.publicKey())]);
 
     // Small pause to let Horizon index the funded accounts
     await new Promise((r) => setTimeout(r, 5000));
   }, 60_000);
 
-  it("deploys the escrow WASM and creates a contract instance", async () => {
+  it('deploys the escrow WASM and creates a contract instance', async () => {
     if (!fs.existsSync(WASM_PATH)) {
-      console.warn("WASM not found — skipping deploy (run `cargo build --release --target wasm32-unknown-unknown`)");
+      console.warn(
+        'WASM not found — skipping deploy (run `cargo build --release --target wasm32-unknown-unknown`)'
+      );
       return;
     }
 
@@ -135,13 +132,12 @@ describe("Escrow E2E — testnet", () => {
         xdr.Operation.invokeHostFunction({
           hostFunction: xdr.HostFunction.hostFunctionTypeCreateContract(
             new xdr.CreateContractArgs({
-              contractIdPreimage:
-                xdr.ContractIdPreimage.contractIdPreimageFromAddress(
-                  new xdr.ContractIdPreimageFromAddress({
-                    address: Address.fromString(deployerKp.publicKey()).toScAddress(),
-                    salt: Buffer.alloc(32),
-                  })
-                ),
+              contractIdPreimage: xdr.ContractIdPreimage.contractIdPreimageFromAddress(
+                new xdr.ContractIdPreimageFromAddress({
+                  address: Address.fromString(deployerKp.publicKey()).toScAddress(),
+                  salt: Buffer.alloc(32),
+                })
+              ),
               executable: xdr.ContractExecutable.contractExecutableWasm(wasmHash),
             })
           ),
@@ -152,11 +148,11 @@ describe("Escrow E2E — testnet", () => {
       .build();
 
     const deployResult = await sendTx(sorobanServer, deployTx);
-    contractId = (deployResult as any).returnValue?.address()?.contractId().toString("hex");
+    contractId = (deployResult as any).returnValue?.address()?.contractId().toString('hex');
     expect(contractId).toBeDefined();
   }, 120_000);
 
-  it("initializes the escrow contract", async () => {
+  it('initializes the escrow contract', async () => {
     if (!contractId) return;
 
     const account = await sorobanServer.getAccount(deployerKp.publicKey());
@@ -170,11 +166,11 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "initialize",
+              functionName: 'initialize',
               args: [
-                nativeToScVal(deployerKp.publicKey(), { type: "address" }),
-                nativeToScVal(recipientKp.publicKey(), { type: "address" }),
-                nativeToScVal(10n, { type: "i128" }),
+                nativeToScVal(deployerKp.publicKey(), { type: 'address' }),
+                nativeToScVal(recipientKp.publicKey(), { type: 'address' }),
+                nativeToScVal(10n, { type: 'i128' }),
               ],
             })
           ),
@@ -187,14 +183,14 @@ describe("Escrow E2E — testnet", () => {
     await expect(sendTx(sorobanServer, tx)).resolves.toBeDefined();
   }, 60_000);
 
-  it("releases funds and confirms recipient balance increased", async () => {
+  it('releases funds and confirms recipient balance increased', async () => {
     if (!contractId) return;
 
     const balanceBefore = await axios
       .get(`${HORIZON_URL}/accounts/${recipientKp.publicKey()}`)
       .then((r) => {
-        const xlm = r.data.balances.find((b: any) => b.asset_type === "native");
-        return parseFloat(xlm?.balance ?? "0");
+        const xlm = r.data.balances.find((b: any) => b.asset_type === 'native');
+        return parseFloat(xlm?.balance ?? '0');
       });
 
     const account = await sorobanServer.getAccount(deployerKp.publicKey());
@@ -208,7 +204,7 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "release",
+              functionName: 'release',
               args: [],
             })
           ),
@@ -223,14 +219,14 @@ describe("Escrow E2E — testnet", () => {
     const balanceAfter = await axios
       .get(`${HORIZON_URL}/accounts/${recipientKp.publicKey()}`)
       .then((r) => {
-        const xlm = r.data.balances.find((b: any) => b.asset_type === "native");
-        return parseFloat(xlm?.balance ?? "0");
+        const xlm = r.data.balances.find((b: any) => b.asset_type === 'native');
+        return parseFloat(xlm?.balance ?? '0');
       });
 
     expect(balanceAfter).toBeGreaterThan(balanceBefore);
   }, 60_000);
 
-  it("full lifecycle: initialize then release by arbiter", async () => {
+  it('full lifecycle: initialize then release by arbiter', async () => {
     if (!contractId) return;
 
     const arbiterKp = Keypair.random();
@@ -240,8 +236,8 @@ describe("Escrow E2E — testnet", () => {
     const balanceBefore = await axios
       .get(`${HORIZON_URL}/accounts/${recipientKp.publicKey()}`)
       .then((r) => {
-        const xlm = r.data.balances.find((b: any) => b.asset_type === "native");
-        return parseFloat(xlm?.balance ?? "0");
+        const xlm = r.data.balances.find((b: any) => b.asset_type === 'native');
+        return parseFloat(xlm?.balance ?? '0');
       });
 
     const account = await sorobanServer.getAccount(deployerKp.publicKey());
@@ -255,11 +251,11 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "initialize",
+              functionName: 'initialize',
               args: [
-                nativeToScVal(arbiterKp.publicKey(), { type: "address" }),
-                nativeToScVal(recipientKp.publicKey(), { type: "address" }),
-                nativeToScVal(5n, { type: "i128" }),
+                nativeToScVal(arbiterKp.publicKey(), { type: 'address' }),
+                nativeToScVal(recipientKp.publicKey(), { type: 'address' }),
+                nativeToScVal(5n, { type: 'i128' }),
               ],
             })
           ),
@@ -282,7 +278,7 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "release",
+              functionName: 'release',
               args: [],
             })
           ),
@@ -297,14 +293,14 @@ describe("Escrow E2E — testnet", () => {
     const balanceAfter = await axios
       .get(`${HORIZON_URL}/accounts/${recipientKp.publicKey()}`)
       .then((r) => {
-        const xlm = r.data.balances.find((b: any) => b.asset_type === "native");
-        return parseFloat(xlm?.balance ?? "0");
+        const xlm = r.data.balances.find((b: any) => b.asset_type === 'native');
+        return parseFloat(xlm?.balance ?? '0');
       });
 
     expect(balanceAfter).toBeGreaterThan(balanceBefore);
   }, 120_000);
 
-  it("full lifecycle: initialize then refund by depositor after expiry", async () => {
+  it('full lifecycle: initialize then refund by depositor after expiry', async () => {
     if (!contractId) return;
 
     const refundKp = Keypair.random();
@@ -314,8 +310,8 @@ describe("Escrow E2E — testnet", () => {
     const balanceBefore = await axios
       .get(`${HORIZON_URL}/accounts/${refundKp.publicKey()}`)
       .then((r) => {
-        const xlm = r.data.balances.find((b: any) => b.asset_type === "native");
-        return parseFloat(xlm?.balance ?? "0");
+        const xlm = r.data.balances.find((b: any) => b.asset_type === 'native');
+        return parseFloat(xlm?.balance ?? '0');
       });
 
     const account = await sorobanServer.getAccount(refundKp.publicKey());
@@ -329,11 +325,11 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "initialize",
+              functionName: 'initialize',
               args: [
-                nativeToScVal(refundKp.publicKey(), { type: "address" }),
-                nativeToScVal(recipientKp.publicKey(), { type: "address" }),
-                nativeToScVal(3n, { type: "i128" }),
+                nativeToScVal(refundKp.publicKey(), { type: 'address' }),
+                nativeToScVal(recipientKp.publicKey(), { type: 'address' }),
+                nativeToScVal(3n, { type: 'i128' }),
               ],
             })
           ),
@@ -359,7 +355,7 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "refund",
+              functionName: 'refund',
               args: [],
             })
           ),
@@ -374,14 +370,14 @@ describe("Escrow E2E — testnet", () => {
     const balanceAfter = await axios
       .get(`${HORIZON_URL}/accounts/${refundKp.publicKey()}`)
       .then((r) => {
-        const xlm = r.data.balances.find((b: any) => b.asset_type === "native");
-        return parseFloat(xlm?.balance ?? "0");
+        const xlm = r.data.balances.find((b: any) => b.asset_type === 'native');
+        return parseFloat(xlm?.balance ?? '0');
       });
 
     expect(balanceAfter).toBeGreaterThan(balanceBefore);
   }, 120_000);
 
-  it("release fails when called by non-arbiter", async () => {
+  it('release fails when called by non-arbiter', async () => {
     if (!contractId) return;
 
     const nonArbiterKp = Keypair.random();
@@ -399,11 +395,11 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "initialize",
+              functionName: 'initialize',
               args: [
-                nativeToScVal(deployerKp.publicKey(), { type: "address" }),
-                nativeToScVal(recipientKp.publicKey(), { type: "address" }),
-                nativeToScVal(2n, { type: "i128" }),
+                nativeToScVal(deployerKp.publicKey(), { type: 'address' }),
+                nativeToScVal(recipientKp.publicKey(), { type: 'address' }),
+                nativeToScVal(2n, { type: 'i128' }),
               ],
             })
           ),
@@ -426,7 +422,7 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "release",
+              functionName: 'release',
               args: [],
             })
           ),
@@ -439,7 +435,7 @@ describe("Escrow E2E — testnet", () => {
     await expect(sendTx(sorobanServer, releaseTx)).rejects.toThrow();
   }, 120_000);
 
-  it("refund fails before expiry", async () => {
+  it('refund fails before expiry', async () => {
     if (!contractId) return;
 
     const depositorKp = Keypair.random();
@@ -457,11 +453,11 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "initialize",
+              functionName: 'initialize',
               args: [
-                nativeToScVal(depositorKp.publicKey(), { type: "address" }),
-                nativeToScVal(recipientKp.publicKey(), { type: "address" }),
-                nativeToScVal(4n, { type: "i128" }),
+                nativeToScVal(depositorKp.publicKey(), { type: 'address' }),
+                nativeToScVal(recipientKp.publicKey(), { type: 'address' }),
+                nativeToScVal(4n, { type: 'i128' }),
               ],
             })
           ),
@@ -485,7 +481,7 @@ describe("Escrow E2E — testnet", () => {
           hostFunction: xdr.HostFunction.hostFunctionTypeInvokeContract(
             new xdr.InvokeContractArgs({
               contractAddress: Address.fromString(contractId).toScAddress(),
-              functionName: "refund",
+              functionName: 'refund',
               args: [],
             })
           ),

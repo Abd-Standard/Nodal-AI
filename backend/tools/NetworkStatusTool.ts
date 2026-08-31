@@ -4,11 +4,11 @@
  * Checks health and latency for both Horizon and Soroban RPC endpoints.
  */
 
-import axios from "axios";
-import { rpc } from "@stellar/stellar-sdk";
-import { config } from "../config";
-import { logger } from "../logger";
-import { sorobanServer as defaultSorobanServer } from "../rpc_client";
+import axios from 'axios';
+import { rpc } from '@stellar/stellar-sdk';
+import { config } from '../config';
+import { logger } from '../logger';
+import { sorobanServer as defaultSorobanServer } from '../rpc_client';
 
 export interface ServiceHealth {
   healthy: boolean;
@@ -50,7 +50,7 @@ export class NetworkStatusTool {
       horizonHealth = {
         healthy,
         latencyMs,
-        status: res.statusText || (healthy ? "healthy" : "unhealthy"),
+        status: res.statusText || (healthy ? 'healthy' : 'unhealthy'),
       };
     } catch (err) {
       horizonHealth = {
@@ -67,8 +67,8 @@ export class NetworkStatusTool {
     try {
       const health = await this.sorobanServer.getHealth();
       const latencyMs = Date.now() - sorobanStart;
-      const status = typeof health?.status === "string" ? health.status : "healthy";
-      const healthy = status === "healthy" || status === "pass";
+      const status = typeof health?.status === 'string' ? health.status : 'healthy';
+      const healthy = status === 'healthy' || status === 'pass';
       sorobanHealth = {
         healthy,
         latencyMs,
@@ -82,7 +82,7 @@ export class NetworkStatusTool {
       };
     }
 
-    logger.info("Network status queried", {
+    logger.info('Network status queried', {
       horizonHealthy: horizonHealth.healthy,
       horizonLatencyMs: horizonHealth.latencyMs,
       sorobanHealthy: sorobanHealth.healthy,

@@ -3,9 +3,9 @@
  * Fetch paginated payment operations for an account from Horizon.
  */
 
-import { z } from "zod";
-import { config } from "../config";
-import { horizonServer } from "../rpc_client";
+import { z } from 'zod';
+import { config } from '../config';
+import { horizonServer } from '../rpc_client';
 
 export interface PaymentRecord {
   id: string;
@@ -24,7 +24,7 @@ export interface AccountHistoryResult {
 }
 
 export const AccountHistoryInputSchema = z.object({
-  publicKey: z.string().length(56, "Invalid Stellar public key").optional(),
+  publicKey: z.string().length(56, 'Invalid Stellar public key').optional(),
   limit: z.number().int().min(1).max(200).optional().default(10),
   cursor: z.string().optional(),
   assetCode: z.string().optional(),
@@ -32,18 +32,14 @@ export const AccountHistoryInputSchema = z.object({
 
 export type AccountHistoryInput = z.infer<typeof AccountHistoryInputSchema>;
 
-function formatAsset(
-  assetType: string,
-  assetCode?: string,
-  assetIssuer?: string
-): string {
-  if (assetType === "native") return "XLM";
+function formatAsset(assetType: string, assetCode?: string, assetIssuer?: string): string {
+  if (assetType === 'native') return 'XLM';
   return `${assetCode}:${assetIssuer}`;
 }
 
 function matchesAssetCode(asset: string, filterCode: string): boolean {
-  if (filterCode === "XLM") {
-    return asset === "XLM";
+  if (filterCode === 'XLM') {
+    return asset === 'XLM';
   }
   return asset.startsWith(`${filterCode}:`);
 }
@@ -60,16 +56,16 @@ function toPaymentRecord(record: {
   created_at: string;
   paging_token: string;
 }): PaymentRecord | null {
-  if (record.type !== "payment") {
+  if (record.type !== 'payment') {
     return null;
   }
 
   return {
     id: record.id,
     type: record.type,
-    from: record.from ?? "",
-    to: record.to ?? "",
-    amount: record.amount ?? "0",
+    from: record.from ?? '',
+    to: record.to ?? '',
+    amount: record.amount ?? '0',
     asset: formatAsset(record.asset_type, record.asset_code, record.asset_issuer),
     createdAt: record.created_at,
     pagingToken: record.paging_token,
@@ -81,11 +77,7 @@ export class AccountHistoryTool {
     const input = AccountHistoryInputSchema.parse(rawInput);
     const publicKey = input.publicKey ?? config.AGENT_PUBLIC_KEY;
 
-    let query = horizonServer
-      .payments()
-      .forAccount(publicKey)
-      .order("desc")
-      .limit(input.limit);
+    let query = horizonServer.payments().forAccount(publicKey).order('desc').limit(input.limit);
 
     if (input.cursor) {
       query = query.cursor(input.cursor);
@@ -118,7 +110,7 @@ export class AccountHistoryTool {
 
     const nextCursor =
       response.records.length > 0 && response.records.length === input.limit
-        ? response.records[response.records.length - 1]?.paging_token ?? null
+        ? (response.records[response.records.length - 1]?.paging_token ?? null)
         : null;
 
     return { records, nextCursor };
