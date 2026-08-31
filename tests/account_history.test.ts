@@ -3,9 +3,9 @@
  * Tests for AccountHistoryTool paginated payment history queries.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Keypair } from "@stellar/stellar-sdk";
-import { AccountHistoryTool } from "../backend/tools/AccountHistoryTool";
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Keypair } from '@stellar/stellar-sdk';
+import { AccountHistoryTool } from '../backend/tools/AccountHistoryTool';
 
 const { mockPaymentsCall, paymentsQuery, mockForAccount } = vi.hoisted(() => {
   const call = vi.fn();
@@ -25,7 +25,7 @@ const { mockPaymentsCall, paymentsQuery, mockForAccount } = vi.hoisted(() => {
   };
 });
 
-vi.mock("../backend/rpc_client", () => ({
+vi.mock('../backend/rpc_client', () => ({
   horizonServer: {
     payments: () => ({
       forAccount: mockForAccount,
@@ -33,9 +33,9 @@ vi.mock("../backend/rpc_client", () => ({
   },
 }));
 
-vi.mock("../backend/config", () => {
-  const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
+vi.mock('../backend/config', () => {
+  const { Keypair } = require('@stellar/stellar-sdk');
+  const secret = 'SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X';
   return {
     config: {
       AGENT_PUBLIC_KEY: Keypair.fromSecret(secret).publicKey(),
@@ -44,24 +44,24 @@ vi.mock("../backend/config", () => {
 });
 
 const AGENT_PUBLIC_KEY = Keypair.fromSecret(
-  "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X"
+  'SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X'
 ).publicKey();
 
 function makePaymentRecord(overrides: Record<string, unknown> = {}) {
   return {
-    id: "123",
-    type: "payment",
+    id: '123',
+    type: 'payment',
     from: AGENT_PUBLIC_KEY,
-    to: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
-    amount: "10.0000000",
-    asset_type: "native",
-    created_at: "2026-01-01T00:00:00Z",
-    paging_token: "token-123",
+    to: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+    amount: '10.0000000',
+    asset_type: 'native',
+    created_at: '2026-01-01T00:00:00Z',
+    paging_token: 'token-123',
     ...overrides,
   };
 }
 
-describe("AccountHistoryTool", () => {
+describe('AccountHistoryTool', () => {
   let tool: AccountHistoryTool;
 
   beforeEach(() => {
@@ -75,58 +75,58 @@ describe("AccountHistoryTool", () => {
     });
   });
 
-  it("returns paginated payment records for the agent account by default", async () => {
+  it('returns paginated payment records for the agent account by default', async () => {
     const result = await tool.fetch({ limit: 1 });
 
     expect(mockForAccount).toHaveBeenCalledWith(AGENT_PUBLIC_KEY);
-    expect(paymentsQuery.order).toHaveBeenCalledWith("desc");
+    expect(paymentsQuery.order).toHaveBeenCalledWith('desc');
     expect(paymentsQuery.limit).toHaveBeenCalledWith(1);
     expect(result.records).toHaveLength(1);
     expect(result.records[0]).toMatchObject({
-      type: "payment",
-      amount: "10.0000000",
-      asset: "XLM",
+      type: 'payment',
+      amount: '10.0000000',
+      asset: 'XLM',
     });
-    expect(result.nextCursor).toBe("token-123");
+    expect(result.nextCursor).toBe('token-123');
   });
 
-  it("passes cursor and publicKey when provided", async () => {
-    const customKey = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+  it('passes cursor and publicKey when provided', async () => {
+    const customKey = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 
     await tool.fetch({
       publicKey: customKey,
-      cursor: "cursor-abc",
+      cursor: 'cursor-abc',
       limit: 5,
     });
 
     expect(mockForAccount).toHaveBeenCalledWith(customKey);
-    expect(paymentsQuery.cursor).toHaveBeenCalledWith("cursor-abc");
+    expect(paymentsQuery.cursor).toHaveBeenCalledWith('cursor-abc');
     expect(paymentsQuery.limit).toHaveBeenCalledWith(5);
   });
 
-  it("filters records by assetCode when provided", async () => {
+  it('filters records by assetCode when provided', async () => {
     mockPaymentsCall.mockResolvedValueOnce({
       records: [
-        makePaymentRecord({ asset_type: "native" }),
+        makePaymentRecord({ asset_type: 'native' }),
         makePaymentRecord({
-          id: "456",
-          asset_type: "credit_alphanum4",
-          asset_code: "USDC",
-          asset_issuer: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
-          paging_token: "token-456",
+          id: '456',
+          asset_type: 'credit_alphanum4',
+          asset_code: 'USDC',
+          asset_issuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+          paging_token: 'token-456',
         }),
       ],
     });
 
-    const result = await tool.fetch({ assetCode: "USDC", limit: 10 });
+    const result = await tool.fetch({ assetCode: 'USDC', limit: 10 });
 
     expect(result.records).toHaveLength(1);
     expect(result.records[0]?.asset).toBe(
-      "USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
+      'USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'
     );
   });
 
-  it("returns null nextCursor when fewer records than limit are returned", async () => {
+  it('returns null nextCursor when fewer records than limit are returned', async () => {
     mockPaymentsCall.mockResolvedValueOnce({
       records: [makePaymentRecord()],
     });

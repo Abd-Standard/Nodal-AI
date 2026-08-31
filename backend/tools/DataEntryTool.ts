@@ -3,29 +3,29 @@
  * Read, write, and delete Stellar account data entries via MANAGE_DATA.
  */
 
-import { Keypair, TransactionBuilder, Operation, BASE_FEE, StrKey } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { loadAccount, submitTransaction, resolveNetworkPassphrase } from "../rpc_client";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+import { Keypair, TransactionBuilder, Operation, BASE_FEE, StrKey } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
+import { SubmitResultSchema } from './StellarPaymentTool';
 
-export const DataEntryInputSchema = z.discriminatedUnion("action", [
+export const DataEntryInputSchema = z.discriminatedUnion('action', [
   z.object({
-    action: z.literal("set"),
-    name: z.string().min(1).max(64, "Data name must be <= 64 bytes"),
-    value: z.string().max(64, "Data value must be <= 64 bytes"),
+    action: z.literal('set'),
+    name: z.string().min(1).max(64, 'Data name must be <= 64 bytes'),
+    value: z.string().max(64, 'Data value must be <= 64 bytes'),
   }),
   z.object({
-    action: z.literal("delete"),
-    name: z.string().min(1).max(64, "Data name must be <= 64 bytes"),
+    action: z.literal('delete'),
+    name: z.string().min(1).max(64, 'Data name must be <= 64 bytes'),
   }),
   z.object({
-    action: z.literal("get"),
-    name: z.string().min(1).max(64, "Data name must be <= 64 bytes"),
+    action: z.literal('get'),
+    name: z.string().min(1).max(64, 'Data name must be <= 64 bytes'),
     accountId: z
       .string()
-      .length(56, "Invalid Stellar public key")
-      .refine((val) => StrKey.isValidEd25519PublicKey(val), "Invalid Stellar public key")
+      .length(56, 'Invalid Stellar public key')
+      .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid Stellar public key')
       .optional(),
   }),
 ]);
@@ -46,7 +46,7 @@ export interface DataEntryMutationResult {
   txHash: string;
   ledger: number;
   name: string;
-  action: "set" | "delete";
+  action: 'set' | 'delete';
 }
 
 export type DataEntryResult = DataEntryGetResult | DataEntryMutationResult;
@@ -74,9 +74,9 @@ export class DataEntryTool {
       };
     }
 
-    const buf = Buffer.from(rawBase64, "base64");
-    const utf8Val = buf.toString("utf8");
-    const hexVal = buf.toString("hex");
+    const buf = Buffer.from(rawBase64, 'base64');
+    const utf8Val = buf.toString('utf8');
+    const hexVal = buf.toString('hex');
 
     return {
       name,
@@ -92,12 +92,12 @@ export class DataEntryTool {
   async execute(rawInput: unknown): Promise<DataEntryResult> {
     const input = DataEntryInputSchema.parse(rawInput);
 
-    if (input.action === "get") {
+    if (input.action === 'get') {
       return this.get(input.name, input.accountId);
     }
 
     const account = await loadAccount(this.keypair.publicKey());
-    const opValue = input.action === "delete" ? null : input.value;
+    const opValue = input.action === 'delete' ? null : input.value;
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,

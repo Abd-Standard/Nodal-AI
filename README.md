@@ -105,11 +105,21 @@ Nodal AI includes a multi-stage Dockerfile and Docker Compose stack for local de
 
 ### Run Tests in Docker
 
-You can run the test suite within an isolated test runner container:
+There are two ways to run the test suite in Docker, depending on how much of the stack you need:
+
+**Full stack (`test` profile):** builds and boots `stellar-quickstart` *and* the `agent` HTTP server, then runs the test runner against both. Use this when you need to exercise the running `agent` container itself:
 
 ```bash
 docker-compose --profile test up --build
 ```
+
+**Tests only (`test-only` profile):** skips building/booting the `agent` service entirely and only starts `stellar-quickstart` plus the test runner. This is faster and is the recommended default for local iteration and CI, since the test suite talks directly to `stellar-quickstart` and does not require the standalone `agent` server to be running:
+
+```bash
+docker-compose --profile test-only up --build --abort-on-container-exit --exit-code-from test-runner-only
+```
+
+`--exit-code-from test-runner-only` makes the compose command exit with the test runner's exit code, so CI correctly detects test failures.
 
 ---
 

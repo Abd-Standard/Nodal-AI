@@ -14,22 +14,22 @@
  *   AGENT_SECRET_KEY, HORIZON_URL, SOROBAN_RPC_URL, X402_ASSET_ISSUER
  */
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { PayFiAgent } from "../../backend/agent";
+import { PayFiAgent } from '../../backend/agent';
 
 const ACCOUNT_ID = process.env.AGENT_PUBLIC_KEY || process.env.ACCOUNT_ID;
 
 if (!ACCOUNT_ID) {
-  console.error("Error: AGENT_PUBLIC_KEY or ACCOUNT_ID environment variable is required");
+  console.error('Error: AGENT_PUBLIC_KEY or ACCOUNT_ID environment variable is required');
   process.exit(1);
 }
 
 const agent = new PayFiAgent();
 
 const result = await agent.run({
-  type: "balance_check",
+  type: 'balance_check',
   payload: {
     publicKey: ACCOUNT_ID,
   },
@@ -37,21 +37,19 @@ const result = await agent.run({
 
 // Pretty-print the returned balances
 console.log(`\n📊 Balances for account: ${result.publicKey}\n`);
-console.log("─".repeat(80));
+console.log('─'.repeat(80));
 
 if (result.balances && result.balances.length > 0) {
   result.balances.forEach((balance) => {
     const assetLabel =
-      balance.assetType === "native"
-        ? "XLM"
-        : `${balance.assetCode} (${balance.assetIssuer})`;
+      balance.assetType === 'native' ? 'XLM' : `${balance.assetCode} (${balance.assetIssuer})`;
     console.log(`  ${assetLabel.padEnd(60)} ${balance.balance.padStart(18)}`);
   });
 } else {
-  console.log("  No balances found for this account");
+  console.log('  No balances found for this account');
 }
 
-console.log("─".repeat(80));
-console.log("");
+console.log('─'.repeat(80));
+console.log('');
 
 agent.destroy();

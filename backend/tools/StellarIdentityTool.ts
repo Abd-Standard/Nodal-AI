@@ -3,12 +3,12 @@
  * SEP-0010 Web Auth challenge-response for anchor authentication.
  */
 
-import { Keypair, Transaction, StrKey } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { createLogger } from "../utils/logger";
+import { Keypair, Transaction, StrKey } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { createLogger } from '../utils/logger';
 
-const log = createLogger("stellar-identity");
+const log = createLogger('stellar-identity');
 
 const ChallengeResponseSchema = z.object({
   transaction: z.string().min(1),
@@ -24,7 +24,7 @@ export const WebAuthInputSchema = z.object({
   publicKey: z
     .string()
     .length(56)
-    .refine((val) => StrKey.isValidEd25519PublicKey(val), "Invalid Stellar public key")
+    .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid Stellar public key')
     .optional(),
 });
 
@@ -45,7 +45,7 @@ export class StellarIdentityTool {
     anchorUrl: string,
     publicKey: string
   ): Promise<{ transaction: string; networkPassphrase: string }> {
-    const baseUrl = anchorUrl.replace(/\/$/, "");
+    const baseUrl = anchorUrl.replace(/\/$/, '');
     const url = `${baseUrl}/auth?account=${encodeURIComponent(publicKey)}`;
     const response = await fetch(url);
 
@@ -63,9 +63,9 @@ export class StellarIdentityTool {
   async execute(rawInput: unknown): Promise<WebAuthResult> {
     const input = WebAuthInputSchema.parse(rawInput);
     const publicKey = input.publicKey ?? this.keypair.publicKey();
-    const baseUrl = input.anchorUrl.replace(/\/$/, "");
+    const baseUrl = input.anchorUrl.replace(/\/$/, '');
 
-    log.info({ anchorUrl: baseUrl, publicKey }, "Starting SEP-0010 web auth");
+    log.info({ anchorUrl: baseUrl, publicKey }, 'Starting SEP-0010 web auth');
 
     const challenge = await this.getChallenge(baseUrl, publicKey);
     const tx = new Transaction(challenge.transaction, challenge.networkPassphrase);
@@ -73,8 +73,8 @@ export class StellarIdentityTool {
     const signedXdr = tx.toXDR();
 
     const response = await fetch(`${baseUrl}/auth`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ transaction: signedXdr }),
     });
 
@@ -83,7 +83,7 @@ export class StellarIdentityTool {
     }
 
     const { token } = AuthResponseSchema.parse(await response.json());
-    log.info({ anchorUrl: baseUrl, publicKey }, "SEP-0010 web auth completed");
+    log.info({ anchorUrl: baseUrl, publicKey }, 'SEP-0010 web auth completed');
 
     return { token };
   }

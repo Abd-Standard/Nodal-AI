@@ -7,15 +7,15 @@
  */
 
 export enum ErrorType {
-  InsufficientFunds = "INSUFFICIENT_FUNDS",
-  NetworkTimeout = "NETWORK_TIMEOUT",
-  ValidationError = "VALIDATION_ERROR",
-  RateLimitError = "RATE_LIMIT_ERROR",
-  UnauthorizedError = "UNAUTHORIZED_ERROR",
-  ContractError = "CONTRACT_ERROR",
-  TransactionFailure = "TRANSACTION_FAILURE",
-  ConfigError = "CONFIG_ERROR",
-  UnknownError = "UNKNOWN_ERROR",
+  InsufficientFunds = 'INSUFFICIENT_FUNDS',
+  NetworkTimeout = 'NETWORK_TIMEOUT',
+  ValidationError = 'VALIDATION_ERROR',
+  RateLimitError = 'RATE_LIMIT_ERROR',
+  UnauthorizedError = 'UNAUTHORIZED_ERROR',
+  ContractError = 'CONTRACT_ERROR',
+  TransactionFailure = 'TRANSACTION_FAILURE',
+  ConfigError = 'CONFIG_ERROR',
+  UnknownError = 'UNKNOWN_ERROR',
 }
 
 export class StructuredError extends Error {
@@ -73,9 +73,14 @@ export class ContractError extends StructuredError {
   readonly contractId?: string | undefined;
 
   constructor(message: string, contractId?: string, cause?: unknown) {
-    const isContractId = typeof contractId === "string" && contractId.length === 56 && contractId.startsWith("C");
-    const actualContractId = isContractId ? contractId : (cause !== undefined ? contractId : undefined);
-    const actualCause = cause !== undefined ? cause : (isContractId ? undefined : contractId);
+    const isContractId =
+      typeof contractId === 'string' && contractId.length === 56 && contractId.startsWith('C');
+    const actualContractId = isContractId
+      ? contractId
+      : cause !== undefined
+        ? contractId
+        : undefined;
+    const actualCause = cause !== undefined ? cause : isContractId ? undefined : contractId;
 
     super(message, ErrorType.ContractError, actualCause);
     this.contractId = actualContractId;
@@ -116,7 +121,7 @@ function getErrorType(error: unknown): ErrorType {
 
 export { getErrorType };
 
-const SENSITIVE_CAUSE_KEYS = new Set(["secretKey", "privateKey", "seed", "_secretKey"]);
+const SENSITIVE_CAUSE_KEYS = new Set(['secretKey', 'privateKey', 'seed', '_secretKey']);
 
 /**
  * Recursively strips keys that may carry Stellar signing material (secretKey,
@@ -127,7 +132,7 @@ export function sanitizeCause(cause: unknown): unknown {
   if (Array.isArray(cause)) {
     return cause.map(sanitizeCause);
   }
-  if (cause !== null && typeof cause === "object") {
+  if (cause !== null && typeof cause === 'object') {
     const sanitized: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(cause)) {
       if (SENSITIVE_CAUSE_KEYS.has(key)) continue;

@@ -11,23 +11,23 @@ import {
   Transaction,
   Networks,
   BASE_FEE,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { logger } from "../logger";
-import { resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
-import { ValidationError } from "../errors";
-import { validateXDR } from "../types/xdr";
-import { createLogger } from "../utils/logger";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { logger } from '../logger';
+import { resolveNetworkPassphrase, submitTransaction } from '../rpc_client';
+import { ValidationError } from '../errors';
+import { validateXDR } from '../types/xdr';
+import { createLogger } from '../utils/logger';
+import { SubmitResultSchema } from './StellarPaymentTool';
 
-const log = createLogger("fee-bump");
+const log = createLogger('fee-bump');
 
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
 export const FeeBumpInputSchema = z.object({
-  innerTxXdr: z.string().min(1, "innerTxXdr must be a non-empty base64 XDR string"),
-  feeAccount: z.string().length(56, "Invalid Stellar public key").optional(),
+  innerTxXdr: z.string().min(1, 'innerTxXdr must be a non-empty base64 XDR string'),
+  feeAccount: z.string().length(56, 'Invalid Stellar public key').optional(),
   baseFeeMultiplier: z.number().int().min(2).default(2),
 });
 
@@ -55,7 +55,7 @@ export class FeeBumpTool {
       validateXDR(input.innerTxXdr);
     } catch (err) {
       throw new ValidationError(
-        err instanceof Error ? err.message : "Invalid inner transaction XDR",
+        err instanceof Error ? err.message : 'Invalid inner transaction XDR',
         err
       );
     }
@@ -65,16 +65,13 @@ export class FeeBumpTool {
     // Deserialize the inner transaction from XDR
     let innerTx: Transaction;
     try {
-      innerTx = TransactionBuilder.fromXDR(
-        input.innerTxXdr,
-        this.networkPassphrase
-      ) as Transaction;
+      innerTx = TransactionBuilder.fromXDR(input.innerTxXdr, this.networkPassphrase) as Transaction;
     } catch (err) {
       throw new ValidationError(`Invalid inner transaction XDR: unable to deserialize`, err);
     }
 
     if (innerTx instanceof FeeBumpTransaction) {
-      throw new Error("Inner transaction must not itself be a fee-bump transaction");
+      throw new Error('Inner transaction must not itself be a fee-bump transaction');
     }
 
     // ── Network passphrase guard ──────────────────────────────────────────────
@@ -88,17 +85,15 @@ export class FeeBumpTool {
     if (innerTx.signatures.length > 0) {
       const sourceKeypair = Keypair.fromPublicKey(innerTx.source);
       const sourceHint = sourceKeypair.signatureHint();
-      const sourceSig = innerTx.signatures.find((d) =>
-        d.hint().equals(sourceHint)
-      );
+      const sourceSig = innerTx.signatures.find((d) => d.hint().equals(sourceHint));
 
       if (sourceSig) {
         const sigValid = sourceKeypair.verify(innerTx.hash(), sourceSig.signature());
         if (!sigValid) {
           throw new Error(
-            "Inner transaction was signed for a different network passphrase. " +
-            "Ensure the inner XDR originates from the same network as the agent " +
-            `(${this.networkPassphrase}).`
+            'Inner transaction was signed for a different network passphrase. ' +
+              'Ensure the inner XDR originates from the same network as the agent ' +
+              `(${this.networkPassphrase}).`
           );
         }
       }
@@ -113,9 +108,9 @@ export class FeeBumpTool {
     // Fee-bump fee must be at least (inner ops + 1) * newFeePerOp per Stellar protocol
     const feeBumpFee = String((operationCount + 1) * newFeePerOp);
 
-    logger.info("Building fee-bump transaction", {
+    logger.info('Building fee-bump transaction', {
       feeAccount,
-      innerTxHash: innerTx.hash().toString("hex"),
+      innerTxHash: innerTx.hash().toString('hex'),
       baseFeeMultiplier: input.baseFeeMultiplier,
       feeBumpFee,
     });

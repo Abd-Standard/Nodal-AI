@@ -4,14 +4,25 @@
  * Tests for withRetry and DEFAULT_IS_RETRYABLE in backend/rpc_client.ts.
  */
 
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { ZodError, z } from "zod";
-import { withRetry, DEFAULT_IS_RETRYABLE, resolveNetworkPassphrase, withTimeout, TimeoutError, prepareSorobanTx, horizonServer, sorobanServer, loadAccount, invalidateAccountCache } from "../backend/rpc_client";
-import { SimulationBudgetError, ConfigError, ContractError } from "../backend/errors";
-import { Networks, rpc, xdr, StrKey, Keypair } from "@stellar/stellar-sdk";
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { ZodError, z } from 'zod';
+import {
+  withRetry,
+  DEFAULT_IS_RETRYABLE,
+  resolveNetworkPassphrase,
+  withTimeout,
+  TimeoutError,
+  prepareSorobanTx,
+  horizonServer,
+  sorobanServer,
+  loadAccount,
+  invalidateAccountCache,
+} from '../backend/rpc_client';
+import { SimulationBudgetError, ConfigError, ContractError } from '../backend/errors';
+import { Networks, rpc, xdr, StrKey, Keypair } from '@stellar/stellar-sdk';
 
-vi.mock("@stellar/stellar-sdk", async (importOriginal) => {
-  const mod = await importOriginal() as Record<string, unknown>;
+vi.mock('@stellar/stellar-sdk', async (importOriginal) => {
+  const mod = (await importOriginal()) as Record<string, unknown>;
   return {
     ...mod,
     rpc: {
@@ -30,25 +41,25 @@ const { rpcClientLog } = vi.hoisted(() => ({
   },
 }));
 
-vi.mock("../backend/utils/logger", () => ({
+vi.mock('../backend/utils/logger', () => ({
   logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() },
   createLogger: vi.fn(() => rpcClientLog),
-  generateCorrelationId: vi.fn(() => "mock-id"),
+  generateCorrelationId: vi.fn(() => 'mock-id'),
 }));
 
-vi.mock("../backend/config", () => {
-  const { Keypair } = require("@stellar/stellar-sdk");
-  const secret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
+vi.mock('../backend/config', () => {
+  const { Keypair } = require('@stellar/stellar-sdk');
+  const secret = 'SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X';
   return {
     config: {
-      STELLAR_NETWORK: "testnet",
-      HORIZON_URL: "https://horizon-testnet.stellar.org",
-      SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
+      STELLAR_NETWORK: 'testnet',
+      HORIZON_URL: 'https://horizon-testnet.stellar.org',
+      SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
       AGENT_SECRET_KEY: secret,
       AGENT_PUBLIC_KEY: Keypair.fromSecret(secret).publicKey(),
       agentKeypair: () => Keypair.fromSecret(secret),
-      X402_ASSET_CODE: "USDC",
-      X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      X402_ASSET_CODE: 'USDC',
+      X402_ASSET_ISSUER: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
       MAX_RETRIES: 3,
       RETRY_DELAY_MS: 100,
       RPC_TIMEOUT_MS: 9000,
@@ -72,74 +83,74 @@ afterEach(() => {
 
 // ─── resolveNetworkPassphrase ─────────────────────────────────────────────────
 
-describe("resolveNetworkPassphrase", () => {
-  it("returns Networks.PUBLIC for mainnet", () => {
-    expect(resolveNetworkPassphrase("mainnet")).toBe(Networks.PUBLIC);
+describe('resolveNetworkPassphrase', () => {
+  it('returns Networks.PUBLIC for mainnet', () => {
+    expect(resolveNetworkPassphrase('mainnet')).toBe(Networks.PUBLIC);
   });
 
-  it("returns Networks.TESTNET for testnet", () => {
-    expect(resolveNetworkPassphrase("testnet")).toBe(Networks.TESTNET);
+  it('returns Networks.TESTNET for testnet', () => {
+    expect(resolveNetworkPassphrase('testnet')).toBe(Networks.TESTNET);
   });
 
-  it("returns Networks.FUTURENET for futurenet", () => {
-    expect(resolveNetworkPassphrase("futurenet")).toBe(Networks.FUTURENET);
+  it('returns Networks.FUTURENET for futurenet', () => {
+    expect(resolveNetworkPassphrase('futurenet')).toBe(Networks.FUTURENET);
   });
 
-  it("throws for an unknown network string", () => {
-    expect(() => resolveNetworkPassphrase("unknown")).toThrow("Unsupported network: unknown");
+  it('throws for an unknown network string', () => {
+    expect(() => resolveNetworkPassphrase('unknown')).toThrow('Unsupported network: unknown');
   });
 
-  it("throws a ConfigError instance for unsupported networks", () => {
-    expect(() => resolveNetworkPassphrase("unsupported")).toThrow(ConfigError);
+  it('throws a ConfigError instance for unsupported networks', () => {
+    expect(() => resolveNetworkPassphrase('unsupported')).toThrow(ConfigError);
     try {
-      resolveNetworkPassphrase("invalid-net");
-      expect.unreachable("should have thrown");
+      resolveNetworkPassphrase('invalid-net');
+      expect.unreachable('should have thrown');
     } catch (err) {
       expect(err).toBeInstanceOf(ConfigError);
     }
   });
 
-  it("throws for empty string", () => {
-    expect(() => resolveNetworkPassphrase("")).toThrow("Unsupported network: ");
+  it('throws for empty string', () => {
+    expect(() => resolveNetworkPassphrase('')).toThrow('Unsupported network: ');
   });
 
-  it("throws for undefined cast to string", () => {
+  it('throws for undefined cast to string', () => {
     expect(() => resolveNetworkPassphrase(undefined as any)).toThrow();
   });
 });
 
 // ─── DEFAULT_IS_RETRYABLE ─────────────────────────────────────────────────────
 
-describe("DEFAULT_IS_RETRYABLE", () => {
-  it("returns false for ZodError", () => {
+describe('DEFAULT_IS_RETRYABLE', () => {
+  it('returns false for ZodError', () => {
     expect(DEFAULT_IS_RETRYABLE(new ZodError([]))).toBe(false);
   });
 
-  it("returns false for TypeError", () => {
-    expect(DEFAULT_IS_RETRYABLE(new TypeError("bad type"))).toBe(false);
+  it('returns false for TypeError', () => {
+    expect(DEFAULT_IS_RETRYABLE(new TypeError('bad type'))).toBe(false);
   });
 
-  it("returns true for a generic Error", () => {
-    expect(DEFAULT_IS_RETRYABLE(new Error("503 Service Unavailable"))).toBe(true);
+  it('returns true for a generic Error', () => {
+    expect(DEFAULT_IS_RETRYABLE(new Error('503 Service Unavailable'))).toBe(true);
   });
 
-  it("returns true for a plain string error", () => {
-    expect(DEFAULT_IS_RETRYABLE("network failure")).toBe(true);
+  it('returns true for a plain string error', () => {
+    expect(DEFAULT_IS_RETRYABLE('network failure')).toBe(true);
   });
 
-  it("returns false for a budget_exceeded simulation error", () => {
-    expect(DEFAULT_IS_RETRYABLE(new Error("HostError: budget_exceeded"))).toBe(false);
+  it('returns false for a budget_exceeded simulation error', () => {
+    expect(DEFAULT_IS_RETRYABLE(new Error('HostError: budget_exceeded'))).toBe(false);
   });
 
-  it("returns false for a simulation failed error", () => {
-    expect(DEFAULT_IS_RETRYABLE(new Error("Soroban simulation failed: some reason"))).toBe(false);
+  it('returns false for a simulation failed error', () => {
+    expect(DEFAULT_IS_RETRYABLE(new Error('Soroban simulation failed: some reason'))).toBe(false);
   });
 });
 
 // ─── withRetry ────────────────────────────────────────────────────────────────
 
-describe("withRetry", () => {
-  it("throws ZodError immediately without retrying", async () => {
+describe('withRetry', () => {
+  it('throws ZodError immediately without retrying', async () => {
     const zodError = z.string().safeParse(42).error!;
     const fn = vi.fn().mockRejectedValue(zodError);
 
@@ -148,47 +159,46 @@ describe("withRetry", () => {
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it("throws TypeError immediately without retrying", async () => {
-    const fn = vi.fn().mockRejectedValue(new TypeError("cannot read property"));
+  it('throws TypeError immediately without retrying', async () => {
+    const fn = vi.fn().mockRejectedValue(new TypeError('cannot read property'));
 
     await expect(withRetry(fn, 3, 0)).rejects.toBeInstanceOf(TypeError);
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it("retries the full MAX_RETRIES times for a transient error (e.g. HTTP 503)", async () => {
-    const fn = vi.fn().mockRejectedValue(new Error("503 Service Unavailable"));
+  it('retries the full MAX_RETRIES times for a transient error (e.g. HTTP 503)', async () => {
+    const fn = vi.fn().mockRejectedValue(new Error('503 Service Unavailable'));
 
-    await expect(withRetry(fn, 3, 0)).rejects.toThrow("503");
+    await expect(withRetry(fn, 3, 0)).rejects.toThrow('503');
     expect(fn).toHaveBeenCalledTimes(3);
   });
 
-  it("resolves on the first successful attempt without retrying", async () => {
-    const fn = vi.fn().mockResolvedValue("ok");
+  it('resolves on the first successful attempt without retrying', async () => {
+    const fn = vi.fn().mockResolvedValue('ok');
 
-    await expect(withRetry(fn, 3, 0)).resolves.toBe("ok");
+    await expect(withRetry(fn, 3, 0)).resolves.toBe('ok');
     expect(fn).toHaveBeenCalledTimes(1);
   });
 
-  it("resolves after a transient failure followed by success", async () => {
-    const fn = vi.fn()
-      .mockRejectedValueOnce(new Error("transient"))
-      .mockResolvedValue("recovered");
+  it('resolves after a transient failure followed by success', async () => {
+    const fn = vi.fn().mockRejectedValueOnce(new Error('transient')).mockResolvedValue('recovered');
 
-    await expect(withRetry(fn, 3, 0)).resolves.toBe("recovered");
+    await expect(withRetry(fn, 3, 0)).resolves.toBe('recovered');
     expect(fn).toHaveBeenCalledTimes(2);
   });
 
   // ── Exponential back-off timing with fake timers (#58) ──────────────────────
 
-  it("respects exponential delay progression [1500, 3000, 6000]", async () => {
+  it('respects exponential delay progression [1500, 3000, 6000]', async () => {
     vi.useFakeTimers();
     // Mock Math.random to return 0 so jitter (±20%) is eliminated from delays
-    const randomSpy = vi.spyOn(Math, "random").mockReturnValue(0);
-    const fn = vi.fn()
-      .mockRejectedValueOnce(new Error("try1"))
-      .mockRejectedValueOnce(new Error("try2"))
-      .mockRejectedValueOnce(new Error("try3"))
-      .mockResolvedValue("success");
+    const randomSpy = vi.spyOn(Math, 'random').mockReturnValue(0);
+    const fn = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('try1'))
+      .mockRejectedValueOnce(new Error('try2'))
+      .mockRejectedValueOnce(new Error('try3'))
+      .mockResolvedValue('success');
 
     const promise = withRetry(fn, 4, 1500, DEFAULT_IS_RETRYABLE, 30000);
     await vi.advanceTimersByTimeAsync(0); // Initial attempt
@@ -204,29 +214,27 @@ describe("withRetry", () => {
     await vi.advanceTimersByTimeAsync(6000 * 1.2 + 50); // Third retry after ~6000ms
     expect(fn).toHaveBeenCalledTimes(4);
 
-    await expect(promise).resolves.toBe("success");
+    await expect(promise).resolves.toBe('success');
     randomSpy.mockRestore();
     vi.useRealTimers();
   });
 
-  it("respects maxDelayMs cap on exponential growth", async () => {
+  it('respects maxDelayMs cap on exponential growth', async () => {
     vi.useFakeTimers();
-    const fn = vi.fn()
-      .mockRejectedValueOnce(new Error("fail"))
-      .mockResolvedValue("ok");
+    const fn = vi.fn().mockRejectedValueOnce(new Error('fail')).mockResolvedValue('ok');
 
     const promise = withRetry(fn, 3, 1500, DEFAULT_IS_RETRYABLE, 2000);
     await vi.advanceTimersByTimeAsync(0);
     await vi.advanceTimersByTimeAsync(1500); // First retry
     await vi.advanceTimersByTimeAsync(2000); // Second retry should be capped at 2000, not 3000
 
-    await expect(promise).resolves.toBe("ok");
+    await expect(promise).resolves.toBe('ok');
     vi.useRealTimers();
   });
 
-  it("jitter does not cause delay to exceed maxDelayMs cap", async () => {
+  it('jitter does not cause delay to exceed maxDelayMs cap', async () => {
     vi.useFakeTimers();
-    const fn = vi.fn().mockResolvedValue("ok");
+    const fn = vi.fn().mockResolvedValue('ok');
     const startTime = Date.now();
 
     // Jitter is ±20% of capped delay, so for cap of 1000: jitter max is 200
@@ -234,14 +242,14 @@ describe("withRetry", () => {
     const promise = withRetry(fn, 1, 500, DEFAULT_IS_RETRYABLE, 1000);
     await vi.advanceTimersByTimeAsync(1200);
 
-    await expect(promise).resolves.toBe("ok");
+    await expect(promise).resolves.toBe('ok');
     const elapsed = Date.now() - startTime;
     expect(elapsed).toBeLessThanOrEqual(1200);
     vi.useRealTimers();
   });
 
-  it("last error is re-thrown after exhaustion with StellarRPCError", async () => {
-    const fn = vi.fn().mockRejectedValue(new Error("Service Unavailable"));
+  it('last error is re-thrown after exhaustion with StellarRPCError', async () => {
+    const fn = vi.fn().mockRejectedValue(new Error('Service Unavailable'));
 
     let caughtErr: unknown;
     try {
@@ -251,8 +259,8 @@ describe("withRetry", () => {
     }
     expect(caughtErr).toBeInstanceOf(Error);
     const err = caughtErr as Error;
-    expect(err.name).toBe("StellarRPCError");
-    expect(err.message).toContain("RPC call failed after 3 attempt(s)");
+    expect(err.name).toBe('StellarRPCError');
+    expect(err.message).toContain('RPC call failed after 3 attempt(s)');
     let caught: unknown;
     try {
       await withRetry(fn, 3, 0);
@@ -260,52 +268,52 @@ describe("withRetry", () => {
       caught = e;
     }
     expect(caught).toBeDefined();
-    expect((caught as Error).name).toBe("StellarRPCError");
-    expect((caught as Error).message).toContain("RPC call failed after 3 attempt(s)");
+    expect((caught as Error).name).toBe('StellarRPCError');
+    expect((caught as Error).message).toContain('RPC call failed after 3 attempt(s)');
   });
 });
 
 // ─── withTimeout ──────────────────────────────────────────────────────────────
 
-describe("withTimeout", () => {
-  it("resolves when the promise completes before the timeout", async () => {
-    const fast = Promise.resolve("done");
-    await expect(withTimeout(fast, 500)).resolves.toBe("done");
+describe('withTimeout', () => {
+  it('resolves when the promise completes before the timeout', async () => {
+    const fast = Promise.resolve('done');
+    await expect(withTimeout(fast, 500)).resolves.toBe('done');
   });
 
-  it("throws TimeoutError when the promise exceeds the timeout", async () => {
+  it('throws TimeoutError when the promise exceeds the timeout', async () => {
     const slow = new Promise<never>(() => {}); // never resolves
     await expect(withTimeout(slow, 10)).rejects.toBeInstanceOf(TimeoutError);
   });
 
-  it("TimeoutError message identifies it as a timeout, not a network error", async () => {
+  it('TimeoutError message identifies it as a timeout, not a network error', async () => {
     const slow = new Promise<never>(() => {});
     const err = await withTimeout(slow, 10).catch((e) => e);
     expect(err).toBeInstanceOf(TimeoutError);
     expect(err.message).toMatch(/timeout/i);
-    expect(err.name).toBe("TimeoutError");
+    expect(err.name).toBe('TimeoutError');
   });
 
-  it("clears the timer when the wrapped promise rejects early", async () => {
+  it('clears the timer when the wrapped promise rejects early', async () => {
     vi.useFakeTimers();
-    const rejectPromise = Promise.reject(new Error("early failure"));
+    const rejectPromise = Promise.reject(new Error('early failure'));
     rejectPromise.catch(() => {}); // prevent unhandled rejection
 
     const timed = withTimeout(rejectPromise, 5000);
 
-    await expect(timed).rejects.toThrow("early failure");
+    await expect(timed).rejects.toThrow('early failure');
     expect(vi.getTimerCount()).toBe(0);
   });
 });
 
 // ─── prepareSorobanTx auth checks ──────────────────────────────────────────
 
-describe("prepareSorobanTx auth checks", () => {
+describe('prepareSorobanTx auth checks', () => {
   beforeEach(() => {
-    vi.spyOn(sorobanServer, "simulateTransaction").mockResolvedValue({} as any);
+    vi.spyOn(sorobanServer, 'simulateTransaction').mockResolvedValue({} as any);
   });
 
-  it("throws when auth contains an unexpected signer (address credentials)", async () => {
+  it('throws when auth contains an unexpected signer (address credentials)', async () => {
     const badKeypair = Keypair.random();
     const badAddress = badKeypair.publicKey();
     const rawKey = StrKey.decodeEd25519PublicKey(badAddress);
@@ -336,7 +344,7 @@ describe("prepareSorobanTx auth checks", () => {
     await expect(prepareSorobanTx(dummyTx)).rejects.toThrow(/unexpected/i);
   });
 
-  it("does not throw when auth entries use source account credentials", async () => {
+  it('does not throw when auth entries use source account credentials', async () => {
     const mockAuthEntry = {
       credentials: () => ({
         switch: () => xdr.SorobanCredentialsType.sorobanCredentialsSourceAccount(),
@@ -356,7 +364,7 @@ describe("prepareSorobanTx auth checks", () => {
   });
 
   it("does not throw when address credentials match the agent's public key", async () => {
-    const agentSecret = "SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X";
+    const agentSecret = 'SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X';
     const agentPublicKey = Keypair.fromSecret(agentSecret).publicKey();
     const rawKey = StrKey.decodeEd25519PublicKey(agentPublicKey);
 
@@ -389,22 +397,22 @@ describe("prepareSorobanTx auth checks", () => {
 
 // ─── prepareSorobanTx budget_exceeded handling ─────────────────────────────
 
-describe("prepareSorobanTx budget_exceeded handling", () => {
-  it("throws SimulationBudgetError when simulation reports budget_exceeded", async () => {
-    vi.spyOn(sorobanServer, "simulateTransaction").mockResolvedValue({
-      error: "HostError: Error(Budget, #0) budget_exceeded",
+describe('prepareSorobanTx budget_exceeded handling', () => {
+  it('throws SimulationBudgetError when simulation reports budget_exceeded', async () => {
+    vi.spyOn(sorobanServer, 'simulateTransaction').mockResolvedValue({
+      error: 'HostError: Error(Budget, #0) budget_exceeded',
     } as any);
 
     const dummyTx = {} as any;
     const err = await prepareSorobanTx(dummyTx).catch((e) => e);
 
     expect(err).toBeInstanceOf(SimulationBudgetError);
-    expect(err.message).toContain("budget_exceeded");
+    expect(err.message).toContain('budget_exceeded');
   });
 
-  it("throws a ContractError with error detail for non-budget simulation failures", async () => {
-    vi.spyOn(sorobanServer, "simulateTransaction").mockResolvedValue({
-      error: "HostError: unrelated simulation problem",
+  it('throws a ContractError with error detail for non-budget simulation failures', async () => {
+    vi.spyOn(sorobanServer, 'simulateTransaction').mockResolvedValue({
+      error: 'HostError: unrelated simulation problem',
     } as any);
 
     const dummyTx = {} as any;
@@ -412,28 +420,28 @@ describe("prepareSorobanTx budget_exceeded handling", () => {
 
     expect(err).not.toBeInstanceOf(SimulationBudgetError);
     expect(err).toBeInstanceOf(ContractError);
-    expect(err.message).toBe("Soroban simulation failed: HostError: unrelated simulation problem");
-    expect(err.cause).toBe("HostError: unrelated simulation problem");
+    expect(err.message).toBe('Soroban simulation failed: HostError: unrelated simulation problem');
+    expect(err.cause).toBe('HostError: unrelated simulation problem');
   });
 });
 
 // ─── Request ID headers ───────────────────────────────────────────────────────
 
-describe("RPC servers with request ID headers", () => {
-  it("horizonServer is created with X-Request-ID header", () => {
+describe('RPC servers with request ID headers', () => {
+  it('horizonServer is created with X-Request-ID header', () => {
     expect(horizonServer).toBeDefined();
   });
 
-  it("sorobanServer is created with X-Request-ID header", () => {
+  it('sorobanServer is created with X-Request-ID header', () => {
     expect(sorobanServer).toBeDefined();
   });
 });
 
 // ─── #369: Horizon account cache TTL ──────────────────────────────────────────
 
-describe("loadAccount — account cache TTL", () => {
-  const PUBKEY = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-  const OTHER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+describe('loadAccount — account cache TTL', () => {
+  const PUBKEY = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+  const OTHER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   let fetchSpy: any;
 
@@ -441,7 +449,7 @@ describe("loadAccount — account cache TTL", () => {
     invalidateAccountCache();
     vi.useFakeTimers();
     fetchSpy = vi
-      .spyOn(horizonServer, "loadAccount")
+      .spyOn(horizonServer, 'loadAccount')
       .mockImplementation(async (id: string) => ({ accountId: () => id }) as any);
   });
 
@@ -451,14 +459,14 @@ describe("loadAccount — account cache TTL", () => {
     vi.useRealTimers();
   });
 
-  it("serves the second read from cache without hitting Horizon", async () => {
+  it('serves the second read from cache without hitting Horizon', async () => {
     await loadAccount(PUBKEY);
     await loadAccount(PUBKEY);
 
     expect(fetchSpy).toHaveBeenCalledTimes(1);
   });
 
-  it("re-fetches once the TTL has elapsed", async () => {
+  it('re-fetches once the TTL has elapsed', async () => {
     await loadAccount(PUBKEY);
     expect(fetchSpy).toHaveBeenCalledTimes(1);
 
@@ -473,7 +481,7 @@ describe("loadAccount — account cache TTL", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("caches each account separately", async () => {
+  it('caches each account separately', async () => {
     await loadAccount(PUBKEY);
     await loadAccount(OTHER);
     await loadAccount(PUBKEY);
@@ -483,7 +491,7 @@ describe("loadAccount — account cache TTL", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("bypasses the cache when forceRefresh is set", async () => {
+  it('bypasses the cache when forceRefresh is set', async () => {
     await loadAccount(PUBKEY);
     await loadAccount(PUBKEY, { forceRefresh: true });
 
@@ -492,14 +500,14 @@ describe("loadAccount — account cache TTL", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(2);
   });
 
-  it("does not leave a stale entry behind when a refresh fails", async () => {
+  it('does not leave a stale entry behind when a refresh fails', async () => {
     await loadAccount(PUBKEY);
     vi.advanceTimersByTime(30_001);
 
     // TypeError so DEFAULT_IS_RETRYABLE short-circuits: a retryable error would
     // sit in withRetry's back-off, which never advances under fake timers.
-    fetchSpy.mockRejectedValueOnce(new TypeError("horizon down"));
-    await expect(loadAccount(PUBKEY)).rejects.toThrow("horizon down");
+    fetchSpy.mockRejectedValueOnce(new TypeError('horizon down'));
+    await expect(loadAccount(PUBKEY)).rejects.toThrow('horizon down');
 
     // The expired entry was dropped on the miss, so the next call refetches
     // rather than quietly serving a record that is now well past its TTL.
@@ -508,7 +516,7 @@ describe("loadAccount — account cache TTL", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(3);
   });
 
-  it("invalidateAccountCache drops a single key or the whole cache", async () => {
+  it('invalidateAccountCache drops a single key or the whole cache', async () => {
     await loadAccount(PUBKEY);
     await loadAccount(OTHER);
     expect(fetchSpy).toHaveBeenCalledTimes(2);

@@ -17,25 +17,25 @@
  * both arbitrary JSON-shaped values and structurally-valid challenge objects.
  */
 
-import { describe, it, expect } from "vitest";
-import fc from "fast-check";
-import { z } from "zod";
-import { X402ChallengeSchema } from "../../backend/tools/X402PaymentTool";
+import { describe, it, expect } from 'vitest';
+import fc from 'fast-check';
+import { z } from 'zod';
+import { X402ChallengeSchema } from '../../backend/tools/X402PaymentTool';
 
-const VALID_PAY_TO = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
+const VALID_PAY_TO = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 
-describe("X402ChallengeSchema fuzz", () => {
-  it("never hangs, crashes, or returns anything other than a boolean `success` for arbitrary JSON values", () => {
+describe('X402ChallengeSchema fuzz', () => {
+  it('never hangs, crashes, or returns anything other than a boolean `success` for arbitrary JSON values', () => {
     fc.assert(
       fc.property(fc.jsonValue(), (value) => {
         const result = X402ChallengeSchema.safeParse(value);
-        expect(typeof result.success).toBe("boolean");
+        expect(typeof result.success).toBe('boolean');
       }),
       { numRuns: 1000 }
     );
   });
 
-  it("always either parses successfully or throws a ZodError -- never anything else", () => {
+  it('always either parses successfully or throws a ZodError -- never anything else', () => {
     fc.assert(
       fc.property(fc.jsonValue(), (value) => {
         try {
@@ -48,14 +48,12 @@ describe("X402ChallengeSchema fuzz", () => {
     );
   });
 
-  it("accepts structurally-valid, semantically-plausible challenges", () => {
+  it('accepts structurally-valid, semantically-plausible challenges', () => {
     const validChallengeArb = fc.record({
       resource: fc.webUrl(),
       amount: fc.string({ minLength: 1, maxLength: 20 }),
-      assetCode: fc.constantFrom("XLM", "USDC"),
-      assetIssuer: fc.constant(
-        "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN"
-      ),
+      assetCode: fc.constantFrom('XLM', 'USDC'),
+      assetIssuer: fc.constant('GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN'),
       payTo: fc.constant(VALID_PAY_TO),
       nonce: fc.uuid({ version: 4 }),
       expiresAt: fc.date().map((d) => d.toISOString()),
@@ -70,12 +68,12 @@ describe("X402ChallengeSchema fuzz", () => {
     );
   });
 
-  it("rejects a payTo that is not exactly 56 characters", () => {
+  it('rejects a payTo that is not exactly 56 characters', () => {
     const invalidPayToArb = fc.record({
       resource: fc.webUrl(),
       amount: fc.string({ minLength: 1, maxLength: 20 }),
-      assetCode: fc.constant("XLM"),
-      assetIssuer: fc.constant(""),
+      assetCode: fc.constant('XLM'),
+      assetIssuer: fc.constant(''),
       payTo: fc.string({ minLength: 0, maxLength: 100 }).filter((s) => s.length !== 56),
       nonce: fc.uuid({ version: 4 }),
       expiresAt: fc.date().map((d) => d.toISOString()),
@@ -90,7 +88,7 @@ describe("X402ChallengeSchema fuzz", () => {
     );
   });
 
-  it("rejects a non-XLM assetCode with an empty assetIssuer", () => {
+  it('rejects a non-XLM assetCode with an empty assetIssuer', () => {
     // Note: assetIssuer is omitted-with-default in the schema (falls back to
     // config.X402_ASSET_ISSUER when `undefined`), so an *explicit* empty
     // string is required here to actually exercise the "no issuer" branch of
@@ -98,8 +96,8 @@ describe("X402ChallengeSchema fuzz", () => {
     const missingIssuerArb = fc.record({
       resource: fc.webUrl(),
       amount: fc.string({ minLength: 1, maxLength: 20 }),
-      assetCode: fc.constant("USDC"),
-      assetIssuer: fc.constant(""),
+      assetCode: fc.constant('USDC'),
+      assetIssuer: fc.constant(''),
       payTo: fc.constant(VALID_PAY_TO),
       nonce: fc.uuid({ version: 4 }),
       expiresAt: fc.date().map((d) => d.toISOString()),

@@ -5,19 +5,19 @@
  * Detects HTTP 429 responses, extracts Retry-After, and pauses outbound traffic.
  */
 
-import { logger } from "./logger";
-import { createLogger } from "./utils/logger";
+import { logger } from './logger';
+import { createLogger } from './utils/logger';
 
-const log = createLogger("network");
+const log = createLogger('network');
 
 // ─── Backoff state ────────────────────────────────────────────────
 
 export interface BackoffState {
   active: boolean;
-  until: number;         // timestamp (ms) when the lock expires
+  until: number; // timestamp (ms) when the lock expires
   retryAfterSeconds: number;
   queue: Array<() => void>; // callbacks waiting for the lock to clear
-  generation: number;    // incremented on each new backoff activation
+  generation: number; // incremented on each new backoff activation
 }
 
 const globalBackoff: BackoffState = {
@@ -93,7 +93,7 @@ export async function withBackoffGuard<T>(fn: () => Promise<T>): Promise<T> {
   return new Promise<T>((resolve, reject) => {
     globalBackoff.queue.push(() => {
       if (globalBackoff.generation !== enqueuedGeneration) {
-        reject(new Error("Backoff superseded before queued callback could run"));
+        reject(new Error('Backoff superseded before queued callback could run'));
         return;
       }
       fn().then(resolve).catch(reject);
@@ -104,7 +104,11 @@ export async function withBackoffGuard<T>(fn: () => Promise<T>): Promise<T> {
 /**
  * Returns the current backoff status for telemetry/monitoring.
  */
-export function getBackoffStatus(): { active: boolean; retryAfterSeconds: number; queueSize: number } {
+export function getBackoffStatus(): {
+  active: boolean;
+  retryAfterSeconds: number;
+  queueSize: number;
+} {
   return {
     active: globalBackoff.active,
     retryAfterSeconds: globalBackoff.retryAfterSeconds,
@@ -124,7 +128,7 @@ function clearBackoff(generation?: number): void {
   globalBackoff.retryAfterSeconds = 0;
   globalBackoff.until = 0;
 
-  log.info("[Network] Rate limit lock cleared — resuming normal traffic.");
+  log.info('[Network] Rate limit lock cleared — resuming normal traffic.');
 
   // Drain the queued callbacks
   const pending = globalBackoff.queue.splice(0);
@@ -132,7 +136,7 @@ function clearBackoff(generation?: number): void {
     try {
       cb();
     } catch (err) {
-      log.error({ error: (err as Error).message }, "[Network] Error executing queued callback");
+      log.error({ error: (err as Error).message }, '[Network] Error executing queued callback');
     }
   }
 }

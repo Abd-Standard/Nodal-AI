@@ -94,6 +94,7 @@ Before submitting your PR, make sure:
 - ✅ All tests pass (`npm run test` and `cargo test --manifest-path contracts/escrow/Cargo.toml`)
 - ✅ TypeScript compiles cleanly (`tsc --noEmit`)
 - ✅ Linting passes (`npm run lint`)
+- ✅ Formatting passes (`npm run format:check`) — run `npm run format` to auto-fix
 - ✅ No secrets or private keys are in the diff
 - ✅ You've referenced the issue number in your PR description
 
@@ -113,6 +114,7 @@ Before submitting your PR, make sure:
    - Follow the project structure in `README.md`
    - Ensure all tests pass: `npm run test`
    - Run the linter: `npm run lint`
+   - Check formatting: `npm run format:check` (or `npm run format` to auto-fix)
    - For TypeScript changes, compile: `npm run build`
    - For Rust changes, test: `cargo test --manifest-path contracts/escrow/Cargo.toml`
 
@@ -148,12 +150,41 @@ The most common contribution to this repo is adding a new tool to the agent (e.g
 All pull requests are automatically validated by GitHub Actions. The CI workflow (`.github/workflows/ci.yml`) runs:
 
 - **Build**: Compiles TypeScript with `npm run build`
-- **Lint**: Enforces code style with `npm run lint`
+- **Lint**: Enforces code style with `npm run lint` and formatting with `npm run format:check`
 - **Test**: Runs integration tests with `npm run test`
 - **Test Rust**: Validates Soroban contracts with `cargo test`
 - **Audit**: Checks for vulnerabilities in npm and Cargo dependencies
 
 All jobs **must pass** before your PR can be merged.
+
+---
+
+## Code Formatting
+
+This repo uses [Prettier](https://prettier.io/) to keep formatting consistent and diffs small. Configuration lives in `.prettierrc.json`; files listed in `.prettierignore` (build output, dependencies, generated docs, etc.) are excluded.
+
+- `npm run format` — formats `backend/`, `tests/`, and `scripts/` TypeScript files in place.
+- `npm run format:check` — verifies formatting without writing changes; this is what CI runs.
+
+Run `npm run format` before committing to avoid CI failures.
+
+---
+
+## Running Tests in Docker
+
+For a fast, isolated test run that doesn't require booting the full `agent` HTTP server, use the `test-only` Compose profile. It starts only `stellar-quickstart` and the test runner:
+
+```bash
+docker-compose --profile test-only up --build --abort-on-container-exit --exit-code-from test-runner-only
+```
+
+Use the `test` profile instead if you need the full stack (including the running `agent` service) for your test run:
+
+```bash
+docker-compose --profile test up --build
+```
+
+See the [README's Docker section](./README.md#docker) for more details.
 
 ---
 
