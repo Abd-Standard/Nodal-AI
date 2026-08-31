@@ -21,6 +21,8 @@ In the era of **PayFi**, payments are no longer just passive transfers they are 
 
 Nodal AI is built on a clean, three-pillar separation of concerns. For a deep dive into the system design, tool dispatch, simulation gates, and state machines, please read the [Architecture Guide](./ARCHITECTURE.md).
 
+If you are new to the Stellar-specific terms used throughout the repo, see the [Glossary](./GLOSSARY.md).
+
 ```text
 /
 ├── backend/            # Agent orchestration (TypeScript/Node.js)
@@ -103,11 +105,21 @@ Nodal AI includes a multi-stage Dockerfile and Docker Compose stack for local de
 
 ### Run Tests in Docker
 
-You can run the test suite within an isolated test runner container:
+There are two ways to run the test suite in Docker, depending on how much of the stack you need:
+
+**Full stack (`test` profile):** builds and boots `stellar-quickstart` *and* the `agent` HTTP server, then runs the test runner against both. Use this when you need to exercise the running `agent` container itself:
 
 ```bash
 docker-compose --profile test up --build
 ```
+
+**Tests only (`test-only` profile):** skips building/booting the `agent` service entirely and only starts `stellar-quickstart` plus the test runner. This is faster and is the recommended default for local iteration and CI, since the test suite talks directly to `stellar-quickstart` and does not require the standalone `agent` server to be running:
+
+```bash
+docker-compose --profile test-only up --build --abort-on-container-exit --exit-code-from test-runner-only
+```
+
+`--exit-code-from test-runner-only` makes the compose command exit with the test runner's exit code, so CI correctly detects test failures.
 
 ---
 
@@ -200,6 +212,14 @@ Responds to a sample x402 payment challenge and prints the resulting `X402Paymen
 
 ```bash
 npx ts-node scripts/examples/respond_x402.ts
+```
+
+### `x402_full_flow.ts` — Full Autonomous x402 Payment Flow
+
+Demonstrates the complete x402 flow end-to-end: starts a local Express server with a gated `/resource` endpoint, handles the initial request that triggers a `402 Payment Required` challenge, runs the agent to autonomously pay the challenge, and accesses the unlocked resource using the resulting payment proof. Operates offline without live network access using `mockHorizonServer`.
+
+```bash
+npx ts-node scripts/examples/x402_full_flow.ts
 ```
 
 ### `multisig_payment.ts` — multisig_payment

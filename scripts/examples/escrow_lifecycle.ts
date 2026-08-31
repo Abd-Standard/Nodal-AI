@@ -30,16 +30,16 @@
  * to run on `mainnet`.
  */
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import * as fs from "fs";
-import { Asset, Keypair, nativeToScVal } from "@stellar/stellar-sdk";
-import { PayFiAgent } from "../../backend/agent";
-import { SorobanInvokeTool } from "../../backend/tools/SorobanInvokeTool";
-import { FriendBotTool } from "../../backend/tools/FriendBotTool";
-import { config } from "../../backend/config";
-import { resolveNetworkPassphrase } from "../../backend/rpc_client";
+import * as fs from 'fs';
+import { Asset, Keypair, nativeToScVal } from '@stellar/stellar-sdk';
+import { PayFiAgent } from '../../backend/agent';
+import { SorobanInvokeTool } from '../../backend/tools/SorobanInvokeTool';
+import { FriendBotTool } from '../../backend/tools/FriendBotTool';
+import { config } from '../../backend/config';
+import { resolveNetworkPassphrase } from '../../backend/rpc_client';
 
 // Amount locked in the escrow, in XLM's 7-decimal stroop units (5 XLM).
 const ESCROW_AMOUNT_STROOPS = 50_000_000n;
@@ -51,18 +51,18 @@ const EXPIRY_WINDOW_SECONDS = 3600;
 const EVENT_WAIT_TIMEOUT_MS = 60_000;
 
 async function main(): Promise<void> {
-  if (config.STELLAR_NETWORK === "mainnet") {
-    console.error("Refusing to run: this example funds throwaway keypairs via Friendbot,");
-    console.error("which only exists on testnet/futurenet. Set STELLAR_NETWORK accordingly.");
+  if (config.STELLAR_NETWORK === 'mainnet') {
+    console.error('Refusing to run: this example funds throwaway keypairs via Friendbot,');
+    console.error('which only exists on testnet/futurenet. Set STELLAR_NETWORK accordingly.');
     process.exit(1);
   }
 
   const wasmPath = process.env.CONTRACT_WASM_PATH;
   if (!wasmPath) {
-    console.error("Error: CONTRACT_WASM_PATH environment variable is required");
-    console.error("See .env.example — build the contract first:");
-    console.error("  cargo build --manifest-path contracts/escrow/Cargo.toml \\");
-    console.error("    --target wasm32-unknown-unknown --release");
+    console.error('Error: CONTRACT_WASM_PATH environment variable is required');
+    console.error('See .env.example — build the contract first:');
+    console.error('  cargo build --manifest-path contracts/escrow/Cargo.toml \\');
+    console.error('    --target wasm32-unknown-unknown --release');
     process.exit(1);
   }
   if (!fs.existsSync(wasmPath)) {
@@ -78,7 +78,7 @@ async function main(): Promise<void> {
   const recipientKeypair = Keypair.random();
   const arbiterKeypair = Keypair.random();
 
-  console.log("Funding recipient and arbiter testnet accounts via Friendbot...");
+  console.log('Funding recipient and arbiter testnet accounts via Friendbot...');
   await Promise.all([
     friendbot.execute({ publicKey: recipientKeypair.publicKey() }),
     friendbot.execute({ publicKey: arbiterKeypair.publicKey() }),
@@ -86,11 +86,11 @@ async function main(): Promise<void> {
 
   try {
     // ── 1. Deploy ──────────────────────────────────────────────────────────
-    console.log("\nStep 1: Deploying escrow WASM to testnet...");
+    console.log('\nStep 1: Deploying escrow WASM to testnet...');
     const wasm = fs.readFileSync(wasmPath);
     const deployResult = await agent.run({
-      type: "soroban_deploy",
-      payload: { action: "deploy", wasm },
+      type: 'soroban_deploy',
+      payload: { action: 'deploy', wasm },
     });
 
     if (!deployResult.success) {
@@ -100,23 +100,23 @@ async function main(): Promise<void> {
     console.log(`Deployed. Contract ID: ${contractId}`);
 
     // ── 2. Initialize — lock 5 XLM ────────────────────────────────────────
-    console.log("\nStep 2: Initializing escrow with 5 XLM funding...");
+    console.log('\nStep 2: Initializing escrow with 5 XLM funding...');
     const networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
     const nativeTokenContractId = Asset.native().contractId(networkPassphrase);
     const expiry = Math.floor(Date.now() / 1000) + EXPIRY_WINDOW_SECONDS;
 
     const initResult = await agent.run({
-      type: "soroban_invoke",
+      type: 'soroban_invoke',
       payload: {
         contractId,
-        method: "initialize",
+        method: 'initialize',
         args: [
-          nativeToScVal(config.AGENT_PUBLIC_KEY, { type: "address" }), // depositor
-          nativeToScVal(recipientKeypair.publicKey(), { type: "address" }),
-          nativeToScVal(arbiterKeypair.publicKey(), { type: "address" }),
-          nativeToScVal(nativeTokenContractId, { type: "address" }),
-          nativeToScVal(ESCROW_AMOUNT_STROOPS, { type: "i128" }),
-          nativeToScVal(BigInt(expiry), { type: "u64" }),
+          nativeToScVal(config.AGENT_PUBLIC_KEY, { type: 'address' }), // depositor
+          nativeToScVal(recipientKeypair.publicKey(), { type: 'address' }),
+          nativeToScVal(arbiterKeypair.publicKey(), { type: 'address' }),
+          nativeToScVal(nativeTokenContractId, { type: 'address' }),
+          nativeToScVal(ESCROW_AMOUNT_STROOPS, { type: 'i128' }),
+          nativeToScVal(BigInt(expiry), { type: 'u64' }),
         ],
         simulateOnly: false,
       },
@@ -125,10 +125,10 @@ async function main(): Promise<void> {
     if (!initResult.success) {
       throw new Error(`Initialize failed: ${initResult.error}`);
     }
-    console.log("Escrow initialized — 5 XLM locked, awaiting arbiter release.");
+    console.log('Escrow initialized — 5 XLM locked, awaiting arbiter release.');
 
     // ── 3. Listen for the release event ───────────────────────────────────
-    console.log("\nStep 3: Registering ContractEventListener for release events...");
+    console.log('\nStep 3: Registering ContractEventListener for release events...');
     const released = new Promise<void>((resolve, reject) => {
       const timer = setTimeout(() => {
         agent.stopContractListener();
@@ -137,38 +137,38 @@ async function main(): Promise<void> {
 
       // Matches on the "released" topic emitted by EscrowContract::release()
       // (`env.events().publish((Symbol("escrow"), Symbol("released")), ...)`).
-      agent.startContractListener(contractId, ["released"], (event) => {
+      agent.startContractListener(contractId, ['released'], (event) => {
         clearTimeout(timer);
-        console.log("✅ Release event received:", JSON.stringify(event, null, 2));
+        console.log('✅ Release event received:', JSON.stringify(event, null, 2));
         agent.stopContractListener();
         resolve();
       });
     });
 
     // ── 4. Trigger release, signed by the arbiter ─────────────────────────
-    console.log("\nStep 4: Triggering release, signed by the arbiter keypair...");
+    console.log('\nStep 4: Triggering release, signed by the arbiter keypair...');
     // A standalone SorobanInvokeTool, keyed to the arbiter's own secret —
     // PayFiAgent's tools always sign with the agent's single configured key,
     // so the arbiter's call has to go through its own tool instance.
     const arbiterInvokeTool = new SorobanInvokeTool(arbiterKeypair.secret());
     const releaseResult = await arbiterInvokeTool.execute({
       contractId,
-      method: "release",
-      args: [nativeToScVal(arbiterKeypair.publicKey(), { type: "address" })],
+      method: 'release',
+      args: [nativeToScVal(arbiterKeypair.publicKey(), { type: 'address' })],
       simulateOnly: false,
     });
-    console.log("Release transaction submitted:", releaseResult);
+    console.log('Release transaction submitted:', releaseResult);
 
     // ── 5. Confirm the listener observed the release ──────────────────────
-    console.log("\nStep 5: Waiting for the release event to be observed...");
+    console.log('\nStep 5: Waiting for the release event to be observed...');
     await released;
-    console.log("\nEscrow lifecycle complete: deployed → funded → released → confirmed.");
+    console.log('\nEscrow lifecycle complete: deployed → funded → released → confirmed.');
   } finally {
     agent.destroy();
   }
 }
 
 main().catch((err) => {
-  console.error("\nEscrow lifecycle example failed:", err instanceof Error ? err.message : err);
+  console.error('\nEscrow lifecycle example failed:', err instanceof Error ? err.message : err);
   process.exit(1);
 });

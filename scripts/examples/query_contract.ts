@@ -12,26 +12,26 @@
  *   CONTRACT_ID - The Stellar contract ID to query (56-character strkey C… encoding)
  */
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { PayFiAgent } from "../../backend/agent";
+import { PayFiAgent } from '../../backend/agent';
 
 const CONTRACT_ID = process.env.CONTRACT_ID;
 
 if (!CONTRACT_ID) {
-  console.error("Error: CONTRACT_ID environment variable is required");
-  console.error("Usage: CONTRACT_ID=C... npx ts-node scripts/examples/query_contract.ts");
+  console.error('Error: CONTRACT_ID environment variable is required');
+  console.error('Usage: CONTRACT_ID=C... npx ts-node scripts/examples/query_contract.ts');
   process.exit(1);
 }
 
 const agent = new PayFiAgent();
 
 const result = await agent.run({
-  type: "soroban_query",
+  type: 'soroban_query',
   payload: {
     contractId: CONTRACT_ID,
-    method: "get_state",
+    method: 'get_state',
     args: [],
   },
 });
@@ -39,7 +39,7 @@ const result = await agent.run({
 console.log(JSON.stringify(result, null, 2));
 
 if (result.success && result.data) {
-  console.log("\nSimulation result:");
+  console.log('\nSimulation result:');
   console.log(JSON.stringify(result.data, null, 2));
 }
 

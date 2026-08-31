@@ -4,13 +4,13 @@
  * Tests for backend/persistence.ts using an in-memory SQLite database.
  */
 
-import { describe, it, expect, beforeEach } from "vitest";
-import Database from "better-sqlite3";
-import { saveResult, getResults, _setDb } from "../backend/persistence";
-import type { AgentResult } from "../backend/agent";
+import { describe, it, expect, beforeEach } from 'vitest';
+import Database from 'better-sqlite3';
+import { saveResult, getResults, _setDb } from '../backend/persistence';
+import type { AgentResult } from '../backend/agent';
 
 function makeInMemoryDb(): Database.Database {
-  const db = new Database(":memory:");
+  const db = new Database(':memory:');
   db.exec(`
     CREATE TABLE IF NOT EXISTS agent_results (
       id            INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -29,20 +29,22 @@ beforeEach(() => {
   _setDb(makeInMemoryDb());
 });
 
-const TIMESTAMP = "2026-06-25T22:00:00.000Z";
+const TIMESTAMP = '2026-06-25T22:00:00.000Z';
 
-function makeResult(overrides: Partial<AgentResult & { timestamp: string }> = {}): AgentResult & { timestamp: string } {
+function makeResult(
+  overrides: Partial<AgentResult & { timestamp: string }> = {}
+): AgentResult & { timestamp: string } {
   return {
     success: true,
-    taskType: "stellar_payment",
-    data: { txHash: "abc123" },
+    taskType: 'stellar_payment',
+    data: { txHash: 'abc123' },
     timestamp: TIMESTAMP,
     ...overrides,
   };
 }
 
-describe("persistence", () => {
-  it("saves a successful result and retrieves it", () => {
+describe('persistence', () => {
+  it('saves a successful result and retrieves it', () => {
     saveResult(makeResult());
     const results = getResults();
     expect(results).toHaveLength(1);
@@ -50,24 +52,24 @@ describe("persistence", () => {
     expect(result).toBeDefined();
     if (!result) return;
     expect(result.success).toBe(true);
-    expect(result.taskType).toBe("stellar_payment");
+    expect(result.taskType).toBe('stellar_payment');
     expect(result.timestamp).toBe(TIMESTAMP);
-    expect((result.data as any).txHash).toBe("abc123");
+    expect((result.data as any).txHash).toBe('abc123');
   });
 
-  it("saves a failed result and retrieves the error", () => {
-    saveResult(makeResult({ success: false, data: undefined, error: "Network failure" }));
+  it('saves a failed result and retrieves the error', () => {
+    saveResult(makeResult({ success: false, data: undefined, error: 'Network failure' }));
     const results = getResults();
     expect(results).toHaveLength(1);
     const result = results[0];
     expect(result).toBeDefined();
     if (!result) return;
     expect(result.success).toBe(false);
-    expect(result.error).toBe("Network failure");
+    expect(result.error).toBe('Network failure');
     expect(result.data).toBeUndefined();
   });
 
-  it("respects the limit parameter and returns results newest-first", () => {
+  it('respects the limit parameter and returns results newest-first', () => {
     for (let i = 0; i < 5; i++) {
       saveResult(makeResult({ data: { index: i }, timestamp: `2026-06-25T22:0${i}:00.000Z` }));
     }
@@ -81,26 +83,26 @@ describe("persistence", () => {
     }
   });
 
-  it("returns an empty array when no results have been saved", () => {
+  it('returns an empty array when no results have been saved', () => {
     expect(getResults()).toEqual([]);
   });
 
-  it("persists multiple task types independently", () => {
-    saveResult(makeResult({ taskType: "stellar_payment" }));
-    saveResult(makeResult({ taskType: "soroban_invoke", data: { result: "ok" } }));
-    saveResult(makeResult({ taskType: "x402_respond", data: { protocol: "x402" } }));
+  it('persists multiple task types independently', () => {
+    saveResult(makeResult({ taskType: 'stellar_payment' }));
+    saveResult(makeResult({ taskType: 'soroban_invoke', data: { result: 'ok' } }));
+    saveResult(makeResult({ taskType: 'x402_respond', data: { protocol: 'x402' } }));
 
     const results = getResults();
     expect(results).toHaveLength(3);
     const types = results.map((r) => r.taskType);
-    expect(types).toContain("stellar_payment");
-    expect(types).toContain("soroban_invoke");
-    expect(types).toContain("x402_respond");
+    expect(types).toContain('stellar_payment');
+    expect(types).toContain('soroban_invoke');
+    expect(types).toContain('x402_respond');
   });
 
   // ─── Edge-case tests (#449) ────────────────────────────────────────────────
 
-  it("handles 10 concurrent saveResult calls without data corruption", async () => {
+  it('handles 10 concurrent saveResult calls without data corruption', async () => {
     // Issue 10 simultaneous writes via Promise.all to verify SQLite lock handling.
     // better-sqlite3 is synchronous per-call, but async wrappers / test runners
     // can interleave at the micro-task level — all 10 rows must still be present.
@@ -109,7 +111,7 @@ describe("persistence", () => {
         Promise.resolve(
           saveResult(
             makeResult({
-              taskType: "stellar_payment",
+              taskType: 'stellar_payment',
               data: { index: i, txHash: `hash_${i}` },
               timestamp: `2026-06-25T22:00:0${i}.000Z`,
             })
@@ -128,10 +130,10 @@ describe("persistence", () => {
     expect(indices).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
-  it("saves and retrieves a payload larger than 1 MB", () => {
+  it('saves and retrieves a payload larger than 1 MB', () => {
     // Build a string that serialises to well over 1,000,000 bytes.  JSON.stringify
     // adds ~14 chars of wrapper so a 1,010,000-char value is safely above the threshold.
-    const largeString = "x".repeat(1_010_000);
+    const largeString = 'x'.repeat(1_010_000);
     const largePayload = { blob: largeString };
 
     saveResult(makeResult({ data: largePayload }));
@@ -144,7 +146,7 @@ describe("persistence", () => {
     if (!retrieved) return;
 
     const blob = (retrieved.data as Record<string, unknown>)?.blob;
-    expect(typeof blob).toBe("string");
+    expect(typeof blob).toBe('string');
     expect((blob as string).length).toBe(1_010_000);
 
     // Confirm the round-trip did not silently truncate the payload.
@@ -153,7 +155,7 @@ describe("persistence", () => {
     expect(blob).toBe(largeString);
   });
 
-  it("saves and retrieves a result whose data field is null", () => {
+  it('saves and retrieves a result whose data field is null', () => {
     // null is a valid JSON value; the persistence layer must not throw on insert
     // and must return null (not undefined or a parse artefact) on retrieval.
     saveResult(makeResult({ data: null }));
@@ -171,13 +173,13 @@ describe("persistence", () => {
     expect(result.data == null).toBe(true); // null or undefined
   });
 
-  it("returns null / empty array when looking up a never-saved correlationId", () => {
+  it('returns null / empty array when looking up a never-saved correlationId', () => {
     // Seed the database with an unrelated record so the table is non-empty.
-    saveResult(makeResult({ correlationId: "known-id-abc" }));
+    saveResult(makeResult({ correlationId: 'known-id-abc' }));
 
     // getResults() returns all rows newest-first; none will match the phantom ID.
     const allResults = getResults();
-    const match = allResults.find((r) => r.correlationId === "phantom-id-does-not-exist");
+    const match = allResults.find((r) => r.correlationId === 'phantom-id-does-not-exist');
 
     // No row exists for the phantom ID — the lookup must yield undefined / null,
     // not throw and not return a stale result.
@@ -185,7 +187,7 @@ describe("persistence", () => {
 
     // Also verify that a targeted search (simulating loadResult semantics) yields
     // an empty collection — not an error.
-    const byCorrelation = allResults.filter((r) => r.correlationId === "phantom-id-does-not-exist");
+    const byCorrelation = allResults.filter((r) => r.correlationId === 'phantom-id-does-not-exist');
     expect(byCorrelation).toHaveLength(0);
   });
 });

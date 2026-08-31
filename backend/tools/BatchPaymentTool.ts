@@ -12,19 +12,13 @@
  * the full list of problems in one round trip.
  */
 
-import {
-  Keypair,
-  TransactionBuilder,
-  Operation,
-  Asset,
-  BASE_FEE,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { ValidationError } from "../errors";
-import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
-import { PaymentInputSchema, SubmitResultSchema } from "./StellarPaymentTool";
-import { SOROBAN_TX_TIMEOUT } from "./SorobanInvokeTool";
+import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { ValidationError } from '../errors';
+import { loadAccount, resolveNetworkPassphrase, submitTransaction } from '../rpc_client';
+import { PaymentInputSchema, SubmitResultSchema } from './StellarPaymentTool';
+import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 
 export const BatchPaymentInputSchema = z.object({
   payments: z.array(PaymentInputSchema).min(1).max(100),
@@ -85,22 +79,17 @@ export class BatchPaymentTool {
     const problems: string[] = [];
     for (let i = 0; i < payments.length; i++) {
       const p = payments[i]!;
-      if (p.assetCode !== "XLM" && !p.assetIssuer) {
-        problems.push(
-          `payment ${i}: Asset issuer is required for non-native asset ${p.assetCode}`
-        );
+      if (p.assetCode !== 'XLM' && !p.assetIssuer) {
+        problems.push(`payment ${i}: Asset issuer is required for non-native asset ${p.assetCode}`);
         if (failFast) {
           // Everything behind the failure is left untouched.
-          throw new BatchPreflightError(
-            problems[0]!,
-            payments.length - i - 1
-          );
+          throw new BatchPreflightError(problems[0]!, payments.length - i - 1);
         }
       }
     }
 
     if (problems.length > 0) {
-      throw new BatchPreflightError(problems.join("; "), 0);
+      throw new BatchPreflightError(problems.join('; '), 0);
     }
 
     const sourceAccount = await loadAccount(this.keypair.publicKey());
@@ -111,7 +100,7 @@ export class BatchPaymentTool {
     });
 
     for (const p of payments) {
-      const asset = p.assetCode === "XLM" ? Asset.native() : new Asset(p.assetCode, p.assetIssuer);
+      const asset = p.assetCode === 'XLM' ? Asset.native() : new Asset(p.assetCode, p.assetIssuer);
       builder.addOperation(
         Operation.payment({ destination: p.destination, asset, amount: p.amount })
       );

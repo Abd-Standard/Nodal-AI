@@ -55,7 +55,9 @@ describe('SorobanQueryTool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     tool = new SorobanQueryTool();
-    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount('GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5') as any);
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      makeMockAccount('GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5') as any
+    );
   });
 
   describe("Successful query", () => {
@@ -105,10 +107,14 @@ describe('SorobanQueryTool', () => {
   });
 
   it('rejects invalid contractId', async () => {
-    await expect(tool.query({ contractId: 'BAD', method: 'get_state', args: [] })).rejects.toThrow(/Invalid Stellar contract ID/);
+    await expect(tool.query({ contractId: 'BAD', method: 'get_state', args: [] })).rejects.toThrow(
+      /Invalid Stellar contract ID/
+    );
   });
 
   it('rejects empty method name', async () => {
-    await expect(tool.query({ contractId: VALID_CONTRACT, method: '', args: [] })).rejects.toThrow();
+    await expect(
+      tool.query({ contractId: VALID_CONTRACT, method: '', args: [] })
+    ).rejects.toThrow();
   });
 });

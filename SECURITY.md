@@ -11,6 +11,20 @@ Only the latest commit on `main` receives security patches at this stage of the 
 
 ---
 
+## Dependency Vulnerability Policy
+
+Dependency vulnerabilities are checked in CI before changes can merge:
+
+- `npm audit --audit-level=high` fails the `audit-npm` job for High or Critical npm advisories.
+- The optional `snyk` job runs `snyk test --severity-threshold=high` when the `SNYK_TOKEN` repository secret is configured.
+- Rust dependencies are checked with `cargo audit` in the `audit-rust` job.
+- Findings must be remediated by upgrading, replacing, or removing the affected dependency whenever possible.
+- A false positive may be ignored only after maintainer review, with a documented reason and expiry in [`.snyk`](./.snyk). The ignore must be removed when the finding is fixed or the justification expires.
+
+High and Critical findings are not accepted as routine CI noise. If remediation is not immediately available, document the risk, mitigation, owner, and review date in the security discussion before adding a narrowly scoped temporary exception.
+
+---
+
 ## Reporting a Vulnerability
 
 **Do not open a public GitHub issue for security vulnerabilities.**

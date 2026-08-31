@@ -5,11 +5,11 @@
  * Detects on-chain state changes for specific contract keys even when no events are emitted.
  */
 
-import { EventEmitter } from "events";
-import { Address, rpc, xdr } from "@stellar/stellar-sdk";
-import { config } from "../config";
-import { logger } from "../logger";
-import { sorobanServer as defaultSorobanServer } from "../rpc_client";
+import { EventEmitter } from 'events';
+import { Address, rpc, xdr } from '@stellar/stellar-sdk';
+import { config } from '../config';
+import { logger } from '../logger';
+import { sorobanServer as defaultSorobanServer } from '../rpc_client';
 
 export interface StorageChangeEvent {
   key: xdr.LedgerKey;
@@ -61,14 +61,14 @@ export function normalizeLedgerKey(
     );
   }
 
-  if (typeof key === "string") {
+  if (typeof key === 'string') {
     // 1. Try decoding as raw LedgerKey base64
     try {
-      return xdr.LedgerKey.fromXDR(key, "base64");
+      return xdr.LedgerKey.fromXDR(key, 'base64');
     } catch {
       // 2. Try decoding as ScVal base64
       try {
-        const scVal = xdr.ScVal.fromXDR(key, "base64");
+        const scVal = xdr.ScVal.fromXDR(key, 'base64');
         return xdr.LedgerKey.contractData(
           new xdr.LedgerKeyContractData({
             contract: contractScAddress,
@@ -143,7 +143,7 @@ export class ContractStorageWatcherTool extends EventEmitter {
     const durability = options.durability ?? xdr.ContractDataDurability.persistent();
     this.ledgerKeys = options.keys.map((k) => {
       const ledgerKey = normalizeLedgerKey(this.contractId, k, durability);
-      const keyXdr = ledgerKey.toXDR("base64");
+      const keyXdr = ledgerKey.toXDR('base64');
       this.keyMap.set(keyXdr, ledgerKey);
       return ledgerKey;
     });
@@ -199,14 +199,14 @@ export class ContractStorageWatcherTool extends EventEmitter {
 
       for (const entry of currentEntries) {
         const keyXdr =
-          typeof entry.key === "string"
+          typeof entry.key === 'string'
             ? entry.key
-            : entry.key?.toXDR?.("base64") ?? String(entry.key);
+            : (entry.key?.toXDR?.('base64') ?? String(entry.key));
 
         const valXdr =
-          typeof entry.val === "string"
+          typeof entry.val === 'string'
             ? entry.val
-            : entry.val?.toXDR?.("base64") ?? String(entry.val);
+            : (entry.val?.toXDR?.('base64') ?? String(entry.val));
 
         currentMap.set(keyXdr, { entry, valXdr });
       }
@@ -232,14 +232,15 @@ export class ContractStorageWatcherTool extends EventEmitter {
               ledger: response?.latestLedger,
             };
             this.stateCache.set(keyXdr, valXdr);
-            this.emit("change", changeEvent);
+            this.emit('change', changeEvent);
           }
         }
 
         // Check for deleted keys that existed previously
         for (const [prevKeyXdr, prevVal] of this.stateCache.entries()) {
           if (!currentMap.has(prevKeyXdr)) {
-            const key = this.keyMap.get(prevKeyXdr) ?? normalizeLedgerKey(this.contractId, prevKeyXdr);
+            const key =
+              this.keyMap.get(prevKeyXdr) ?? normalizeLedgerKey(this.contractId, prevKeyXdr);
             const changeEvent: StorageChangeEvent = {
               key,
               keyXdr: prevKeyXdr,
@@ -248,24 +249,24 @@ export class ContractStorageWatcherTool extends EventEmitter {
               ledger: response?.latestLedger,
             };
             this.stateCache.delete(prevKeyXdr);
-            this.emit("change", changeEvent);
+            this.emit('change', changeEvent);
           }
         }
       }
 
-      this.emit("poll", this.pollCount, currentEntries);
+      this.emit('poll', this.pollCount, currentEntries);
     } catch (err) {
-      logger.error("ContractStorageWatcherTool polling error", {
+      logger.error('ContractStorageWatcherTool polling error', {
         contractId: this.contractId,
         pollCount: this.pollCount,
         error: (err as Error).message,
       });
-      this.emit("error", err);
+      this.emit('error', err);
     }
 
     if (this.maxPolls !== undefined && this.pollCount >= this.maxPolls) {
       this.stop();
-      this.emit("done", { totalPolls: this.pollCount });
+      this.emit('done', { totalPolls: this.pollCount });
       return;
     }
 
@@ -284,10 +285,10 @@ export function watchContractStorage(
   const watcher = new ContractStorageWatcherTool(options);
   const handle = createWatcherHandle(watcher.stop, watcher.isWatching, watcher.getPollCount);
 
-  watcher.on("change", (e) => handle.emit("change", e));
-  watcher.on("poll", (...args) => handle.emit("poll", ...args));
-  watcher.on("done", (...args) => handle.emit("done", ...args));
-  watcher.on("error", (e) => handle.emit("error", e));
+  watcher.on('change', (e) => handle.emit('change', e));
+  watcher.on('poll', (...args) => handle.emit('poll', ...args));
+  watcher.on('done', (...args) => handle.emit('done', ...args));
+  watcher.on('error', (e) => handle.emit('error', e));
 
   return handle;
 }

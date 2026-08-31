@@ -4,23 +4,23 @@
  * Signs the payload with HMAC-SHA256 if WEBHOOK_SECRET is set.
  */
 
-import crypto, { createHmac } from "crypto";
-import axios from "axios";
-import { config } from "./config";
-import { AgentResult } from "./agent";
-import { createLogger } from "./utils/logger";
-import { handleRateLimitResponse } from "./network";
+import crypto, { createHmac } from 'crypto';
+import axios from 'axios';
+import { config } from './config';
+import { AgentResult } from './agent';
+import { createLogger } from './utils/logger';
+import { handleRateLimitResponse } from './network';
 
-const log = createLogger("webhook");
+const log = createLogger('webhook');
 
 export function signPayload(payload: string, secret: string): string {
-  return createHmac("sha256", secret).update(payload).digest("hex");
+  return createHmac('sha256', secret).update(payload).digest('hex');
 }
 
 export function verifyWebhookSignature(payload: string, sig: string, secret: string): boolean {
-  if (typeof sig !== "string" || !/^[0-9a-fA-F]{64}$/.test(sig)) return false;
-  const expected = Buffer.from(signPayload(payload, secret), "hex");
-  const received = Buffer.from(sig, "hex");
+  if (typeof sig !== 'string' || !/^[0-9a-fA-F]{64}$/.test(sig)) return false;
+  const expected = Buffer.from(signPayload(payload, secret), 'hex');
+  const received = Buffer.from(sig, 'hex');
   if (expected.length !== received.length) return false;
   return crypto.timingSafeEqual(expected, received);
 }
@@ -37,9 +37,9 @@ interface HttpErrorLike {
 
 export function isRetryableWebhookError(errOrStatus: unknown): boolean {
   let status: number | undefined;
-  if (typeof errOrStatus === "number") {
+  if (typeof errOrStatus === 'number') {
     status = errOrStatus;
-  } else if (errOrStatus && typeof errOrStatus === "object") {
+  } else if (errOrStatus && typeof errOrStatus === 'object') {
     const httpErr = errOrStatus as HttpErrorLike;
     status = httpErr.response?.status ?? httpErr.status;
   }
@@ -69,10 +69,10 @@ export async function dispatchWebhook(
   const initialDelayMs = options?.initialDelayMs ?? 1000;
 
   const body = JSON.stringify(result);
-  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
 
   if (config.WEBHOOK_SECRET) {
-    headers["X-Nodal-Signature"] = signPayload(body, config.WEBHOOK_SECRET);
+    headers['X-Nodal-Signature'] = signPayload(body, config.WEBHOOK_SECRET);
   }
 
   let lastError: unknown;
@@ -87,14 +87,14 @@ export async function dispatchWebhook(
         });
         throw error;
       }
-      log.info({ taskType: result.taskType }, "Webhook delivered");
+      log.info({ taskType: result.taskType }, 'Webhook delivered');
       return;
     } catch (err) {
       lastError = err;
-      const httpErr = (err && typeof err === "object" ? err : {}) as HttpErrorLike;
+      const httpErr = (err && typeof err === 'object' ? err : {}) as HttpErrorLike;
       const status = httpErr.response?.status ?? httpErr.status;
       if (status === 429) {
-        const retryAfter = httpErr.response?.headers?.["retry-after"];
+        const retryAfter = httpErr.response?.headers?.['retry-after'];
         handleRateLimitResponse(retryAfter);
       }
 
@@ -106,7 +106,7 @@ export async function dispatchWebhook(
             attempt,
             error: err instanceof Error ? err.message : String(err),
           },
-          "Webhook delivery failed (non-retryable)"
+          'Webhook delivery failed (non-retryable)'
         );
         return;
       }
@@ -119,7 +119,7 @@ export async function dispatchWebhook(
           maxAttempts,
           error: err instanceof Error ? err.message : String(err),
         },
-        "Webhook delivery attempt failed"
+        'Webhook delivery attempt failed'
       );
 
       if (attempt < maxAttempts) {
@@ -135,6 +135,6 @@ export async function dispatchWebhook(
       attempts: maxAttempts,
       error: lastError instanceof Error ? lastError.message : String(lastError),
     },
-    "Webhook delivery failed after max retries"
+    'Webhook delivery failed after max retries'
   );
 }

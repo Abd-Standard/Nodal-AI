@@ -9,11 +9,11 @@
  * Architecture: poll getEvents() → filter by eventTypes → invoke onEvent → repeat
  */
 
-import { EventEmitter } from "events";
-import { rpc } from "@stellar/stellar-sdk";
-import { config } from "../config";
-import { logger } from "../logger";
-import { sorobanServer } from "../rpc_client";
+import { EventEmitter } from 'events';
+import { rpc } from '@stellar/stellar-sdk';
+import { config } from '../config';
+import { logger } from '../logger';
+import { sorobanServer } from '../rpc_client';
 
 export interface ContractEventListenerOptions {
   maxReconnectAttempts?: number;
@@ -45,12 +45,10 @@ export function listen(
   let startLedgerPromise: Promise<number> | undefined;
 
   const maxReconnectAttempts =
-    typeof options === "number"
-      ? options
-      : options?.maxReconnectAttempts ?? 5;
+    typeof options === 'number' ? options : (options?.maxReconnectAttempts ?? 5);
 
   const pollIntervalMs =
-    (typeof options === "object" && options?.pollIntervalMs) ||
+    (typeof options === 'object' && options?.pollIntervalMs) ||
     config.CONTRACT_EVENT_POLL_MS ||
     config.RETRY_DELAY_MS * 2;
 
@@ -73,13 +71,11 @@ export function listen(
 
     try {
       if (!cursor && !startLedgerPromise) {
-        startLedgerPromise = sorobanServer
-          .getLatestLedger()
-          .then((l) => l.sequence);
+        startLedgerPromise = sorobanServer.getLatestLedger().then((l) => l.sequence);
       }
 
       const response = await sorobanServer.getEvents({
-        filters: [{ type: "contract", contractIds: [contractId] }],
+        filters: [{ type: 'contract', contractIds: [contractId] }],
         ...(cursor ? { cursor } : { startLedger: await startLedgerPromise! }),
       } as rpc.Server.GetEventsRequest);
 
@@ -88,8 +84,7 @@ export function listen(
 
       for (const event of response.events) {
         const matches =
-          eventTypes.length === 0 ||
-          event.topic.some((t) => eventTypes.includes(t.toString()));
+          eventTypes.length === 0 || event.topic.some((t) => eventTypes.includes(t.toString()));
         if (matches) onEvent(event);
       }
 
@@ -98,7 +93,7 @@ export function listen(
         if (lastEvent) {
           cursor = lastEvent.pagingToken;
         }
-      } else if ("cursor" in response && response.cursor) {
+      } else if ('cursor' in response && response.cursor) {
         cursor = response.cursor;
       }
 
@@ -107,7 +102,7 @@ export function listen(
       }
     } catch (err) {
       reconnectAttempts++;
-      logger.error("ContractEventListener polling error", {
+      logger.error('ContractEventListener polling error', {
         contractId,
         reconnectAttempts,
         maxReconnectAttempts,
@@ -120,7 +115,7 @@ export function listen(
           clearTimeout(timerId);
           timerId = undefined;
         }
-        handle.emit("error", err);
+        handle.emit('error', err);
         return;
       }
 

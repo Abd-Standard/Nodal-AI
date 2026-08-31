@@ -26,9 +26,9 @@
  * bounded by the TTL window without any caller having to schedule pruning.
  */
 
-import Database from "better-sqlite3";
+import Database from 'better-sqlite3';
 
-import { config } from "./config";
+import { config } from './config';
 
 // Maximum age (ms) after which a stored nonce may be pruned.
 // Set to 24 hours to cover the widest plausible challenge expiry window.
@@ -39,11 +39,8 @@ export const MAX_NONCE_TTL_MS = 24 * 60 * 60 * 1_000;
  * not been loaded (unit tests frequently mock the config module wholesale).
  */
 function configuredTtlMs(): number {
-  const fromConfig = (config as { X402_NONCE_TTL_MS?: number } | undefined)
-    ?.X402_NONCE_TTL_MS;
-  return typeof fromConfig === "number" && fromConfig > 0
-    ? fromConfig
-    : MAX_NONCE_TTL_MS;
+  const fromConfig = (config as { X402_NONCE_TTL_MS?: number } | undefined)?.X402_NONCE_TTL_MS;
+  return typeof fromConfig === 'number' && fromConfig > 0 ? fromConfig : MAX_NONCE_TTL_MS;
 }
 
 // ─── Interface ────────────────────────────────────────────────────────────────
@@ -122,9 +119,7 @@ export class SqliteNonceStore implements INonceStore {
   async has(nonce: string): Promise<boolean> {
     this.ensureTable();
     await this.prune();
-    const row = this.db
-      .prepare("SELECT 1 FROM x402_used_nonces WHERE nonce = ?")
-      .get(nonce);
+    const row = this.db.prepare('SELECT 1 FROM x402_used_nonces WHERE nonce = ?').get(nonce);
     return row !== undefined;
   }
 
@@ -132,18 +127,14 @@ export class SqliteNonceStore implements INonceStore {
     this.ensureTable();
     await this.prune();
     this.db
-      .prepare(
-        "INSERT OR IGNORE INTO x402_used_nonces (nonce, used_at_ms) VALUES (?, ?)"
-      )
+      .prepare('INSERT OR IGNORE INTO x402_used_nonces (nonce, used_at_ms) VALUES (?, ?)')
       .run(nonce, Date.now());
   }
 
   async prune(ttlMs: number = configuredTtlMs()): Promise<void> {
     this.ensureTable();
     const cutoff = Date.now() - ttlMs;
-    this.db
-      .prepare("DELETE FROM x402_used_nonces WHERE used_at_ms < ?")
-      .run(cutoff);
+    this.db.prepare('DELETE FROM x402_used_nonces WHERE used_at_ms < ?').run(cutoff);
   }
 }
 
