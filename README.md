@@ -21,6 +21,8 @@ In the era of **PayFi**, payments are no longer just passive transfers they are 
 
 Nodal AI is built on a clean, three-pillar separation of concerns. For a deep dive into the system design, tool dispatch, simulation gates, and state machines, please read the [Architecture Guide](./ARCHITECTURE.md).
 
+If you are new to the Stellar-specific terms used throughout the repo, see the [Glossary](./GLOSSARY.md).
+
 ```text
 /
 ├── backend/            # Agent orchestration (TypeScript/Node.js)
