@@ -21,19 +21,19 @@
  * transaction's fee to ensure successful submission.
  */
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { PayFiAgent } from "../../backend/agent";
+import { PayFiAgent } from '../../backend/agent';
 
 const INNER_TX_XDR = process.env.INNER_TX_XDR;
 
 if (!INNER_TX_XDR) {
-  console.error("Error: INNER_TX_XDR environment variable is required");
-  console.error("Usage: INNER_TX_XDR=AAAA... npx ts-node scripts/examples/fee_bump.ts");
-  console.error("\nExpected INNER_TX_XDR format:");
-  console.error("  - Base64-encoded Stellar transaction envelope XDR string");
-  console.error("  - The inner transaction must be signed for the same network as the agent");
+  console.error('Error: INNER_TX_XDR environment variable is required');
+  console.error('Usage: INNER_TX_XDR=AAAA... npx ts-node scripts/examples/fee_bump.ts');
+  console.error('\nExpected INNER_TX_XDR format:');
+  console.error('  - Base64-encoded Stellar transaction envelope XDR string');
+  console.error('  - The inner transaction must be signed for the same network as the agent');
   console.error("  - Example: 'AAAAAgAAAAB...' (base64 string)");
   process.exit(1);
 }
@@ -41,7 +41,7 @@ if (!INNER_TX_XDR) {
 const agent = new PayFiAgent();
 
 const result = await agent.run({
-  type: "fee_bump",
+  type: 'fee_bump',
   payload: {
     innerTxXdr: INNER_TX_XDR,
     baseFeeMultiplier: 2, // Double the inner transaction's fee
@@ -51,7 +51,7 @@ const result = await agent.run({
 console.log(JSON.stringify(result, null, 2));
 
 if (result.success && result.data) {
-  console.log("\nFee-bump transaction submitted:");
+  console.log('\nFee-bump transaction submitted:');
   console.log(`  Transaction Hash: ${(result.data as { txHash: string }).txHash}`);
   console.log(`  Ledger: ${(result.data as { ledger: number }).ledger}`);
 }

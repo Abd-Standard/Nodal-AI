@@ -1,0 +1,5 @@
+version: v1
+
+# Keep this policy empty unless a finding is reviewed and accepted as a
+# documented false positive. Every ignore must include an expiry and reason.
+ignore: {}

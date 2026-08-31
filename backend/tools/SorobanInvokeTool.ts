@@ -14,12 +14,17 @@ import {
   nativeToScVal,
   scValToNative,
   xdr,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config, MAINNET_SPENDING_CAP } from "../config";
-import { logger } from "../logger";
-import { loadAccount, prepareSorobanTxWithEvents, resolveNetworkPassphrase, sorobanServer } from "../rpc_client";
-import { spendingTracker } from "../spending_tracker";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config, MAINNET_SPENDING_CAP } from '../config';
+import { logger } from '../logger';
+import {
+  loadAccount,
+  prepareSorobanTxWithEvents,
+  resolveNetworkPassphrase,
+  sorobanServer,
+} from '../rpc_client';
+import { spendingTracker } from '../spending_tracker';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -48,7 +53,7 @@ export const SAC_TOKEN_DECIMALS = 7;
 export function sacRawToDecimal(raw: bigint): string {
   const divisor = 10n ** BigInt(SAC_TOKEN_DECIMALS);
   const whole = raw / divisor;
-  const frac = (raw % divisor).toString().padStart(SAC_TOKEN_DECIMALS, "0");
+  const frac = (raw % divisor).toString().padStart(SAC_TOKEN_DECIMALS, '0');
   return `${whole}.${frac}`;
 }
 
@@ -90,10 +95,10 @@ export function extractSacTransferTotal(
     } catch {
       continue;
     }
-    if (typeof name !== "string") continue;
+    if (typeof name !== 'string') continue;
 
     // SAC value-out events: the debited party is topic[1] in each layout.
-    if (name !== "transfer" && name !== "transfer_from" && name !== "burn") continue;
+    if (name !== 'transfer' && name !== 'transfer_from' && name !== 'burn') continue;
     const fromScv = topics[1];
     if (!fromScv) continue;
 
@@ -111,8 +116,8 @@ export function extractSacTransferTotal(
     } catch {
       continue;
     }
-    if (typeof amount === "bigint") total += amount;
-    else if (typeof amount === "number" && Number.isInteger(amount)) total += BigInt(amount);
+    if (typeof amount === 'bigint') total += amount;
+    else if (typeof amount === 'number' && Number.isInteger(amount)) total += BigInt(amount);
   }
   return total;
 }
@@ -134,7 +139,7 @@ export function extractSacTransferTotal(
  */
 export const SorobanInvokeInputSchema = z.object({
   /** 56-character Stellar contract address (strkey C… encoding). */
-  contractId: z.string().length(56, "Invalid Stellar contract ID"),
+  contractId: z.string().length(56, 'Invalid Stellar contract ID'),
 
   /** Name of the contract function to invoke (e.g. `"transfer"`, `"mint"`). */
   method: z.string().min(1),
@@ -181,8 +186,7 @@ export type SorobanInvokeInput = z.infer<typeof SorobanInvokeInputSchema>;
  * - When `simulateOnly=true`:  `{ simulationResult: Transaction }`
  */
 export type SorobanInvokeResult =
-  | { txHash: string; simulationResult?: never }
-  | { txHash?: never; simulationResult: Transaction };
+  { txHash: string; simulationResult?: never } | { txHash?: never; simulationResult: Transaction };
 
 /**
  * Type guard: narrows a `SorobanInvokeResult` to the simulation-only variant.
@@ -209,9 +213,7 @@ export class SorobanInvokeTool {
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
     if (SOROBAN_TX_TIMEOUT <= 0 || SOROBAN_TX_TIMEOUT > 300) {
-      throw new Error(
-        `SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT}`
-      );
+      throw new Error(`SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT}`);
     }
     this.keypair = Keypair.fromSecret(secretKey);
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
@@ -254,9 +256,7 @@ export class SorobanInvokeTool {
    *   (`status === "ERROR"`), or the transaction does not reach a terminal state
    *   within the polling window.
    */
-  async execute(
-    rawInput: unknown
-  ): Promise<SorobanInvokeResult> {
+  async execute(rawInput: unknown): Promise<SorobanInvokeResult> {
     const input = SorobanInvokeInputSchema.parse(rawInput);
 
     // 1. Resolve contract
@@ -273,7 +273,7 @@ export class SorobanInvokeTool {
           // Fallback to a harmless manageData operation when the SDK rejects
           // the contract ID format. Tests only require an operation to be
           // present; the exact semantics are exercised via mocked RPC.
-          Operation.manageData({ name: `invoke:${method}`, value: "mock" }),
+          Operation.manageData({ name: `invoke:${method}`, value: 'mock' }),
       };
     }
 
@@ -282,14 +282,14 @@ export class SorobanInvokeTool {
 
     // 3. Build invocation transaction
     const tx = new TransactionBuilder(sourceAccount, {
-      fee: "0", // Fee is overwritten by prepareSorobanTx — initial value is irrelevant
+      fee: '0', // Fee is overwritten by prepareSorobanTx — initial value is irrelevant
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(input.method, ...input.args))
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    logger.info("Simulating Soroban transaction", {
+    logger.info('Simulating Soroban transaction', {
       method: input.method,
       contractId: input.contractId,
     });
@@ -298,7 +298,7 @@ export class SorobanInvokeTool {
     const { tx: preparedTx, events } = await prepareSorobanTxWithEvents(tx);
     const feeValue = preparedTx?.fee;
     const parsedFee =
-      feeValue === undefined || feeValue === null || feeValue === ""
+      feeValue === undefined || feeValue === null || feeValue === ''
         ? undefined
         : Number.isFinite(feeValue)
           ? Number(feeValue)
@@ -322,7 +322,7 @@ export class SorobanInvokeTool {
     this.assertSacTransfersWithinSpendingLimit(events, !input.simulateOnly);
 
     if (input.simulateOnly) {
-      logger.info("Simulation passed (dry-run, not broadcasting)");
+      logger.info('Simulation passed (dry-run, not broadcasting)');
       return { simulationResult: preparedTx as Transaction };
     }
 
@@ -330,8 +330,8 @@ export class SorobanInvokeTool {
     //    setTimeout(0) produces transactions replayable indefinitely.
     if (!preparedTx.timeBounds) {
       throw new Error(
-        "Broadcast aborted: transaction has no time bounds (setTimeout(0)). " +
-        "Use a positive timeout to prevent indefinite replay."
+        'Broadcast aborted: transaction has no time bounds (setTimeout(0)). ' +
+          'Use a positive timeout to prevent indefinite replay.'
       );
     }
 
@@ -350,14 +350,14 @@ export class SorobanInvokeTool {
     // `signatures` array still get a meaningful error rather than a
     // TypeError on `.length`.
     if (!signedTx.signatures?.length) {
-      throw new Error("Transaction signing produced no signatures");
+      throw new Error('Transaction signing produced no signatures');
     }
 
     // 7. Submit
     const result = await sorobanServer.sendTransaction(signedTx);
 
-    if (result.status === "ERROR") {
-      throw new Error(`Soroban submit failed: ${result.errorResult?.toXDR("base64")}`);
+    if (result.status === 'ERROR') {
+      throw new Error(`Soroban submit failed: ${result.errorResult?.toXDR('base64')}`);
     }
 
     // 8. Poll for confirmation
@@ -394,7 +394,7 @@ export class SorobanInvokeTool {
           `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
       );
     }
-    if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
+    if (!isNaN(parsed) && config.STELLAR_NETWORK === 'mainnet' && parsed > MAINNET_SPENDING_CAP) {
       throw new Error(
         `Contract invocation transfers ${amountStr} ${config.X402_ASSET_CODE} exceeds ` +
           `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
@@ -415,7 +415,7 @@ export class SorobanInvokeTool {
    * ```
    * NOT_FOUND ──(each attempt)──► NOT_FOUND   (keep polling)
    *                            └─► SUCCESS    (return txHash)
-   *                            └─► FAILED     (throw Error)   
+   *                            └─► FAILED     (throw Error)  
    * ```
    *
    * The loop exits early on `SUCCESS` or `FAILED`. If neither terminal state is
@@ -440,14 +440,16 @@ export class SorobanInvokeTool {
       await new Promise((r) => setTimeout(r, intervalMs));
       const status = await sorobanServer.getTransaction(hash);
 
-      if (status.status === "SUCCESS") {
-        logger.info("Soroban transaction confirmed", { txHash: hash });
+      if (status.status === 'SUCCESS') {
+        logger.info('Soroban transaction confirmed', { txHash: hash });
         return { txHash: hash };
       }
-      if (status.status === "FAILED") {
-        throw new Error(`Soroban transaction failed on-chain: ${hash} — ${status.resultXdr ?? "no XDR"}`);
+      if (status.status === 'FAILED') {
+        throw new Error(
+          `Soroban transaction failed on-chain: ${hash} — ${status.resultXdr ?? 'no XDR'}`
+        );
       }
-      logger.debug("Polling for Soroban transaction confirmation", {
+      logger.debug('Polling for Soroban transaction confirmation', {
         txHash: hash,
         attempt: i + 1,
         maxAttempts,

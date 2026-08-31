@@ -19,12 +19,12 @@
  *   AGENT_SECRET_KEY, HORIZON_URL, SOROBAN_RPC_URL, X402_ASSET_ISSUER
  */
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { createReadStream } from "fs";
-import { createInterface } from "readline";
-import { PayFiAgent } from "../../backend/agent";
+import { createReadStream } from 'fs';
+import { createInterface } from 'readline';
+import { PayFiAgent } from '../../backend/agent';
 
 interface CsvPayment {
   destination: string;
@@ -32,7 +32,7 @@ interface CsvPayment {
   assetCode: string;
 }
 
-const REQUIRED_COLUMNS = ["destination", "amount", "assetCode"];
+const REQUIRED_COLUMNS = ['destination', 'amount', 'assetCode'];
 
 async function parseCsv(path: string): Promise<CsvPayment[]> {
   const rl = createInterface({
@@ -49,14 +49,14 @@ async function parseCsv(path: string): Promise<CsvPayment[]> {
     const line = rawLine.trim();
     if (!line) continue;
 
-    const columns = line.split(",").map((c) => c.trim());
+    const columns = line.split(',').map((c) => c.trim());
 
     if (!header) {
       const missing = REQUIRED_COLUMNS.filter((col) => !columns.includes(col));
       if (missing.length > 0) {
         throw new Error(
-          `CSV header is missing required column(s): ${missing.join(", ")}. ` +
-            `Expected: ${REQUIRED_COLUMNS.join(",")}`
+          `CSV header is missing required column(s): ${missing.join(', ')}. ` +
+            `Expected: ${REQUIRED_COLUMNS.join(',')}`
         );
       }
       header = columns;
@@ -65,7 +65,7 @@ async function parseCsv(path: string): Promise<CsvPayment[]> {
 
     const row: Record<string, string> = {};
     header.forEach((col, i) => {
-      row[col] = columns[i] ?? "";
+      row[col] = columns[i] ?? '';
     });
 
     if (!row.destination || !row.amount) {
@@ -75,7 +75,7 @@ async function parseCsv(path: string): Promise<CsvPayment[]> {
     payments.push({
       destination: row.destination,
       amount: row.amount,
-      assetCode: row.assetCode || "XLM",
+      assetCode: row.assetCode || 'XLM',
     });
   }
 
@@ -85,7 +85,7 @@ async function parseCsv(path: string): Promise<CsvPayment[]> {
 async function main() {
   const csvPath = process.argv[2];
   if (!csvPath) {
-    console.error("Usage: npx ts-node scripts/examples/batch_payment_csv.ts <path-to-csv>");
+    console.error('Usage: npx ts-node scripts/examples/batch_payment_csv.ts <path-to-csv>');
     process.exit(1);
   }
 
@@ -95,15 +95,19 @@ async function main() {
   const agent = new PayFiAgent();
 
   const result = await agent.run({
-    type: "batch_payment",
+    type: 'batch_payment',
     payload: { payments },
   });
 
   if (result.success) {
-    console.log(`\n✅ Batch payment succeeded — ${payments.length} payment(s) submitted in one transaction.`);
+    console.log(
+      `\n✅ Batch payment succeeded — ${payments.length} payment(s) submitted in one transaction.`
+    );
     console.log(JSON.stringify(result.data, null, 2));
   } else {
-    console.log(`\n❌ Batch payment failed — 0 of ${payments.length} payment(s) succeeded (the batch is atomic).`);
+    console.log(
+      `\n❌ Batch payment failed — 0 of ${payments.length} payment(s) succeeded (the batch is atomic).`
+    );
     console.log(`Error: ${result.error}`);
   }
 
@@ -112,6 +116,6 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error("Fatal error:", err instanceof Error ? err.message : err);
+  console.error('Fatal error:', err instanceof Error ? err.message : err);
   process.exitCode = 1;
 });

@@ -8,18 +8,18 @@
  *   - action: 'deploy' -> chains upload and instantiate in sequence
  */
 
-import * as fs from "fs";
-import { z } from "zod";
-import { sorobanServer } from "../rpc_client";
-import { ValidationError } from "../errors";
-import { createLogger } from "../utils/logger";
+import * as fs from 'fs';
+import { z } from 'zod';
+import { sorobanServer } from '../rpc_client';
+import { ValidationError } from '../errors';
+import { createLogger } from '../utils/logger';
 
-const log = createLogger("soroban-deploy");
+const log = createLogger('soroban-deploy');
 
 // ─── Input Schema ─────────────────────────────────────────────────────────────
 
 export const SorobanDeployInputSchema = z.object({
-  action: z.enum(["upload", "instantiate", "deploy"]),
+  action: z.enum(['upload', 'instantiate', 'deploy']),
   wasm: z.union([z.instanceof(Buffer), z.string()]).optional(),
   wasmBuffer: z.union([z.instanceof(Buffer), z.string()]).optional(),
   wasmHash: z.string().optional(),
@@ -28,7 +28,7 @@ export const SorobanDeployInputSchema = z.object({
 export type SorobanDeployInput = z.infer<typeof SorobanDeployInputSchema>;
 
 export interface SorobanDeployResult {
-  action: "upload" | "instantiate" | "deploy";
+  action: 'upload' | 'instantiate' | 'deploy';
   wasmHash?: string;
   contractId?: string;
 }
@@ -48,7 +48,7 @@ function resolveWasmBuffer(input: SorobanDeployInput, actionName: string): Buffe
     return raw;
   }
 
-  if (typeof raw === "string") {
+  if (typeof raw === 'string') {
     const trimmed = raw.trim();
     if (!trimmed) {
       throw new ValidationError(`WASM string cannot be empty for action '${actionName}'`);
@@ -65,18 +65,18 @@ function resolveWasmBuffer(input: SorobanDeployInput, actionName: string): Buffe
 
     // Try hex if it looks like hex
     if (/^[0-9a-fA-F]+$/.test(trimmed) && trimmed.length % 2 === 0) {
-      return Buffer.from(trimmed, "hex");
+      return Buffer.from(trimmed, 'hex');
     }
 
     // Try base64
     try {
-      const buf = Buffer.from(trimmed, "base64");
+      const buf = Buffer.from(trimmed, 'base64');
       if (buf.length > 0) return buf;
     } catch {
       // Fallback
     }
 
-    return Buffer.from(trimmed, "utf8");
+    return Buffer.from(trimmed, 'utf8');
   }
 
   throw new ValidationError(`Invalid WASM input type for action '${actionName}'`);
@@ -91,23 +91,23 @@ export class SorobanDeployTool {
    */
   async upload(wasmBuffer: Buffer): Promise<string> {
     const server = sorobanServer as any;
-    if (typeof server.uploadContractWasm !== "function") {
-      throw new Error("sorobanServer does not implement uploadContractWasm");
+    if (typeof server.uploadContractWasm !== 'function') {
+      throw new Error('sorobanServer does not implement uploadContractWasm');
     }
 
-    log.info({ sizeBytes: wasmBuffer.length }, "Uploading contract WASM bytecode");
+    log.info({ sizeBytes: wasmBuffer.length }, 'Uploading contract WASM bytecode');
     const response = await server.uploadContractWasm(wasmBuffer);
 
     const wasmHash =
-      typeof response === "string"
+      typeof response === 'string'
         ? response
-        : response?.wasmHash ?? response?.hash ?? String(response ?? "");
+        : (response?.wasmHash ?? response?.hash ?? String(response ?? ''));
 
     if (!wasmHash) {
-      throw new Error("sorobanServer.uploadContractWasm did not return a valid WASM hash");
+      throw new Error('sorobanServer.uploadContractWasm did not return a valid WASM hash');
     }
 
-    log.info({ wasmHash }, "Contract WASM uploaded successfully");
+    log.info({ wasmHash }, 'Contract WASM uploaded successfully');
     return wasmHash;
   }
 
@@ -116,28 +116,28 @@ export class SorobanDeployTool {
    * Calls sorobanServer.createContractFromWasm(wasmHash) and returns the contract ID.
    */
   async instantiate(wasmHash: string): Promise<string> {
-    if (!wasmHash || typeof wasmHash !== "string" || wasmHash.trim() === "") {
-      throw new ValidationError("wasmHash is required for instantiate action");
+    if (!wasmHash || typeof wasmHash !== 'string' || wasmHash.trim() === '') {
+      throw new ValidationError('wasmHash is required for instantiate action');
     }
 
     const server = sorobanServer as any;
-    if (typeof server.createContractFromWasm !== "function") {
-      throw new Error("sorobanServer does not implement createContractFromWasm");
+    if (typeof server.createContractFromWasm !== 'function') {
+      throw new Error('sorobanServer does not implement createContractFromWasm');
     }
 
-    log.info({ wasmHash }, "Instantiating contract from WASM hash");
+    log.info({ wasmHash }, 'Instantiating contract from WASM hash');
     const response = await server.createContractFromWasm(wasmHash);
 
     const contractId =
-      typeof response === "string"
+      typeof response === 'string'
         ? response
-        : response?.contractId ?? response?.id ?? response?.address ?? String(response ?? "");
+        : (response?.contractId ?? response?.id ?? response?.address ?? String(response ?? ''));
 
     if (!contractId) {
-      throw new Error("sorobanServer.createContractFromWasm did not return a valid contract ID");
+      throw new Error('sorobanServer.createContractFromWasm did not return a valid contract ID');
     }
 
-    log.info({ contractId, wasmHash }, "Contract instantiated successfully");
+    log.info({ contractId, wasmHash }, 'Contract instantiated successfully');
     return contractId;
   }
 
@@ -158,24 +158,24 @@ export class SorobanDeployTool {
     const input = SorobanDeployInputSchema.parse(rawInput);
 
     switch (input.action) {
-      case "upload": {
-        const wasmBuffer = resolveWasmBuffer(input, "upload");
+      case 'upload': {
+        const wasmBuffer = resolveWasmBuffer(input, 'upload');
         const wasmHash = await this.upload(wasmBuffer);
-        return { action: "upload", wasmHash };
+        return { action: 'upload', wasmHash };
       }
 
-      case "instantiate": {
+      case 'instantiate': {
         if (!input.wasmHash) {
-          throw new ValidationError("wasmHash is required for instantiate action");
+          throw new ValidationError('wasmHash is required for instantiate action');
         }
         const contractId = await this.instantiate(input.wasmHash);
-        return { action: "instantiate", contractId, wasmHash: input.wasmHash };
+        return { action: 'instantiate', contractId, wasmHash: input.wasmHash };
       }
 
-      case "deploy": {
-        const wasmBuffer = resolveWasmBuffer(input, "deploy");
+      case 'deploy': {
+        const wasmBuffer = resolveWasmBuffer(input, 'deploy');
         const { wasmHash, contractId } = await this.deploy(wasmBuffer);
-        return { action: "deploy", wasmHash, contractId };
+        return { action: 'deploy', wasmHash, contractId };
       }
 
       default:

@@ -11,19 +11,25 @@ import {
   FeeBumpTransaction,
   xdr,
   StrKey,
-} from "@stellar/stellar-sdk";
-import { randomUUID } from "crypto";
-import CircuitBreaker from "opossum";
-import { ZodError } from "zod";
-import { config } from "./config";
-import { sanitizeCause, SimulationBudgetError, UnauthorizedError, ConfigError, ContractError } from "./errors";
-import { logger } from "./logger";
-import { validateXDR } from "./types/xdr";
-import { createLogger } from "./utils/logger";
-import { isThrottled, handleRateLimitResponse, withBackoffGuard } from "./network";
-import { withSpan } from "./telemetry";
+} from '@stellar/stellar-sdk';
+import { randomUUID } from 'crypto';
+import CircuitBreaker from 'opossum';
+import { ZodError } from 'zod';
+import { config } from './config';
+import {
+  sanitizeCause,
+  SimulationBudgetError,
+  UnauthorizedError,
+  ConfigError,
+  ContractError,
+} from './errors';
+import { logger } from './logger';
+import { validateXDR } from './types/xdr';
+import { createLogger } from './utils/logger';
+import { isThrottled, handleRateLimitResponse, withBackoffGuard } from './network';
+import { withSpan } from './telemetry';
 
-const log = createLogger("rpc-client");
+const log = createLogger('rpc-client');
 // Exported so the breaker's behaviour can be asserted against the real
 // thresholds rather than a copy that silently drifts from them (#244).
 export const RPC_BREAKER_OPTIONS = {
@@ -38,13 +44,13 @@ export const RPC_BREAKER_OPTIONS = {
 class RpcServiceUnavailableError extends Error {
   constructor(message: string) {
     super(message);
-    this.name = "RpcServiceUnavailableError";
+    this.name = 'RpcServiceUnavailableError';
   }
 }
 
-type HorizonAccount = Awaited<ReturnType<Horizon.Server["loadAccount"]>>;
-type HorizonSubmitResult = Awaited<ReturnType<Horizon.Server["submitTransaction"]>>;
-type SorobanSimulationResult = Awaited<ReturnType<rpc.Server["simulateTransaction"]>>;
+type HorizonAccount = Awaited<ReturnType<Horizon.Server['loadAccount']>>;
+type HorizonSubmitResult = Awaited<ReturnType<Horizon.Server['submitTransaction']>>;
+type SorobanSimulationResult = Awaited<ReturnType<rpc.Server['simulateTransaction']>>;
 
 type CachedAccount = { account: HorizonAccount; expiresAt: number };
 
@@ -70,7 +76,7 @@ function resetBreakerStats<TArgs extends unknown[], TResult>(
 ): void {
   const status = breaker.status as unknown as Record<string | symbol, unknown>;
   const windowSymbol = Object.getOwnPropertySymbols(status).find(
-    (s) => s.toString() === "Symbol(window)"
+    (s) => s.toString() === 'Symbol(window)'
   );
   if (!windowSymbol) return;
 
@@ -96,29 +102,38 @@ export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   breaker: CircuitBreaker<TArgs, TResult>,
   name: string
 ): CircuitBreaker<TArgs, TResult> {
-  breaker.on("open", () => {
-    log.warn({
-      circuit: name,
-      failures: breaker.stats.failures,
-      successes: breaker.stats.successes,
-      timeout: RPC_BREAKER_OPTIONS.timeout,
-      resetTimeout: RPC_BREAKER_OPTIONS.resetTimeout,
-    }, "RPC circuit opened");
+  breaker.on('open', () => {
+    log.warn(
+      {
+        circuit: name,
+        failures: breaker.stats.failures,
+        successes: breaker.stats.successes,
+        timeout: RPC_BREAKER_OPTIONS.timeout,
+        resetTimeout: RPC_BREAKER_OPTIONS.resetTimeout,
+      },
+      'RPC circuit opened'
+    );
   });
 
-  breaker.on("halfOpen", () => {
-    log.info({
-      circuit: name,
-    }, "RPC circuit half-open");
+  breaker.on('halfOpen', () => {
+    log.info(
+      {
+        circuit: name,
+      },
+      'RPC circuit half-open'
+    );
   });
 
-  breaker.on("close", () => {
+  breaker.on('close', () => {
     resetBreakerStats(breaker);
-    log.info({
-      circuit: name,
-      failures: breaker.stats.failures,
-      successes: breaker.stats.successes,
-    }, "RPC circuit closed");
+    log.info(
+      {
+        circuit: name,
+        failures: breaker.stats.failures,
+        successes: breaker.stats.successes,
+      },
+      'RPC circuit closed'
+    );
   });
 
   return breaker;
@@ -138,16 +153,16 @@ export function createRpcBreaker<TArgs extends unknown[], TResult>(
 }
 
 export function resolveNetworkPassphrase(network: string): string {
-  if (network === "mainnet") return Networks.PUBLIC;
-  if (network === "futurenet") return Networks.FUTURENET;
-  if (network === "testnet") return Networks.TESTNET;
+  if (network === 'mainnet') return Networks.PUBLIC;
+  if (network === 'futurenet') return Networks.FUTURENET;
+  if (network === 'testnet') return Networks.TESTNET;
   throw new ConfigError(`Unsupported network: ${network}`);
 }
 
 export class TimeoutError extends Error {
   constructor(ms: number) {
     super(`Transaction Timeout: request did not complete within ${ms}ms`);
-    this.name = "TimeoutError";
+    this.name = 'TimeoutError';
   }
 }
 
@@ -155,7 +170,7 @@ export class StellarRPCError extends Error {
   readonly cause: unknown;
   constructor(message: string, cause: unknown) {
     super(message);
-    this.name = "StellarRPCError";
+    this.name = 'StellarRPCError';
     this.cause = sanitizeCause(cause);
   }
 }
@@ -164,7 +179,7 @@ export class RateLimitError extends Error {
   readonly retryAfterSeconds: number;
   constructor(retryAfterSeconds: number) {
     super(`Rate limited. Retry after ${retryAfterSeconds} seconds`);
-    this.name = "RateLimitError";
+    this.name = 'RateLimitError';
     this.retryAfterSeconds = retryAfterSeconds;
   }
 }
@@ -177,7 +192,7 @@ export function DEFAULT_IS_RETRYABLE(err: unknown): boolean {
   if (err instanceof RateLimitError) return true;
   if (
     err instanceof Error &&
-    (err.message.includes("budget_exceeded") || err.message.includes("simulation failed"))
+    (err.message.includes('budget_exceeded') || err.message.includes('simulation failed'))
   ) {
     return false;
   }
@@ -188,7 +203,7 @@ export function DEFAULT_IS_RETRYABLE(err: unknown): boolean {
 // axios-style `response.headers` object on the thrown error.
 function extractRetryAfterHeader(err: Error): string | null {
   const response = (err as { response?: { headers?: Record<string, string> } }).response;
-  return response?.headers?.["retry-after"] ?? null;
+  return response?.headers?.['retry-after'] ?? null;
 }
 
 export async function withRetry<T>(
@@ -199,7 +214,7 @@ export async function withRetry<T>(
   maxDelayMs = 30_000
 ): Promise<T> {
   return withSpan(
-    "withRetry",
+    'withRetry',
     async () => {
       let lastErr: unknown;
       for (let attempt = 1; attempt <= retries; attempt++) {
@@ -212,7 +227,7 @@ export async function withRetry<T>(
           return await fn();
         } catch (err) {
           // Detect 429 from Horizon/Soroban responses
-          if (err instanceof Error && err.message.includes("429")) {
+          if (err instanceof Error && err.message.includes('429')) {
             handleRateLimitResponse(extractRetryAfterHeader(err));
             lastErr = new RateLimitError(30);
           } else {
@@ -223,7 +238,7 @@ export async function withRetry<T>(
             throw err;
           }
 
-          logger.warn("Retry attempt failed", {
+          logger.warn('Retry attempt failed', {
             attempt,
             maxRetries: retries,
             error: (err as Error).message,
@@ -238,13 +253,13 @@ export async function withRetry<T>(
         }
       }
       const lastErrorMessage =
-        lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
+        lastErr instanceof Error ? lastErr.message : String(lastErr ?? 'unknown error');
       throw new StellarRPCError(
         `RPC call failed after ${retries} attempt(s): ${lastErrorMessage}`,
         lastErr
       );
     },
-    { "rpc.maxRetries": retries }
+    { 'rpc.maxRetries': retries }
   );
 }
 
@@ -267,9 +282,9 @@ export function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T> {
 function createHorizonServer(): Horizon.Server {
   const requestId = randomUUID();
   return new Horizon.Server(config.HORIZON_URL, {
-    allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
+    allowHttp: config.STELLAR_NETWORK === 'testnet' || config.STELLAR_NETWORK === 'futurenet',
     headers: {
-      "X-Request-ID": requestId,
+      'X-Request-ID': requestId,
     },
   });
 }
@@ -310,7 +325,12 @@ export async function loadAccount(
 
   const account = await withBackoffGuard(() =>
     withTimeout(
-      withRetry(() => horizonServer.loadAccount(publicKey), config.MAX_RETRIES, config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE),
+      withRetry(
+        () => horizonServer.loadAccount(publicKey),
+        config.MAX_RETRIES,
+        config.RETRY_DELAY_MS,
+        DEFAULT_IS_RETRYABLE
+      ),
       config.RPC_TIMEOUT_MS
     )
   );
@@ -323,7 +343,7 @@ export async function loadAccount(
 }
 
 export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
-  validateXDR(tx.toEnvelope().toXDR("base64"));
+  validateXDR(tx.toEnvelope().toXDR('base64'));
 
   // Any submission may move the source account's sequence forward, and a failed
   // one leaves it uncertain, so no cached record survives a submit attempt.
@@ -341,10 +361,9 @@ export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
             reject(new TimeoutError(SUBMIT_TIMEOUT_MS));
           }, SUBMIT_TIMEOUT_MS);
         });
-        return Promise.race([
-          horizonServer.submitTransaction(tx),
-          timeoutPromise,
-        ]).finally(() => clearTimeout(timeoutId));
+        return Promise.race([horizonServer.submitTransaction(tx), timeoutPromise]).finally(() =>
+          clearTimeout(timeoutId)
+        );
       })
     );
   } finally {
@@ -352,13 +371,12 @@ export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
   }
 }
 
-
 function createSorobanServer(): rpc.Server {
   const requestId = randomUUID();
   return new rpc.Server(config.SOROBAN_RPC_URL, {
-    allowHttp: config.STELLAR_NETWORK === "testnet" || config.STELLAR_NETWORK === "futurenet",
+    allowHttp: config.STELLAR_NETWORK === 'testnet' || config.STELLAR_NETWORK === 'futurenet',
     headers: {
-      "X-Request-ID": requestId,
+      'X-Request-ID': requestId,
     },
   });
 }
@@ -368,7 +386,12 @@ export const sorobanServer = createSorobanServer();
 export async function simulateSorobanTx(tx: Transaction) {
   return withBackoffGuard(() =>
     withTimeout(
-      withRetry(() => sorobanServer.simulateTransaction(tx), config.MAX_RETRIES, config.RETRY_DELAY_MS, DEFAULT_IS_RETRYABLE),
+      withRetry(
+        () => sorobanServer.simulateTransaction(tx),
+        config.MAX_RETRIES,
+        config.RETRY_DELAY_MS,
+        DEFAULT_IS_RETRYABLE
+      ),
       config.RPC_TIMEOUT_MS
     )
   );
@@ -376,7 +399,7 @@ export async function simulateSorobanTx(tx: Transaction) {
 
 function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Array<unknown> }> }) {
   const operations = Array.isArray((tx as { operations?: unknown[] }).operations)
-    ? (tx as { operations?: Array<{ auth?: Array<unknown> }> }).operations ?? []
+    ? ((tx as { operations?: Array<{ auth?: Array<unknown> }> }).operations ?? [])
     : [];
 
   for (const operation of operations) {
@@ -399,7 +422,7 @@ function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Arr
       const credentials = authObject.credentials?.();
       if (!credentials) continue;
 
-      const hasAddressCredentials = typeof credentials.address === "function";
+      const hasAddressCredentials = typeof credentials.address === 'function';
       if (!hasAddressCredentials) {
         continue;
       }
@@ -415,7 +438,7 @@ function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Arr
         // No signer could be decoded at all, so there is nothing to report but
         // what was expected. `signer: null` distinguishes this from the
         // mismatch case below, where a real key was recovered.
-        throw new UnauthorizedError("Unexpected Soroban auth signer format", {
+        throw new UnauthorizedError('Unexpected Soroban auth signer format', {
           signer: null,
           expected: config.AGENT_PUBLIC_KEY,
         });
@@ -451,8 +474,8 @@ export interface PreparedSorobanTx {
 export async function prepareSorobanTxWithEvents(tx: Transaction): Promise<PreparedSorobanTx> {
   const simResult = await simulateSorobanTx(tx);
   if (rpc.Api.isSimulationError(simResult)) {
-    const simError = (simResult as { error?: string }).error ?? "";
-    if (simError.includes("budget_exceeded")) {
+    const simError = (simResult as { error?: string }).error ?? '';
+    if (simError.includes('budget_exceeded')) {
       throw new SimulationBudgetError(`Soroban simulation failed: ${simError}`);
     }
     throw new ContractError(`Soroban simulation failed: ${simError}`, undefined, simError);

@@ -14,20 +14,20 @@ import {
   BASE_FEE,
   Contract,
   xdr,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { logger } from "../logger";
-import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
-import { AgentTask } from "../agent";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { logger } from '../logger';
+import { loadAccount, resolveNetworkPassphrase, submitTransaction } from '../rpc_client';
+import { AgentTask } from '../agent';
 
 export const TransactionBuilderInputSchema = z.object({
-  operations: z.array(z.any()).min(1, "At least one operation is required"),
+  operations: z.array(z.any()).min(1, 'At least one operation is required'),
   memo: z
     .union([
       z.string(),
       z.object({
-        type: z.enum(["text", "id", "hash", "return"]).optional(),
+        type: z.enum(['text', 'id', 'hash', 'return']).optional(),
         value: z.union([z.string(), z.number()]),
       }),
       z.instanceof(Memo),
@@ -58,18 +58,23 @@ export interface TransactionBuilderResult {
 function parseAsset(assetInput: unknown): Asset {
   if (!assetInput) return Asset.native();
   if (assetInput instanceof Asset) return assetInput;
-  if (typeof assetInput === "string") {
-    if (assetInput === "XLM" || assetInput === "native") return Asset.native();
-    const parts = assetInput.split(":");
+  if (typeof assetInput === 'string') {
+    if (assetInput === 'XLM' || assetInput === 'native') return Asset.native();
+    const parts = assetInput.split(':');
     if (parts.length === 2 && parts[0] && parts[1]) {
       return new Asset(parts[0], parts[1]);
     }
   }
-  if (typeof assetInput === "object" && assetInput !== null) {
-    const obj = assetInput as { code?: string; assetCode?: string; issuer?: string; assetIssuer?: string };
+  if (typeof assetInput === 'object' && assetInput !== null) {
+    const obj = assetInput as {
+      code?: string;
+      assetCode?: string;
+      issuer?: string;
+      assetIssuer?: string;
+    };
     const code = obj.code ?? obj.assetCode;
     const issuer = obj.issuer ?? obj.assetIssuer;
-    if (!code || code === "XLM" || !issuer) {
+    if (!code || code === 'XLM' || !issuer) {
       return Asset.native();
     }
     return new Asset(code, issuer);
@@ -81,16 +86,16 @@ function parseAsset(assetInput: unknown): Asset {
  * Resolves an AgentTask to its corresponding Stellar SDK xdr.Operation object.
  */
 export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.Operation {
-  const type = String((task as any).type ?? "");
+  const type = String((task as any).type ?? '');
   const payload = (((task as any).payload ?? task) || {}) as Record<string, any>;
 
   switch (type) {
-    case "stellar_payment":
-    case "payment": {
+    case 'stellar_payment':
+    case 'payment': {
       const destination = String(payload.destination);
       const amount = String(payload.amount);
       const asset =
-        payload.assetCode && payload.assetCode !== "XLM" && payload.assetIssuer
+        payload.assetCode && payload.assetCode !== 'XLM' && payload.assetIssuer
           ? new Asset(String(payload.assetCode), String(payload.assetIssuer))
           : parseAsset(payload.asset);
 
@@ -102,18 +107,18 @@ export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.
       });
     }
 
-    case "change_trust": {
+    case 'change_trust': {
       const asset =
         payload.assetCode && payload.assetIssuer
           ? new Asset(String(payload.assetCode), String(payload.assetIssuer))
           : parseAsset(payload.asset);
 
       const limit =
-        payload.action === "remove"
-          ? "0"
+        payload.action === 'remove'
+          ? '0'
           : payload.limit !== undefined
-          ? String(payload.limit)
-          : undefined;
+            ? String(payload.limit)
+            : undefined;
 
       return Operation.changeTrust({
         asset,
@@ -122,13 +127,13 @@ export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.
       });
     }
 
-    case "dex_offer": {
+    case 'dex_offer': {
       const selling = parseAsset(payload.selling);
       const buying = parseAsset(payload.buying);
       const action = payload.action;
-      const amount = action === "delete" ? "0" : String(payload.amount);
+      const amount = action === 'delete' ? '0' : String(payload.amount);
       const price = String(payload.price);
-      const offerId = payload.offerId !== undefined ? String(payload.offerId) : "0";
+      const offerId = payload.offerId !== undefined ? String(payload.offerId) : '0';
 
       return Operation.manageSellOffer({
         selling,
@@ -140,10 +145,14 @@ export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.
       });
     }
 
-    case "path_payment":
-    case "path_payment_strict_receive": {
-      const sendAsset = parseAsset(payload.sendAsset ?? { code: payload.sendAssetCode, issuer: payload.sendAssetIssuer });
-      const destAsset = parseAsset(payload.destAsset ?? { code: payload.destAssetCode, issuer: payload.destAssetIssuer });
+    case 'path_payment':
+    case 'path_payment_strict_receive': {
+      const sendAsset = parseAsset(
+        payload.sendAsset ?? { code: payload.sendAssetCode, issuer: payload.sendAssetIssuer }
+      );
+      const destAsset = parseAsset(
+        payload.destAsset ?? { code: payload.destAssetCode, issuer: payload.destAssetIssuer }
+      );
       const path = Array.isArray(payload.path) ? payload.path.map(parseAsset) : [];
 
       return Operation.pathPaymentStrictReceive({
@@ -157,7 +166,7 @@ export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.
       });
     }
 
-    case "path_payment_strict_send": {
+    case 'path_payment_strict_send': {
       const sendAsset = parseAsset(payload.sendAsset);
       const destAsset = parseAsset(payload.destAsset);
       const path = Array.isArray(payload.path) ? payload.path.map(parseAsset) : [];
@@ -173,7 +182,7 @@ export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.
       });
     }
 
-    case "create_account": {
+    case 'create_account': {
       return Operation.createAccount({
         destination: String(payload.destination),
         startingBalance: String(payload.startingBalance),
@@ -181,14 +190,14 @@ export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.
       });
     }
 
-    case "account_merge": {
+    case 'account_merge': {
       return Operation.accountMerge({
         destination: String(payload.destination),
         ...(payload.source ? { source: String(payload.source) } : {}),
       });
     }
 
-    case "manage_data": {
+    case 'manage_data': {
       return Operation.manageData({
         name: String(payload.name),
         value: payload.value as string | Buffer | null,
@@ -196,11 +205,11 @@ export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.
       });
     }
 
-    case "set_options": {
+    case 'set_options': {
       return Operation.setOptions(payload as any);
     }
 
-    case "soroban_invoke": {
+    case 'soroban_invoke': {
       const contractId = String(payload.contractId);
       const method = String(payload.method);
       const args = Array.isArray(payload.args) ? (payload.args as xdr.ScVal[]) : [];
@@ -209,7 +218,10 @@ export function taskToOperation(task: AgentTask | Record<string, unknown>): xdr.
     }
 
     default:
-      if (typeof (payload as any).type === "string" && typeof (Operation as any)[(payload as any).type] === "function") {
+      if (
+        typeof (payload as any).type === 'string' &&
+        typeof (Operation as any)[(payload as any).type] === 'function'
+      ) {
         return (Operation as any)[(payload as any).type](payload);
       }
       throw new Error(`Unsupported task type for multi-op transaction builder: ${String(type)}`);
@@ -238,7 +250,7 @@ export class TransactionBuilderTool {
       networkPassphrase: this.networkPassphrase,
     };
 
-    if (typeof input.timeBounds === "object") {
+    if (typeof input.timeBounds === 'object') {
       const minTime = input.timeBounds.minTime !== undefined ? Number(input.timeBounds.minTime) : 0;
       const maxTime = input.timeBounds.maxTime !== undefined ? Number(input.timeBounds.maxTime) : 0;
       builderOpts.timebounds = { minTime, maxTime };
@@ -249,28 +261,28 @@ export class TransactionBuilderTool {
     if (input.memo) {
       if (input.memo instanceof Memo) {
         builder = builder.addMemo(input.memo);
-      } else if (typeof input.memo === "string") {
+      } else if (typeof input.memo === 'string') {
         builder = builder.addMemo(Memo.text(input.memo));
-      } else if (typeof input.memo === "object") {
-        const { type = "text", value } = input.memo;
+      } else if (typeof input.memo === 'object') {
+        const { type = 'text', value } = input.memo;
         switch (type) {
-          case "text":
+          case 'text':
             builder = builder.addMemo(Memo.text(String(value)));
             break;
-          case "id":
+          case 'id':
             builder = builder.addMemo(Memo.id(String(value)));
             break;
-          case "hash":
+          case 'hash':
             builder = builder.addMemo(Memo.hash(String(value)));
             break;
-          case "return":
+          case 'return':
             builder = builder.addMemo(Memo.return(String(value)));
             break;
         }
       }
     }
 
-    if (typeof input.timeBounds === "number") {
+    if (typeof input.timeBounds === 'number') {
       builder = builder.setTimeout(input.timeBounds);
     } else if (!builderOpts.timebounds) {
       builder = builder.setTimeout(30);
@@ -281,10 +293,10 @@ export class TransactionBuilderTool {
     }
 
     const tx = builder.build();
-    const xdrBase64 = tx.toEnvelope().toXDR("base64");
+    const xdrBase64 = tx.toEnvelope().toXDR('base64');
 
     if (input.simulateOnly) {
-      logger.info("Transaction simulated (multi_op simulateOnly)", {
+      logger.info('Transaction simulated (multi_op simulateOnly)', {
         operationsCount: operations.length,
       });
       return {
@@ -294,7 +306,7 @@ export class TransactionBuilderTool {
     }
 
     tx.sign(this.keypair);
-    logger.info("Submitting multi_op transaction", {
+    logger.info('Submitting multi_op transaction', {
       operationsCount: operations.length,
       source: this.keypair.publicKey(),
     });

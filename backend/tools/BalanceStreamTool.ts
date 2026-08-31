@@ -3,10 +3,10 @@
  * Streaming balance change monitor tool via Horizon's SSE /effects endpoint.
  */
 
-import { EventEmitter } from "events";
-import { horizonServer } from "../rpc_client";
+import { EventEmitter } from 'events';
+import { horizonServer } from '../rpc_client';
 
-export type BalanceDirection = "credit" | "debit";
+export type BalanceDirection = 'credit' | 'debit';
 
 export interface BalanceEvent {
   assetCode: string;
@@ -35,26 +35,26 @@ export class BalanceStreamTool {
       .forAccount(publicKey)
       .stream({
         onmessage: (effect: any) => {
-          if (effect.type === "account_credited") {
-            const assetCode = effect.asset_type === "native" ? "XLM" : (effect.asset_code || "XLM");
+          if (effect.type === 'account_credited') {
+            const assetCode = effect.asset_type === 'native' ? 'XLM' : effect.asset_code || 'XLM';
             const event: BalanceEvent = {
               assetCode,
               amount: effect.amount,
-              direction: "credit",
+              direction: 'credit',
             };
-            this.emitter.emit("balance", event);
-          } else if (effect.type === "account_debited") {
-            const assetCode = effect.asset_type === "native" ? "XLM" : (effect.asset_code || "XLM");
+            this.emitter.emit('balance', event);
+          } else if (effect.type === 'account_debited') {
+            const assetCode = effect.asset_type === 'native' ? 'XLM' : effect.asset_code || 'XLM';
             const event: BalanceEvent = {
               assetCode,
               amount: effect.amount,
-              direction: "debit",
+              direction: 'debit',
             };
-            this.emitter.emit("balance", event);
+            this.emitter.emit('balance', event);
           }
         },
         onerror: (error: any) => {
-          this.emitter.emit("error", error);
+          this.emitter.emit('error', error);
         },
       });
 

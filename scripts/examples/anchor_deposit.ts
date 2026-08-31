@@ -24,31 +24,27 @@
 // ⚠️  WARNING: This script submits live transactions on the Stellar testnet.
 // Ensure STELLAR_NETWORK=testnet is set in your .env before running.
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { PayFiAgent } from "../../backend/agent";
-import { StellarIdentityTool } from "../../backend/tools/StellarIdentityTool";
-import { Keypair } from "@stellar/stellar-sdk";
+import { PayFiAgent } from '../../backend/agent';
+import { StellarIdentityTool } from '../../backend/tools/StellarIdentityTool';
+import { Keypair } from '@stellar/stellar-sdk';
 
 // ---------------------------------------------------------------------------
 // Configuration — read from environment, fall back to sensible testnet values
 // ---------------------------------------------------------------------------
 
-const ANCHOR_URL: string =
-  process.env.ANCHOR_URL ?? "https://testanchor.stellar.org";
+const ANCHOR_URL: string = process.env.ANCHOR_URL ?? 'https://testanchor.stellar.org';
 
-const ANCHOR_ASSET_CODE: string =
-  process.env.ANCHOR_ASSET_CODE ?? "SRT";
+const ANCHOR_ASSET_CODE: string = process.env.ANCHOR_ASSET_CODE ?? 'SRT';
 
 // The Stellar Demo Anchor issues SRT (Stellar Reference Token) on testnet.
 // Replace with your target anchor's USDC issuer on mainnet.
 const ANCHOR_ASSET_ISSUER: string =
-  process.env.ANCHOR_ASSET_ISSUER ??
-  "GCDNJUBQSX7AJWLJACMJ7I4BC3Z47BQUTMHEICZLE6MU4KQBRYG5JY6";
+  process.env.ANCHOR_ASSET_ISSUER ?? 'GCDNJUBQSX7AJWLJACMJ7I4BC3Z47BQUTMHEICZLE6MU4KQBRYG5JY6';
 
-const DEPOSIT_AMOUNT: string =
-  process.env.ANCHOR_DEPOSIT_AMOUNT ?? "1.0000000";
+const DEPOSIT_AMOUNT: string = process.env.ANCHOR_DEPOSIT_AMOUNT ?? '1.0000000';
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -58,21 +54,17 @@ const DEPOSIT_AMOUNT: string =
  * Fetch the anchor's stellar.toml to locate the TRANSFER_SERVER and WEB_AUTH_ENDPOINT.
  * Returns a plain key-value map of well-known TOML fields.
  */
-async function fetchStellarToml(
-  anchorUrl: string
-): Promise<Record<string, string>> {
-  const tomlUrl = `${anchorUrl.replace(/\/$/, "")}/.well-known/stellar.toml`;
+async function fetchStellarToml(anchorUrl: string): Promise<Record<string, string>> {
+  const tomlUrl = `${anchorUrl.replace(/\/$/, '')}/.well-known/stellar.toml`;
   const res = await fetch(tomlUrl);
   if (!res.ok) {
-    throw new Error(
-      `Failed to fetch stellar.toml from ${tomlUrl}: HTTP ${res.status}`
-    );
+    throw new Error(`Failed to fetch stellar.toml from ${tomlUrl}: HTTP ${res.status}`);
   }
   const text = await res.text();
 
   // Minimal TOML key="value" parser — sufficient for well-known Stellar fields.
   const parsed: Record<string, string> = {};
-  for (const line of text.split("\n")) {
+  for (const line of text.split('\n')) {
     const match = line.match(/^\s*([A-Z_]+)\s*=\s*"([^"]+)"\s*$/);
     if (match) {
       parsed[match[1]] = match[2];
@@ -91,10 +83,10 @@ async function initiateDeposit(
   assetCode: string,
   accountId: string
 ): Promise<{ depositAddress: string; memo?: string; memoType?: string }> {
-  const url = new URL(`${transferServerUrl.replace(/\/$/, "")}/deposit`);
-  url.searchParams.set("asset_code", assetCode);
-  url.searchParams.set("account", accountId);
-  url.searchParams.set("type", "crypto");
+  const url = new URL(`${transferServerUrl.replace(/\/$/, '')}/deposit`);
+  url.searchParams.set('asset_code', assetCode);
+  url.searchParams.set('account', accountId);
+  url.searchParams.set('type', 'crypto');
 
   const res = await fetch(url.toString(), {
     headers: { Authorization: `Bearer ${jwtToken}` },
@@ -102,9 +94,7 @@ async function initiateDeposit(
 
   if (!res.ok) {
     const body = await res.text();
-    throw new Error(
-      `SEP-0006 deposit initiation failed: HTTP ${res.status} — ${body}`
-    );
+    throw new Error(`SEP-0006 deposit initiation failed: HTTP ${res.status} — ${body}`);
   }
 
   const json = (await res.json()) as {
@@ -119,9 +109,7 @@ async function initiateDeposit(
   // `deposit_address` directly.
   const depositAddress = json.how ?? json.deposit_address;
   if (!depositAddress) {
-    throw new Error(
-      "Anchor did not return a deposit address in the `how` field."
-    );
+    throw new Error('Anchor did not return a deposit address in the `how` field.');
   }
 
   return {
@@ -137,43 +125,40 @@ async function initiateDeposit(
 
 const secretKey = process.env.AGENT_SECRET_KEY;
 if (!secretKey) {
-  throw new Error("AGENT_SECRET_KEY is not set in .env");
+  throw new Error('AGENT_SECRET_KEY is not set in .env');
 }
 const agentPublicKey = Keypair.fromSecret(secretKey).publicKey();
 
-console.log("=== Nodal AI — Anchor Deposit Example ===\n");
+console.log('=== Nodal AI — Anchor Deposit Example ===\n');
 console.log(`Agent public key : ${agentPublicKey}`);
 console.log(`Anchor URL       : ${ANCHOR_URL}`);
 console.log(`Asset            : ${ANCHOR_ASSET_CODE}:${ANCHOR_ASSET_ISSUER}`);
 console.log(`Deposit amount   : ${DEPOSIT_AMOUNT}\n`);
 
 // Step 1 — Discover anchor endpoints from stellar.toml
-console.log("Step 1: Fetching stellar.toml ...");
+console.log('Step 1: Fetching stellar.toml ...');
 const toml = await fetchStellarToml(ANCHOR_URL);
-const webAuthEndpoint =
-  toml["WEB_AUTH_ENDPOINT"] ?? `${ANCHOR_URL.replace(/\/$/, "")}/auth`;
-const transferServer =
-  toml["TRANSFER_SERVER"] ??
-  `${ANCHOR_URL.replace(/\/$/, "")}/sep6`;
+const webAuthEndpoint = toml['WEB_AUTH_ENDPOINT'] ?? `${ANCHOR_URL.replace(/\/$/, '')}/auth`;
+const transferServer = toml['TRANSFER_SERVER'] ?? `${ANCHOR_URL.replace(/\/$/, '')}/sep6`;
 
 console.log(`  WEB_AUTH_ENDPOINT : ${webAuthEndpoint}`);
 console.log(`  TRANSFER_SERVER   : ${transferServer}\n`);
 
 // Step 2 — SEP-0010 authentication
-console.log("Step 2: Authenticating via SEP-0010 web auth ...");
+console.log('Step 2: Authenticating via SEP-0010 web auth ...');
 const identityTool = new StellarIdentityTool(secretKey);
 
 // StellarIdentityTool.execute() expects anchorUrl pointing to the auth base
 // (i.e. the URL to which /auth is appended). We strip the `/auth` path suffix
 // if the TOML already includes it, because the tool appends it internally.
-const authBaseUrl = webAuthEndpoint.replace(/\/auth$/, "");
+const authBaseUrl = webAuthEndpoint.replace(/\/auth$/, '');
 const authResult = await identityTool.execute({ anchorUrl: authBaseUrl });
 const { token: jwtToken } = authResult;
 
 console.log(`  JWT obtained successfully (${jwtToken.length} chars)\n`);
 
 // Step 3 — Initiate SEP-0006 deposit to get the deposit address
-console.log("Step 3: Initiating SEP-0006 deposit to obtain deposit address ...");
+console.log('Step 3: Initiating SEP-0006 deposit to obtain deposit address ...');
 const depositInfo = await initiateDeposit(
   transferServer,
   jwtToken,
@@ -183,18 +168,16 @@ const depositInfo = await initiateDeposit(
 
 console.log(`  Deposit address : ${depositInfo.depositAddress}`);
 if (depositInfo.memo) {
-  console.log(`  Memo (${depositInfo.memoType ?? "text"})  : ${depositInfo.memo}`);
+  console.log(`  Memo (${depositInfo.memoType ?? 'text'})  : ${depositInfo.memo}`);
 }
 console.log();
 
 // Step 4 — Send the USDC payment to the anchor's deposit address
-console.log(
-  `Step 4: Sending ${DEPOSIT_AMOUNT} ${ANCHOR_ASSET_CODE} to anchor deposit address ...`
-);
+console.log(`Step 4: Sending ${DEPOSIT_AMOUNT} ${ANCHOR_ASSET_CODE} to anchor deposit address ...`);
 const agent = new PayFiAgent();
 
 const paymentResult = await agent.run({
-  type: "stellar_payment",
+  type: 'stellar_payment',
   payload: {
     destination: depositInfo.depositAddress,
     amount: DEPOSIT_AMOUNT,
@@ -205,16 +188,16 @@ const paymentResult = await agent.run({
 });
 
 if (!paymentResult.success) {
-  console.error("Payment failed:", paymentResult.error);
+  console.error('Payment failed:', paymentResult.error);
   agent.destroy();
   process.exit(1);
 }
 
-console.log(`  Transaction hash : ${(paymentResult.data as { txHash?: string })?.txHash ?? "n/a"}`);
-console.log(`  Duration         : ${paymentResult.durationMs ?? "n/a"} ms\n`);
+console.log(`  Transaction hash : ${(paymentResult.data as { txHash?: string })?.txHash ?? 'n/a'}`);
+console.log(`  Duration         : ${paymentResult.durationMs ?? 'n/a'} ms\n`);
 
 // Step 5 — Print deposit confirmation summary
-console.log("=== Deposit Confirmation ===");
+console.log('=== Deposit Confirmation ===');
 console.log(
   JSON.stringify(
     {

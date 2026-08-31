@@ -11,48 +11,48 @@ import {
   Claimant,
   BASE_FEE,
   StrKey,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
 import {
   loadAccount,
   submitTransaction,
   horizonServer,
   resolveNetworkPassphrase,
-} from "../rpc_client";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+} from '../rpc_client';
+import { SubmitResultSchema } from './StellarPaymentTool';
 
-const ClaimPredicateSchema = z.discriminatedUnion("type", [
-  z.object({ type: z.literal("unconditional") }),
-  z.object({ type: z.literal("beforeAbsoluteTime"), timestamp: z.number().int().positive() }),
+const ClaimPredicateSchema = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('unconditional') }),
+  z.object({ type: z.literal('beforeAbsoluteTime'), timestamp: z.number().int().positive() }),
 ]);
 
 const ClaimantSchema = z.object({
   destination: z
     .string()
     .length(56)
-    .refine((val) => StrKey.isValidEd25519PublicKey(val), "Invalid claimant public key"),
+    .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid claimant public key'),
   predicate: ClaimPredicateSchema.optional(),
 });
 
 const CreateClaimableBalanceSchema = z.object({
-  action: z.literal("create"),
+  action: z.literal('create'),
   assetCode: z.string().min(1).max(12),
   assetIssuer: z
     .string()
     .length(56)
-    .refine((val) => StrKey.isValidEd25519PublicKey(val), "Invalid asset issuer")
+    .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid asset issuer')
     .optional(),
   amount: z.string().min(1),
   claimants: z.array(ClaimantSchema).min(1),
 });
 
 const ClaimClaimableBalanceSchema = z.object({
-  action: z.literal("claim"),
+  action: z.literal('claim'),
   balanceId: z.string().min(1),
 });
 
-export const ClaimableBalanceInputSchema = z.discriminatedUnion("action", [
+export const ClaimableBalanceInputSchema = z.discriminatedUnion('action', [
   CreateClaimableBalanceSchema,
   ClaimClaimableBalanceSchema,
 ]);
@@ -62,7 +62,7 @@ export type ClaimableBalanceInput = z.infer<typeof ClaimableBalanceInputSchema>;
 function buildPredicate(
   predicate: z.infer<typeof ClaimPredicateSchema> | undefined
 ): ReturnType<typeof Claimant.predicateUnconditional> {
-  if (!predicate || predicate.type === "unconditional") {
+  if (!predicate || predicate.type === 'unconditional') {
     return Claimant.predicateUnconditional();
   }
   return Claimant.predicateBeforeAbsoluteTime(String(predicate.timestamp));
@@ -78,7 +78,10 @@ export class ClaimableBalanceTool {
   }
 
   private async verifyClaimant(balanceId: string): Promise<void> {
-    const balance = await horizonServer.claimableBalances().claimant(this.keypair.publicKey()).call();
+    const balance = await horizonServer
+      .claimableBalances()
+      .claimant(this.keypair.publicKey())
+      .call();
     const records = (balance as { records?: Array<{ id: string }> }).records ?? [];
     const isClaimant = records.some((record) => record.id === balanceId);
     if (!isClaimant) {
@@ -90,9 +93,9 @@ export class ClaimableBalanceTool {
     const input = ClaimableBalanceInputSchema.parse(rawInput);
     const account = await loadAccount(this.keypair.publicKey());
 
-    if (input.action === "create") {
+    if (input.action === 'create') {
       const asset =
-        input.assetCode === "XLM" && !input.assetIssuer
+        input.assetCode === 'XLM' && !input.assetIssuer
           ? Asset.native()
           : new Asset(input.assetCode, input.assetIssuer!);
 

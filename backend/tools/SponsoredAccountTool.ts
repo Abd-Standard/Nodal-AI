@@ -11,18 +11,18 @@ import {
   BASE_FEE,
   StrKey,
   xdr,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { loadAccount, submitTransaction, resolveNetworkPassphrase } from "../rpc_client";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
+import { SubmitResultSchema } from './StellarPaymentTool';
 
 export const SponsoredAccountInputSchema = z.object({
   newAccountPublicKey: z
     .string()
-    .length(56, "Invalid Stellar public key")
-    .refine((val) => StrKey.isValidEd25519PublicKey(val), "Invalid Stellar public key"),
-  startingBalance: z.string().default("0"),
+    .length(56, 'Invalid Stellar public key')
+    .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid Stellar public key'),
+  startingBalance: z.string().default('0'),
   newAccountSignature: z.string().optional(),
   newAccountSecret: z.string().optional(),
 });
@@ -81,13 +81,13 @@ export class SponsoredAccountTool {
       tx.sign(newKeypair);
     } else if (input.newAccountSignature) {
       try {
-        const decoratedSig = xdr.DecoratedSignature.fromXDR(input.newAccountSignature, "base64");
+        const decoratedSig = xdr.DecoratedSignature.fromXDR(input.newAccountSignature, 'base64');
         tx.addDecoratedSignature(decoratedSig);
       } catch {
         try {
           const keypair = Keypair.fromPublicKey(input.newAccountPublicKey);
           const hint = keypair.rawPublicKey().slice(-4);
-          const sigBuffer = Buffer.from(input.newAccountSignature, "base64");
+          const sigBuffer = Buffer.from(input.newAccountSignature, 'base64');
           const decorated = new xdr.DecoratedSignature({
             hint,
             signature: sigBuffer,

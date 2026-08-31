@@ -40,8 +40,8 @@
  * which is safe to call from `beforeEach`.
  */
 
-import { vi } from "vitest";
-import { Networks } from "@stellar/stellar-sdk";
+import { vi } from 'vitest';
+import { Networks } from '@stellar/stellar-sdk';
 
 /** A Vitest mock function (`vi.fn()`). */
 export type MockedFn = ReturnType<typeof vi.fn>;
@@ -51,17 +51,17 @@ export function makeMockAccount(publicKey: string): Record<string, unknown> {
   return {
     id: publicKey,
     accountId: () => publicKey,
-    sequenceNumber: () => "100",
+    sequenceNumber: () => '100',
     incrementSequenceNumber: vi.fn(),
-    sequence: "100",
-    incrementedSequenceNumber: () => "101",
+    sequence: '100',
+    incrementedSequenceNumber: () => '101',
     thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
     flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
-    balances: [{ asset_type: "native", balance: "10000.0000000" }],
+    balances: [{ asset_type: 'native', balance: '10000.0000000' }],
     signers: [],
     data_attr: {},
     subentry_count: 0,
-    home_domain: "",
+    home_domain: '',
     inflation_dest: null,
   };
 }
@@ -197,16 +197,12 @@ export function createMockHorizonServer(
     account:
       account !== undefined
         ? account
-        : makeMockAccount("GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5"),
+        : makeMockAccount('GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5'),
     accountError: accountError,
-    submitResult:
-      submitResult !== undefined ? submitResult : { hash: "mock_tx_hash", ledger: 1 },
+    submitResult: submitResult !== undefined ? submitResult : { hash: 'mock_tx_hash', ledger: 1 },
     submitError: submitError,
     paymentRecords: paymentRecords !== undefined ? paymentRecords : [],
-    orderbookResponse:
-      orderbookResponse !== undefined
-        ? orderbookResponse
-        : { bids: [], asks: [] },
+    orderbookResponse: orderbookResponse !== undefined ? orderbookResponse : { bids: [], asks: [] },
   };
 
   const server: MockHorizonServer = {
@@ -217,8 +213,8 @@ export function createMockHorizonServer(
     simulateSorobanTx,
     prepareSorobanTx,
     resolveNetworkPassphrase: (network: string): string => {
-      if (network === "mainnet") return Networks.PUBLIC;
-      if (network === "futurenet") return Networks.FUTURENET;
+      if (network === 'mainnet') return Networks.PUBLIC;
+      if (network === 'futurenet') return Networks.FUTURENET;
       return Networks.TESTNET;
     },
     forAccount,

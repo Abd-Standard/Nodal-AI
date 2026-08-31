@@ -3,15 +3,15 @@
  * Query historical Soroban contract events by ledger range.
  */
 
-import { rpc } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { sorobanServer } from "../rpc_client";
+import { rpc } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { sorobanServer } from '../rpc_client';
 
 export const SorobanEventIndexerInputSchema = z.object({
   contractId: z
     .string()
     .length(56)
-    .regex(/^C[A-Z2-7]+$/, "Invalid Stellar contract ID"),
+    .regex(/^C[A-Z2-7]+$/, 'Invalid Stellar contract ID'),
   fromLedger: z.number().int().positive(),
   toLedger: z.number().int().positive(),
   topics: z.array(z.array(z.string())).optional(),
@@ -29,12 +29,12 @@ export class SorobanEventIndexerTool {
     const input = SorobanEventIndexerInputSchema.parse(rawInput);
 
     if (input.fromLedger > input.toLedger) {
-      throw new Error("fromLedger must be less than or equal to toLedger");
+      throw new Error('fromLedger must be less than or equal to toLedger');
     }
 
     const filters: rpc.Api.EventFilter[] = [
       {
-        type: "contract",
+        type: 'contract',
         contractIds: [input.contractId],
         ...(input.topics ? { topics: input.topics } : {}),
       },

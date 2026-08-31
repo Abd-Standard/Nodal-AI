@@ -17,10 +17,10 @@
  *   config.agentKeypair()       // call-site requests the Keypair explicitly
  */
 
-import { z } from "zod";
-import * as dotenv from "dotenv";
-import { Keypair } from "@stellar/stellar-sdk";
-import { SecretsManagerClient, GetSecretValueCommand } from "@aws-sdk/client-secrets-manager";
+import { z } from 'zod';
+import * as dotenv from 'dotenv';
+import { Keypair } from '@stellar/stellar-sdk';
+import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
 
 // Load .env file (no-op when running in CI / production with real env vars)
 dotenv.config();
@@ -28,7 +28,7 @@ dotenv.config();
 // ─── Custom Zod refinements ───────────────────────────────────────────────────
 
 function isValidStellarPublicKey(value: string): boolean {
-  if (!value.startsWith("G")) {
+  if (!value.startsWith('G')) {
     return false;
   }
 
@@ -45,20 +45,21 @@ function isValidStellarPublicKey(value: string): boolean {
  * The key itself is NEVER surfaced in Zod error messages —
  * we only report structural problems.
  */
-const StellarSecretKeySchema = z
-  .string()
-  .refine(
-    (val) => {
-      try {
-        Keypair.fromSecret(val);
-        return true;
-      } catch {
-        return false;
-      }
-    },
-    // Generic message — does not echo the value
-    { message: "AGENT_SECRET_KEY is not a valid Stellar secret key (must start with S and be 56 chars)" }
-  );
+const StellarSecretKeySchema = z.string().refine(
+  (val) => {
+    try {
+      Keypair.fromSecret(val);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  // Generic message — does not echo the value
+  {
+    message:
+      'AGENT_SECRET_KEY is not a valid Stellar secret key (must start with S and be 56 chars)',
+  }
+);
 
 /**
  * Stellar public key — 56-char G-address.
@@ -66,10 +67,10 @@ const StellarSecretKeySchema = z
  */
 const StellarPublicKeySchema = z
   .string()
-  .length(56, "Must be a 56-character Stellar public key (G…)")
-  .refine((val) => val.startsWith("G"), { message: "Public key must start with G" })
+  .length(56, 'Must be a 56-character Stellar public key (G…)')
+  .refine((val) => val.startsWith('G'), { message: 'Public key must start with G' })
   .refine((val) => isValidStellarPublicKey(val), {
-    message: "AGENT_PUBLIC_KEY must be a valid Stellar public key",
+    message: 'AGENT_PUBLIC_KEY must be a valid Stellar public key',
   })
   .optional();
 
@@ -83,28 +84,28 @@ const SpendingLimitSchema = z
     /^[1-9]\d*(\.\d{1,7})?$/,
     "AGENT_SPENDING_LIMIT must be a positive decimal (e.g. '100' or '50.0000000')"
   )
-  .default("100");
+  .default('100');
 
 // ─── Raw environment schema ───────────────────────────────────────────────────
 
 const EnvSchema = z.object({
   // Network
   STELLAR_NETWORK: z
-    .enum(["testnet", "mainnet", "futurenet"], {
+    .enum(['testnet', 'mainnet', 'futurenet'], {
       errorMap: () => ({
-        message: "STELLAR_NETWORK must be one of: testnet | mainnet | futurenet",
+        message: 'STELLAR_NETWORK must be one of: testnet | mainnet | futurenet',
       }),
     })
-    .default("testnet"),
+    .default('testnet'),
 
   // RPC endpoints
   HORIZON_URL: z
-    .string({ required_error: "HORIZON_URL is required" })
-    .url("HORIZON_URL must be a valid URL (e.g. https://horizon-testnet.stellar.org)"),
+    .string({ required_error: 'HORIZON_URL is required' })
+    .url('HORIZON_URL must be a valid URL (e.g. https://horizon-testnet.stellar.org)'),
 
   SOROBAN_RPC_URL: z
-    .string({ required_error: "SOROBAN_RPC_URL is required" })
-    .url("SOROBAN_RPC_URL must be a valid URL (e.g. https://soroban-testnet.stellar.org)"),
+    .string({ required_error: 'SOROBAN_RPC_URL is required' })
+    .url('SOROBAN_RPC_URL must be a valid URL (e.g. https://soroban-testnet.stellar.org)'),
 
   // Agent identity
   AGENT_SECRET_KEY: StellarSecretKeySchema,
@@ -112,15 +113,15 @@ const EnvSchema = z.object({
   AGENT_SECRET_KEY_ARN: z.string().optional(),
 
   // x402 / PayFi asset
-  X402_ASSET_CODE: z.string().min(1).max(12).default("USDC"),
+  X402_ASSET_CODE: z.string().min(1).max(12).default('USDC'),
   X402_ASSET_ISSUER: z
-    .string({ required_error: "X402_ASSET_ISSUER is required" })
-    .length(56, "X402_ASSET_ISSUER must be a 56-character Stellar address")
-    .refine((val) => val.startsWith("G"), {
-      message: "X402_ASSET_ISSUER must start with G",
+    .string({ required_error: 'X402_ASSET_ISSUER is required' })
+    .length(56, 'X402_ASSET_ISSUER must be a 56-character Stellar address')
+    .refine((val) => val.startsWith('G'), {
+      message: 'X402_ASSET_ISSUER must start with G',
     })
     .refine((val) => isValidStellarPublicKey(val), {
-      message: "X402_ASSET_ISSUER is not a valid Ed25519 public key",
+      message: 'X402_ASSET_ISSUER is not a valid Ed25519 public key',
     }),
   ALLOWED_X402_ORIGINS: z.string().optional(),
 
@@ -128,69 +129,40 @@ const EnvSchema = z.object({
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
 
   // Persistence
-  DB_PATH: z.string().default("./agent.db"),
+  DB_PATH: z.string().default('./agent.db'),
 
   // Logging
-  LOG_LEVEL: z.enum(["debug", "info", "warn", "error"]).default("info"),
+  LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
 
   // OpenTelemetry
   OTLP_ENDPOINT: z.string().url().optional(),
 
   // Spending window for rate/cap computation
-  SPENDING_WINDOW_MS: z.coerce
-    .number()
-    .int()
-    .min(100)
-    .default(86_400_000),
+  SPENDING_WINDOW_MS: z.coerce.number().int().min(100).default(86_400_000),
 
   // Retry behaviour
   // Exponential back-off: delay = RETRY_DELAY_MS * 2^(attempt-1), capped at 30 000 ms,
   // plus ±20% random jitter. Example — MAX_RETRIES=3, RETRY_DELAY_MS=1500 →
   // delays [1500, 3000, 6000] ms (before jitter), not linear [1500, 3000, 4500].
-  MAX_RETRIES: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .max(10)
-    .default(3),
+  MAX_RETRIES: z.coerce.number().int().min(1).max(10).default(3),
 
-  RETRY_DELAY_MS: z.coerce
-    .number()
-    .int()
-    .min(100)
-    .default(1500),
+  RETRY_DELAY_MS: z.coerce.number().int().min(100).default(1500),
 
   // How long a cached Horizon account stays fresh. Sequence numbers and
   // balances change on every transaction the account takes part in, so this is
   // deliberately short: it exists to collapse bursts of reads, not to avoid
   // round trips generally.
-  ACCOUNT_CACHE_TTL_MS: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .default(30_000),
+  ACCOUNT_CACHE_TTL_MS: z.coerce.number().int().min(0).default(30_000),
 
   // Per-call RPC timeout in milliseconds.
   // Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2, computed post-parse.
-  RPC_TIMEOUT_MS: z.coerce
-    .number()
-    .int()
-    .min(100)
-    .optional(),
+  RPC_TIMEOUT_MS: z.coerce.number().int().min(100).optional(),
 
   // TOML cache TTL in milliseconds (default: 5 minutes = 300,000 ms)
-  TOML_CACHE_TTL_MS: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .default(300_000),
+  TOML_CACHE_TTL_MS: z.coerce.number().int().min(0).default(300_000),
 
   // Rate limiting
-  MAX_X402_PAYMENTS_PER_MINUTE: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .default(10),
+  MAX_X402_PAYMENTS_PER_MINUTE: z.coerce.number().int().min(1).default(10),
 
   // How long a used x402 nonce is retained for replay protection before it
   // becomes eligible for eviction. Defaults to 24h, comfortably above the
@@ -203,25 +175,13 @@ const EnvSchema = z.object({
 
   // Maximum number of tasks allowed to execute concurrently in agent.run().
   // Excess tasks are queued (bounded by QUEUE_CAPACITY) or rejected.
-  MAX_CONCURRENT_TASKS: z.coerce
-    .number()
-    .int()
-    .min(1)
-    .default(10),
+  MAX_CONCURRENT_TASKS: z.coerce.number().int().min(1).default(10),
 
   // Bounded FIFO queue for tasks submitted while at MAX_CONCURRENT_TASKS.
   // 0 (default) disables queuing — excess tasks are rejected immediately.
-  QUEUE_CAPACITY: z.coerce
-    .number()
-    .int()
-    .min(0)
-    .default(0),
+  QUEUE_CAPACITY: z.coerce.number().int().min(0).default(0),
 
-  MAX_SOROBAN_FEE_STROOPS: z.coerce
-    .number()
-    .int()
-    .min(100)
-    .default(1_000_000),
+  MAX_SOROBAN_FEE_STROOPS: z.coerce.number().int().min(100).default(1_000_000),
 
   // Health check HTTP server
   HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
@@ -244,7 +204,7 @@ export interface AgentConfig {
    * Enforced by EnvSchema to be one of: "testnet" | "mainnet" | "futurenet".
    * Defaults to "testnet".
    */
-  readonly STELLAR_NETWORK: "testnet" | "mainnet" | "futurenet";
+  readonly STELLAR_NETWORK: 'testnet' | 'mainnet' | 'futurenet';
 
   /**
    * The Stellar Horizon server URL.
@@ -411,18 +371,17 @@ export interface AgentConfig {
 export function formatValidationErrors(errors: z.ZodError): string {
   return errors.issues
     .map((issue) => {
-      const rawField = issue.path.join(".") || "unknown";
+      const rawField = issue.path.join('.') || 'unknown';
       // Redact any path element that looks like a secret key — path may contain
       // raw values (e.g., when a secret key is used as a Zod path segment).
       const field =
-        issue.path
-          .map((p) => String(p).replace(/S[A-Z2-7]{55}/g, "[REDACTED]"))
-          .join(".") || rawField;
+        issue.path.map((p) => String(p).replace(/S[A-Z2-7]{55}/g, '[REDACTED]')).join('.') ||
+        rawField;
       // Redact any value that looks like a secret key in the human-readable message
-      const message = issue.message.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
+      const message = issue.message.replace(/S[A-Z2-7]{55}/g, '[REDACTED]');
       return `  • ${field}: ${message}`;
     })
-    .join("\n");
+    .join('\n');
 }
 
 /**
@@ -432,12 +391,12 @@ export function formatValidationErrors(errors: z.ZodError): string {
  * @returns The fully validated, read-only configuration instance.
  */
 async function fetchSecretFromArn(arn: string): Promise<string> {
-  const arnParts = arn.split(":");
-  const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : "us-east-1";
+  const arnParts = arn.split(':');
+  const region = arnParts.length > 3 && arnParts[3] ? arnParts[3] : 'us-east-1';
   const client = new SecretsManagerClient({ region });
   const res = await client.send(new GetSecretValueCommand({ SecretId: arn }));
   if (!res.SecretString) {
-    throw new Error("No SecretString found in secret");
+    throw new Error('No SecretString found in secret');
   }
   return res.SecretString;
 }
@@ -449,8 +408,8 @@ function parseConfigAndDerive(): AgentConfig {
     // Print structured errors — secret values are never echoed
     process.stderr.write(
       `\n❌ [Config] Invalid environment — fix the following before starting:\n` +
-      formatValidationErrors(result.error) +
-      `\n\nSee ..env for reference.\n\n`
+        formatValidationErrors(result.error) +
+        `\n\nSee ..env for reference.\n\n`
     );
     process.exit(1);
   }
@@ -462,7 +421,7 @@ function parseConfigAndDerive(): AgentConfig {
   try {
     keypair = Keypair.fromSecret(raw.AGENT_SECRET_KEY);
   } catch {
-    process.stderr.write("❌ [Config] Failed to derive keypair from AGENT_SECRET_KEY.\n");
+    process.stderr.write('❌ [Config] Failed to derive keypair from AGENT_SECRET_KEY.\n');
     process.exit(1);
   }
 
@@ -472,19 +431,19 @@ function parseConfigAndDerive(): AgentConfig {
   if (raw.AGENT_PUBLIC_KEY && raw.AGENT_PUBLIC_KEY !== derivedPublicKey) {
     process.stderr.write(
       `❌ [Config] AGENT_PUBLIC_KEY does not match the key derived from AGENT_SECRET_KEY.\n` +
-      `   Provided : ${raw.AGENT_PUBLIC_KEY}\n` +
-      `   Derived  : ${derivedPublicKey}\n`
+        `   Provided : ${raw.AGENT_PUBLIC_KEY}\n` +
+        `   Derived  : ${derivedPublicKey}\n`
     );
     process.exit(1);
   }
 
   // ── Mainnet safety guard ───────────────────────────────────────────────────
-  if (raw.STELLAR_NETWORK === "mainnet") {
+  if (raw.STELLAR_NETWORK === 'mainnet') {
     const limit = parseFloat(raw.AGENT_SPENDING_LIMIT);
     if (limit > 10_000) {
       process.stderr.write(
         `❌ [Config] AGENT_SPENDING_LIMIT (${raw.AGENT_SPENDING_LIMIT}) exceeds ` +
-        `the mainnet safety cap of 10,000. Lower it or explicitly override.\n`
+          `the mainnet safety cap of 10,000. Lower it or explicitly override.\n`
       );
       process.exit(1);
     }
@@ -502,8 +461,7 @@ function parseConfigAndDerive(): AgentConfig {
     ...rest
   } = raw;
 
-  const rpcTimeoutMs =
-    raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
+  const rpcTimeoutMs = raw.RPC_TIMEOUT_MS ?? raw.RETRY_DELAY_MS * raw.MAX_RETRIES * 2;
 
   // Derive the keypair once at startup. agentKeypair returns this cached instance
   // on every call, avoiding repeated Ed25519 derivation.
@@ -522,7 +480,9 @@ function parseConfigAndDerive(): AgentConfig {
     ...(OTLP_ENDPOINT ? { OTLP_ENDPOINT } : {}),
     ...(WEBHOOK_URL ? { WEBHOOK_URL } : {}),
     ...(WEBHOOK_SECRET ? { WEBHOOK_SECRET } : {}),
-    ...(raw.CONTRACT_EVENT_POLL_MS !== undefined ? { CONTRACT_EVENT_POLL_MS: raw.CONTRACT_EVENT_POLL_MS } : {}),
+    ...(raw.CONTRACT_EVENT_POLL_MS !== undefined
+      ? { CONTRACT_EVENT_POLL_MS: raw.CONTRACT_EVENT_POLL_MS }
+      : {}),
     // Secret is captured in closure; never on the object
     agentKeypair: () => _keypair,
   };
@@ -536,12 +496,12 @@ function parseConfigAndDerive(): AgentConfig {
   // Startup banner — only safe fields
   process.stdout.write(
     `✅ [Config] Environment validated\n` +
-    `   Network        : ${cfg.STELLAR_NETWORK}\n` +
-    `   Horizon        : ${cfg.HORIZON_URL}\n` +
-    `   Soroban        : ${cfg.SOROBAN_RPC_URL}\n` +
-    `   Agent pubkey   : ${cfg.AGENT_PUBLIC_KEY}\n` +
-    `   Spending limit : ${cfg.AGENT_SPENDING_LIMIT} ${cfg.X402_ASSET_CODE}\n` +
-    `   Max retries    : ${cfg.MAX_RETRIES}\n`
+      `   Network        : ${cfg.STELLAR_NETWORK}\n` +
+      `   Horizon        : ${cfg.HORIZON_URL}\n` +
+      `   Soroban        : ${cfg.SOROBAN_RPC_URL}\n` +
+      `   Agent pubkey   : ${cfg.AGENT_PUBLIC_KEY}\n` +
+      `   Spending limit : ${cfg.AGENT_SPENDING_LIMIT} ${cfg.X402_ASSET_CODE}\n` +
+      `   Max retries    : ${cfg.MAX_RETRIES}\n`
   );
 
   return cfg;
@@ -549,14 +509,16 @@ function parseConfigAndDerive(): AgentConfig {
 
 function loadConfigSync(): AgentConfig {
   if (process.env.AGENT_SECRET_KEY_ARN) {
-    throw new Error("Cannot load configuration synchronously when AGENT_SECRET_KEY_ARN is set.");
+    throw new Error('Cannot load configuration synchronously when AGENT_SECRET_KEY_ARN is set.');
   }
   return parseConfigAndDerive();
 }
 
 export async function loadConfig(): Promise<AgentConfig> {
   if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
-    process.stderr.write("❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n");
+    process.stderr.write(
+      '❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n'
+    );
     process.exit(1);
   }
 
@@ -567,12 +529,14 @@ export async function loadConfig(): Promise<AgentConfig> {
       let parsedSecret = secret;
       try {
         const json = JSON.parse(secret);
-        if (json && typeof json === "object" && !Array.isArray(json)) {
+        if (json && typeof json === 'object' && !Array.isArray(json)) {
           const candidate = json.AGENT_SECRET_KEY;
-          if (typeof candidate === "string") {
+          if (typeof candidate === 'string') {
             parsedSecret = candidate;
           } else {
-            const firstValue = Object.values(json).find((value): value is string => typeof value === "string");
+            const firstValue = Object.values(json).find(
+              (value): value is string => typeof value === 'string'
+            );
             if (firstValue) {
               parsedSecret = firstValue;
             }
@@ -583,7 +547,9 @@ export async function loadConfig(): Promise<AgentConfig> {
       }
       process.env.AGENT_SECRET_KEY = parsedSecret;
     } catch (err: any) {
-      process.stderr.write(`❌ [Config] Failed to fetch secret from AWS Secrets Manager (ARN: ${process.env.AGENT_SECRET_KEY_ARN}): ${err.message}\n`);
+      process.stderr.write(
+        `❌ [Config] Failed to fetch secret from AWS Secrets Manager (ARN: ${process.env.AGENT_SECRET_KEY_ARN}): ${err.message}\n`
+      );
       process.exit(1);
     }
   }
@@ -598,8 +564,10 @@ let _configError: Error | null = null;
 if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
   // Both set — record as error immediately so configPromise rejects and
   // the proxy throws the right message before awaiting.
-  _configError = new Error("Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.");
-  process.stderr.write("❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n");
+  _configError = new Error('Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.');
+  process.stderr.write(
+    '❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n'
+  );
 } else if (process.env.AGENT_SECRET_KEY && !process.env.AGENT_SECRET_KEY_ARN) {
   try {
     _config = loadConfigSync();
@@ -626,10 +594,10 @@ export const config = new Proxy({} as AgentConfig, {
       throw _configError;
     }
     if (!_config) {
-      throw new Error("Configuration has not been initialized yet. Await configPromise first.");
+      throw new Error('Configuration has not been initialized yet. Await configPromise first.');
     }
     return Reflect.get(_config, prop, receiver);
-  }
+  },
 });
 
 /**

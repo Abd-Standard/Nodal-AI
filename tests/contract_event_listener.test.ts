@@ -1,22 +1,22 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { listen } from "../backend/tools/ContractEventListener";
-import * as rpcClient from "../backend/rpc_client";
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { listen } from '../backend/tools/ContractEventListener';
+import * as rpcClient from '../backend/rpc_client';
 
-vi.mock("../backend/rpc_client", () => ({
+vi.mock('../backend/rpc_client', () => ({
   sorobanServer: {
     getEvents: vi.fn(),
     getLatestLedger: vi.fn(),
   },
 }));
 
-vi.mock("../backend/config", () => ({
+vi.mock('../backend/config', () => ({
   config: {
     RETRY_DELAY_MS: 100,
     CONTRACT_EVENT_POLL_MS: 300,
   },
 }));
 
-vi.mock("../backend/logger", () => ({
+vi.mock('../backend/logger', () => ({
   logger: {
     error: vi.fn(),
     info: vi.fn(),
@@ -25,7 +25,7 @@ vi.mock("../backend/logger", () => ({
   },
 }));
 
-const VALID_CONTRACT = "CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH";
+const VALID_CONTRACT = 'CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH';
 
 function makeEvent(topicStr: string, pagingToken: string) {
   return {
@@ -34,7 +34,7 @@ function makeEvent(topicStr: string, pagingToken: string) {
   } as any;
 }
 
-describe("ContractEventListener", () => {
+describe('ContractEventListener', () => {
   let stopListening: () => void;
 
   beforeEach(() => {
@@ -50,35 +50,35 @@ describe("ContractEventListener", () => {
     vi.useRealTimers();
   });
 
-  it("invokes onEvent for matching events on poll", async () => {
-    const event = makeEvent("released", "tok-1");
+  it('invokes onEvent for matching events on poll', async () => {
+    const event = makeEvent('released', 'tok-1');
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [event],
     } as any);
 
     const onEvent = vi.fn();
-    stopListening = listen(VALID_CONTRACT, ["released"], onEvent);
+    stopListening = listen(VALID_CONTRACT, ['released'], onEvent);
 
     await vi.advanceTimersByTimeAsync(200);
 
     expect(onEvent).toHaveBeenCalledWith(event);
   });
 
-  it("does not invoke onEvent when topic does not match eventTypes", async () => {
-    const event = makeEvent("cancelled", "tok-1");
+  it('does not invoke onEvent when topic does not match eventTypes', async () => {
+    const event = makeEvent('cancelled', 'tok-1');
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [event],
     } as any);
 
     const onEvent = vi.fn();
-    stopListening = listen(VALID_CONTRACT, ["released"], onEvent);
+    stopListening = listen(VALID_CONTRACT, ['released'], onEvent);
 
     await vi.advanceTimersByTimeAsync(200);
 
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  it("stops polling after stopListening is called", async () => {
+  it('stops polling after stopListening is called', async () => {
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [],
     } as any);
@@ -95,10 +95,10 @@ describe("ContractEventListener", () => {
     expect(vi.mocked(rpcClient.sorobanServer.getEvents).mock.calls.length).toBe(callsBeforeStop);
   });
 
-  it("logs an error and keeps polling when getEvents rejects", async () => {
-    const { logger } = await import("../backend/logger");
+  it('logs an error and keeps polling when getEvents rejects', async () => {
+    const { logger } = await import('../backend/logger');
     vi.mocked(rpcClient.sorobanServer.getEvents).mockRejectedValueOnce(
-      new Error("RPC unavailable"),
+      new Error('RPC unavailable')
     );
 
     const onEvent = vi.fn();
@@ -109,7 +109,7 @@ describe("ContractEventListener", () => {
     expect(logger.error).toHaveBeenCalled();
   });
 
-  it("polls sorobanServer.getEvents() at the configured interval", async () => {
+  it('polls sorobanServer.getEvents() at the configured interval', async () => {
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [],
     } as any);
@@ -122,23 +122,23 @@ describe("ContractEventListener", () => {
     expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(3);
   });
 
-  it("emits parsed events to registered callback", async () => {
-    const event = makeEvent("released", "tok-1");
+  it('emits parsed events to registered callback', async () => {
+    const event = makeEvent('released', 'tok-1');
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [event],
     } as any);
 
     const onEvent = vi.fn();
-    stopListening = listen(VALID_CONTRACT, ["released"], onEvent);
+    stopListening = listen(VALID_CONTRACT, ['released'], onEvent);
 
     await vi.advanceTimersByTimeAsync(200);
 
     expect(onEvent).toHaveBeenCalledWith(event);
   });
 
-  it("handles sorobanServer.getEvents() rejection without crashing", async () => {
+  it('handles sorobanServer.getEvents() rejection without crashing', async () => {
     vi.mocked(rpcClient.sorobanServer.getEvents)
-      .mockRejectedValueOnce(new Error("RPC unavailable"))
+      .mockRejectedValueOnce(new Error('RPC unavailable'))
       .mockResolvedValue({ events: [] } as any);
 
     const onEvent = vi.fn();
@@ -150,7 +150,7 @@ describe("ContractEventListener", () => {
     expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(3);
   });
 
-  it("stops polling when stop() is called", async () => {
+  it('stops polling when stop() is called', async () => {
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [],
     } as any);
@@ -167,14 +167,14 @@ describe("ContractEventListener", () => {
     expect(vi.mocked(rpcClient.sorobanServer.getEvents).mock.calls.length).toBe(callsBeforeStop);
   });
 
-  it("does not emit events after stop() is called", async () => {
-    const event = makeEvent("released", "tok-1");
+  it('does not emit events after stop() is called', async () => {
+    const event = makeEvent('released', 'tok-1');
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [event],
     } as any);
 
     const onEvent = vi.fn();
-    stopListening = listen(VALID_CONTRACT, ["released"], onEvent);
+    stopListening = listen(VALID_CONTRACT, ['released'], onEvent);
 
     await vi.advanceTimersByTimeAsync(200);
     expect(onEvent).toHaveBeenCalledTimes(1);
@@ -187,18 +187,18 @@ describe("ContractEventListener", () => {
 
   // ── Reconnect & Exhaustion ──────────────────────────────────────────────────
 
-  it("reconnects with exponential backoff when stream drops and resumes emitting events", async () => {
-    const event = makeEvent("released", "tok-2");
+  it('reconnects with exponential backoff when stream drops and resumes emitting events', async () => {
+    const event = makeEvent('released', 'tok-2');
     vi.mocked(rpcClient.sorobanServer.getEvents)
-      .mockRejectedValueOnce(new Error("Connection reset 1"))
-      .mockRejectedValueOnce(new Error("Connection reset 2"))
+      .mockRejectedValueOnce(new Error('Connection reset 1'))
+      .mockRejectedValueOnce(new Error('Connection reset 2'))
       .mockResolvedValueOnce({ events: [event] } as any)
       .mockResolvedValue({ events: [] } as any);
 
     const onEvent = vi.fn();
     const onError = vi.fn();
-    const handle = listen(VALID_CONTRACT, ["released"], onEvent);
-    handle.on("error", onError);
+    const handle = listen(VALID_CONTRACT, ['released'], onEvent);
+    handle.on('error', onError);
     stopListening = handle;
 
     // t=0: call 1 fails (attempt 1 -> wait 300ms)
@@ -216,14 +216,14 @@ describe("ContractEventListener", () => {
     expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(4);
   });
 
-  it("emits error event on returned EventEmitter when reconnect retries are exhausted (default 5)", async () => {
-    const rpcError = new Error("RPC permanent drop");
+  it('emits error event on returned EventEmitter when reconnect retries are exhausted (default 5)', async () => {
+    const rpcError = new Error('RPC permanent drop');
     vi.mocked(rpcClient.sorobanServer.getEvents).mockRejectedValue(rpcError);
 
     const onEvent = vi.fn();
     const onError = vi.fn();
     const handle = listen(VALID_CONTRACT, [], onEvent);
-    handle.on("error", onError);
+    handle.on('error', onError);
     stopListening = handle;
 
     // Attempt 1: t=0, fails. Wait 300ms.
@@ -246,14 +246,14 @@ describe("ContractEventListener", () => {
     expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(5);
   });
 
-  it("respects maxReconnectAttempts configurable at call time", async () => {
-    const rpcError = new Error("Stream dropped");
+  it('respects maxReconnectAttempts configurable at call time', async () => {
+    const rpcError = new Error('Stream dropped');
     vi.mocked(rpcClient.sorobanServer.getEvents).mockRejectedValue(rpcError);
 
     const onEvent = vi.fn();
     const onError = vi.fn();
     const handle = listen(VALID_CONTRACT, [], onEvent, { maxReconnectAttempts: 2 });
-    handle.on("error", onError);
+    handle.on('error', onError);
     stopListening = handle;
 
     // Attempt 1: t=0, fails. Wait 300ms.
@@ -271,9 +271,9 @@ describe("ContractEventListener", () => {
 
   // ── Start / Stop lifecycle (#457) ──────────────────────────────────────────
 
-  it("start → emit 2 events → stop → no further events arrive", async () => {
-    const event1 = makeEvent("released", "tok-10");
-    const event2 = makeEvent("released", "tok-11");
+  it('start → emit 2 events → stop → no further events arrive', async () => {
+    const event1 = makeEvent('released', 'tok-10');
+    const event2 = makeEvent('released', 'tok-11');
 
     // First two polls return events; subsequent polls return empty
     vi.mocked(rpcClient.sorobanServer.getEvents)
@@ -282,7 +282,7 @@ describe("ContractEventListener", () => {
       .mockResolvedValue({ events: [] } as any);
 
     const onEvent = vi.fn();
-    stopListening = listen(VALID_CONTRACT, ["released"], onEvent);
+    stopListening = listen(VALID_CONTRACT, ['released'], onEvent);
 
     // Advance through two poll cycles (each 300ms)
     await vi.advanceTimersByTimeAsync(300);
@@ -300,7 +300,7 @@ describe("ContractEventListener", () => {
     expect(onEvent).toHaveBeenCalledTimes(2);
   });
 
-  it("stop() before any events arrive — listener does not throw", async () => {
+  it('stop() before any events arrive — listener does not throw', async () => {
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [],
     } as any);
@@ -319,7 +319,7 @@ describe("ContractEventListener", () => {
     expect(onEvent).not.toHaveBeenCalled();
   });
 
-  it("stop() is idempotent — calling it twice does not throw", async () => {
+  it('stop() is idempotent — calling it twice does not throw', async () => {
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [],
     } as any);
@@ -335,12 +335,12 @@ describe("ContractEventListener", () => {
     }).not.toThrow();
   });
 
-  it("no timer leak after stop() — clearTimeout called for the pending timer", async () => {
+  it('no timer leak after stop() — clearTimeout called for the pending timer', async () => {
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [],
     } as any);
 
-    const clearTimeoutSpy = vi.spyOn(globalThis, "clearTimeout");
+    const clearTimeoutSpy = vi.spyOn(globalThis, 'clearTimeout');
 
     const onEvent = vi.fn();
     stopListening = listen(VALID_CONTRACT, [], onEvent);

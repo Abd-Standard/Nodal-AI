@@ -10,8 +10,8 @@
  * Secrets are redacted to prevent leakage into logs.
  */
 
-import { z } from "zod";
-import dotenv from "dotenv";
+import { z } from 'zod';
+import dotenv from 'dotenv';
 
 dotenv.config();
 
@@ -26,9 +26,7 @@ const LOG_LEVELS = {
 type LogLevel = keyof typeof LOG_LEVELS;
 
 // Schema for LOG_LEVEL env var
-const LogLevelSchema = z
-  .enum(["debug", "info", "warn", "error"])
-  .default("info");
+const LogLevelSchema = z.enum(['debug', 'info', 'warn', 'error']).default('info');
 
 const LOG_LEVEL = LogLevelSchema.parse(process.env.LOG_LEVEL);
 const CURRENT_LEVEL = LOG_LEVELS[LOG_LEVEL];
@@ -41,13 +39,13 @@ const CURRENT_LEVEL = LOG_LEVELS[LOG_LEVEL];
  * @returns The redacted value
  */
 export function redactSecrets(value: unknown): unknown {
-  if (typeof value === "string") {
-    return value.replace(/S[A-Z2-7]{55}/g, "[REDACTED]");
+  if (typeof value === 'string') {
+    return value.replace(/S[A-Z2-7]{55}/g, '[REDACTED]');
   }
   if (Array.isArray(value)) {
     return value.map(redactSecrets);
   }
-  if (value !== null && typeof value === "object") {
+  if (value !== null && typeof value === 'object') {
     const redacted: Record<string, unknown> = {};
     for (const [key, val] of Object.entries(value)) {
       redacted[key] = redactSecrets(val);
@@ -85,7 +83,7 @@ function log(level: LogLevel, message: string, meta: Record<string, unknown> = {
 
   const output = JSON.stringify(entry);
 
-  if (level === "error") {
+  if (level === 'error') {
     console.error(output);
   } else {
     console.log(output);
@@ -93,8 +91,8 @@ function log(level: LogLevel, message: string, meta: Record<string, unknown> = {
 }
 
 export const logger = {
-  debug: (message: string, meta?: Record<string, unknown>) => log("debug", message, meta),
-  info: (message: string, meta?: Record<string, unknown>) => log("info", message, meta),
-  warn: (message: string, meta?: Record<string, unknown>) => log("warn", message, meta),
-  error: (message: string, meta?: Record<string, unknown>) => log("error", message, meta),
+  debug: (message: string, meta?: Record<string, unknown>) => log('debug', message, meta),
+  info: (message: string, meta?: Record<string, unknown>) => log('info', message, meta),
+  warn: (message: string, meta?: Record<string, unknown>) => log('warn', message, meta),
+  error: (message: string, meta?: Record<string, unknown>) => log('error', message, meta),
 };

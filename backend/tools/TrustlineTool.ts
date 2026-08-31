@@ -3,21 +3,36 @@
  * Manage asset trustlines for the agent account.
  */
 
-import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE, StrKey } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { loadAccount, submitTransaction, horizonServer, resolveNetworkPassphrase } from "../rpc_client";
-import { SubmitResultSchema } from "./StellarPaymentTool";
-import { ValidationError } from "../errors";
-import { BalanceCheckTool } from "./BalanceCheckTool";
+import {
+  Keypair,
+  TransactionBuilder,
+  Operation,
+  Asset,
+  BASE_FEE,
+  StrKey,
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import {
+  loadAccount,
+  submitTransaction,
+  horizonServer,
+  resolveNetworkPassphrase,
+} from '../rpc_client';
+import { SubmitResultSchema } from './StellarPaymentTool';
+import { ValidationError } from '../errors';
+import { BalanceCheckTool } from './BalanceCheckTool';
 
 export const TrustlineInputSchema = z.object({
   assetCode: z.string().min(1).max(12),
   assetIssuer: z
     .string()
-    .length(56, "Invalid asset issuer address")
-    .refine((val) => StrKey.isValidEd25519PublicKey(val), "Asset issuer must be a valid Stellar public key"),
-  action: z.enum(["add", "remove"]),
+    .length(56, 'Invalid asset issuer address')
+    .refine(
+      (val) => StrKey.isValidEd25519PublicKey(val),
+      'Asset issuer must be a valid Stellar public key'
+    ),
+  action: z.enum(['add', 'remove']),
   limit: z.string().optional(),
 });
 
@@ -37,7 +52,8 @@ export class TrustlineTool {
   async checkTrustline(assetCode: string, assetIssuer: string): Promise<boolean> {
     const account = await loadAccount(this.keypair.publicKey());
     return (account.balances as any[]).some(
-      (b) => b.asset_type !== "native" && b.asset_code === assetCode && b.asset_issuer === assetIssuer
+      (b) =>
+        b.asset_type !== 'native' && b.asset_code === assetCode && b.asset_issuer === assetIssuer
     );
   }
 
@@ -46,14 +62,16 @@ export class TrustlineTool {
     const asset = new Asset(input.assetCode, input.assetIssuer);
     const account = await loadAccount(this.keypair.publicKey());
 
-    if (input.action === "remove") {
+    if (input.action === 'remove') {
       const balance = await this.balanceCheckTool.execute({
         publicKey: this.keypair.publicKey(),
         assetCode: input.assetCode,
         assetIssuer: input.assetIssuer,
       });
       if (Number(balance) > 0) {
-        throw new ValidationError(`Cannot remove trustline: non-zero balance of ${input.assetCode}`);
+        throw new ValidationError(
+          `Cannot remove trustline: non-zero balance of ${input.assetCode}`
+        );
       }
     }
 
@@ -64,11 +82,11 @@ export class TrustlineTool {
       .addOperation(
         Operation.changeTrust({
           asset,
-          ...(input.action === "remove"
-            ? { limit: "0" }
+          ...(input.action === 'remove'
+            ? { limit: '0' }
             : input.limit
-            ? { limit: input.limit }
-            : {}),
+              ? { limit: input.limit }
+              : {}),
         })
       )
       .setTimeout(30)

@@ -41,6 +41,7 @@ jobs:
 
       - run: npm ci
       - run: npm run lint
+      - run: npm run format:check
 
   test:
     runs-on: ubuntu-latest
@@ -158,7 +159,46 @@ jobs:
           cache: npm
 
       - run: npm ci
-      - run: npm run audit
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high
+
+  snyk:
+    runs-on: ubuntu-latest
+    env:
+      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+
+    steps:
+      - name: Check Snyk configuration
+        id: snyk-config
+        shell: bash
+        run: |
+          if [[ -n "$SNYK_TOKEN" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Snyk is skipped because SNYK_TOKEN is not configured."
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.snyk-config.outputs.enabled == 'true'
+
+      - uses: actions/setup-node@v4
+        if: steps.snyk-config.outputs.enabled == 'true'
+        with:
+          node-version: 20
+          cache: npm
+
+      - name: Install dependencies
+        if: steps.snyk-config.outputs.enabled == 'true'
+        run: npm ci
+
+      - name: Install Snyk CLI
+        if: steps.snyk-config.outputs.enabled == 'true'
+        run: npm install --global snyk
+
+      - name: Test dependencies with Snyk
+        if: steps.snyk-config.outputs.enabled == 'true'
+        run: snyk test --severity-threshold=high
 
   audit-rust:
     runs-on: ubuntu-latest
