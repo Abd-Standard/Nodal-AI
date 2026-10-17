@@ -69,6 +69,102 @@ const SpendingLimitSchema = z
   )
   .default("100");
 
+/**
+ * Per-asset spending limits in the format:
+ *   SPENDING_LIMITS='XLM:1000,USDC:GA5Z...:500'
+ *
+ * Each entry is either:
+ *   <ASSET_CODE>:<LIMIT>           — native or code-only asset
+ *   <ASSET_CODE>:<ISSUER>:<LIMIT>  — issued asset with issuer G-address
+ *
+ * Rules:
+ *   - Unknown assets are DENIED by default unless explicitly listed.
+ *   - The LIMIT portion must be a positive decimal (\d+(\.\d{1,7})?).
+ *   - ASSET_CODE is 1–12 alphanumeric characters.
+ *   - ISSUER is an optional 56-char G-address.
+ *
+ * Example:
+ *   SPENDING_LIMITS='XLM:1000,USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5:500'
+ */
+
+/** Parsed representation of a single per-asset limit entry. */
+export interface AssetSpendingLimit {
+  /** Stellar asset code (e.g. "XLM", "USDC"). */
+  assetCode: string;
+  /**
+   * Issuer G-address for non-native assets, or undefined for XLM/native.
+   */
+  issuer?: string;
+  /**
+   * Spending ceiling as a string (preserved for BigInt conversion in the tracker).
+   * Must match /^\d+(\.\d{1,7})?$/.
+   */
+  limit: string;
+}
+
+/**
+ * Parses the SPENDING_LIMITS environment variable into an array of
+ * {@link AssetSpendingLimit} objects, validated with Zod.
+ *
+ * Returns an empty array when the variable is absent.
+ */
+const SpendingLimitsSchema = z
+  .string()
+  .optional()
+  .transform((val): AssetSpendingLimit[] => {
+    if (!val || val.trim() === "") return [];
+
+    return val.split(",").map((entry, idx) => {
+      const parts = entry.trim().split(":");
+      if (parts.length < 2 || parts.length > 3) {
+        throw new Error(
+          `SPENDING_LIMITS entry [${idx}] "${entry.trim()}" is malformed. ` +
+            `Expected "<CODE>:<LIMIT>" or "<CODE>:<ISSUER>:<LIMIT>".`
+        );
+      }
+
+      const assetCode = parts[0].trim();
+      if (!/^[A-Za-z0-9]{1,12}$/.test(assetCode)) {
+        throw new Error(
+          `SPENDING_LIMITS entry [${idx}]: asset code "${assetCode}" must be 1–12 alphanumeric characters.`
+        );
+      }
+
+      if (parts.length === 2) {
+        // <CODE>:<LIMIT>
+        const limit = parts[1].trim();
+        if (!/^\d+(\.\d{1,7})?$/.test(limit)) {
+          throw new Error(
+            `SPENDING_LIMITS entry [${idx}]: limit "${limit}" must be a non-negative decimal with up to 7 places.`
+          );
+        }
+        return { assetCode, limit };
+      }
+
+      // <CODE>:<ISSUER>:<LIMIT>
+      const issuer = parts[1].trim();
+      const limit = parts[2].trim();
+
+      if (issuer.length !== 56 || !issuer.startsWith("G")) {
+        throw new Error(
+          `SPENDING_LIMITS entry [${idx}]: issuer "${issuer}" must be a 56-character G-address.`
+        );
+      }
+      if (!/^\d+(\.\d{1,7})?$/.test(limit)) {
+        throw new Error(
+          `SPENDING_LIMITS entry [${idx}]: limit "${limit}" must be a non-negative decimal with up to 7 places.`
+        );
+      }
+
+      return { assetCode, issuer, limit };
+    });
+  })
+  .pipe(z.array(z.object({
+    assetCode: z.string(),
+    issuer:    z.string().optional(),
+    limit:     z.string(),
+  })));
+
 // ─── Raw environment schema ───────────────────────────────────────────────────
 
 const EnvSchema = z.object({
@@ -122,6 +218,14 @@ const EnvSchema = z.object({
   // Spending cap
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
 
+  /**
+   * Per-asset spending limits (optional).
+   * Format: "XLM:1000,USDC:GA5Z...:500"
+   * When provided, overrides AGENT_SPENDING_LIMIT for the specified assets.
+   * Unknown assets are denied by default.
+   */
+  SPENDING_LIMITS: SpendingLimitsSchema,
+
   // Persistence
   DB_PATH: z.string().default("./agent.db"),
 
@@ -171,9 +275,6 @@ const EnvSchema = z.object({
   WEBHOOK_SECRET: z.string().min(1).optional(),
   SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
   OTLP_ENDPOINT: z.string().url().optional(),
-  SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
-  OTLP_ENDPOINT: z.string().url().optional(),
-  WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -228,6 +329,16 @@ export interface AgentConfig {
    * "0" is not permitted. Defaults to "100".
    */
   readonly AGENT_SPENDING_LIMIT: string;
+
+  /**
+   * Optional per-asset spending limits, parsed from the SPENDING_LIMITS
+   * environment variable (e.g. "XLM:1000,USDC:GA5Z...:500").
+   *
+   * When populated, the tracker uses these per-asset ceilings instead of the
+   * single AGENT_SPENDING_LIMIT value. Unknown assets are denied by default.
+   * An empty array means no per-asset overrides — AGENT_SPENDING_LIMIT applies.
+   */
+  readonly SPENDING_LIMITS: AssetSpendingLimit[];
 
   /**
    * The maximum number of retry attempts for transient network/RPC calls.
@@ -452,14 +563,22 @@ function loadConfig(): AgentConfig {
   })();
 
   // Startup banner — only safe fields
+  const perAssetInfo =
+    rest.SPENDING_LIMITS && rest.SPENDING_LIMITS.length > 0
+      ? rest.SPENDING_LIMITS
+          .map((l) => (l.issuer ? `${l.assetCode}:${l.issuer.slice(0, 8)}…:${l.limit}` : `${l.assetCode}:${l.limit}`))
+          .join(", ")
+      : "(none — using AGENT_SPENDING_LIMIT)";
+
   process.stdout.write(
     `✅ [Config] Environment validated\n` +
-    `   Network        : ${cfg.STELLAR_NETWORK}\n` +
-    `   Horizon        : ${cfg.HORIZON_URL}\n` +
-    `   Soroban        : ${cfg.SOROBAN_RPC_URL}\n` +
-    `   Agent pubkey   : ${cfg.AGENT_PUBLIC_KEY}\n` +
-    `   Spending limit : ${cfg.AGENT_SPENDING_LIMIT} ${cfg.X402_ASSET_CODE}\n` +
-    `   Max retries    : ${cfg.MAX_RETRIES}\n`
+    `   Network          : ${cfg.STELLAR_NETWORK}\n` +
+    `   Horizon          : ${cfg.HORIZON_URL}\n` +
+    `   Soroban          : ${cfg.SOROBAN_RPC_URL}\n` +
+    `   Agent pubkey     : ${cfg.AGENT_PUBLIC_KEY}\n` +
+    `   Spending limit   : ${cfg.AGENT_SPENDING_LIMIT} ${cfg.X402_ASSET_CODE}\n` +
+    `   Per-asset limits : ${perAssetInfo}\n` +
+    `   Max retries      : ${cfg.MAX_RETRIES}\n`
   );
 
   return cfg;
