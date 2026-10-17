@@ -522,7 +522,7 @@ describe("PayFiAgent — payload sanitisation", () => {
   });
 
   it("recursively redacts nested sensitive keys in deeply nested objects", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
     mockInstance.execute.mockRejectedValueOnce(
       new Error("simulated nested payload failure")
     );
@@ -552,7 +552,7 @@ describe("PayFiAgent — payload sanitisation", () => {
   });
 
   it("includes errorType in AgentResult for structured errors", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
     mockInstance.execute.mockRejectedValueOnce(
       new ValidationError("Invalid payment parameters")
     );

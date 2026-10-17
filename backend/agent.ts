@@ -580,7 +580,13 @@ export class PayFiAgent extends EventEmitter {
         { taskType: task.type, error: safe, sanitizedPayload: sanitized },
         "Task failed"
       );
-      const result: AgentResult = { success: false, taskType: task.type, error: safe, correlationId };
+      const result: AgentResult = {
+        success: false,
+        taskType: task.type,
+        error: safe,
+        errorType: getErrorType(err),
+        correlationId,
+      };
       this.emit("task:failed", result);
       void dispatchWebhook(result);
       return result;

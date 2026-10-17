@@ -19,7 +19,6 @@ import { PathPaymentTool } from "../backend/tools/PathPaymentTool";
 import { MultiSigPaymentTool } from "../backend/tools/MultiSigPaymentTool";
 import { BatchPaymentTool } from "../backend/tools/BatchPaymentTool";
 import { DexOfferTool } from "../backend/tools/DexOfferTool";
-import { FeeBumpTool } from "../backend/tools/FeeBumpTool";
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 

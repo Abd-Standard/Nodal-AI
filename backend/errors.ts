@@ -57,7 +57,7 @@ export class RateLimitError extends StructuredError {
 
   constructor(message: string, retryAfterSeconds?: number, cause?: unknown) {
     super(message, ErrorType.RateLimitError, cause);
-    this.retryAfterSeconds = retryAfterSeconds;
+    if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds;
     Object.setPrototypeOf(this, RateLimitError.prototype);
   }
 }
@@ -74,7 +74,7 @@ export class ContractError extends StructuredError {
 
   constructor(message: string, contractId?: string, cause?: unknown) {
     super(message, ErrorType.ContractError, cause);
-    this.contractId = contractId;
+    if (contractId !== undefined) this.contractId = contractId;
     Object.setPrototypeOf(this, ContractError.prototype);
   }
 }
@@ -84,7 +84,7 @@ export class TransactionFailureError extends StructuredError {
 
   constructor(message: string, txHash?: string, cause?: unknown) {
     super(message, ErrorType.TransactionFailure, cause);
-    this.txHash = txHash;
+    if (txHash !== undefined) this.txHash = txHash;
     Object.setPrototypeOf(this, TransactionFailureError.prototype);
   }
 }
