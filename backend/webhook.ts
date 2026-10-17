@@ -2,6 +2,11 @@
  * backend/webhook.ts
  * Fire-and-forget webhook dispatcher called after every agent task.
  * Signs the payload with HMAC-SHA256 if WEBHOOK_SECRET is set.
+ *
+ * Signature scheme: X-Nodal-Signature = hex(HMAC-SHA256(secret, `${timestamp}.${body}`)),
+ * where `timestamp` is the Unix-seconds value sent in X-Nodal-Timestamp. Receivers
+ * should reject timestamps outside a tolerance window and dedupe on X-Nodal-Delivery-Id.
+ * Setting WEBHOOK_LEGACY_SIGNATURE=true keeps the old body-only signature for one release.
  */
 
 import crypto, { createHmac } from 'crypto';
@@ -17,9 +22,45 @@ export function signPayload(payload: string, secret: string): string {
   return createHmac('sha256', secret).update(payload).digest('hex');
 }
 
-export function verifyWebhookSignature(payload: string, sig: string, secret: string): boolean {
+export const DEFAULT_WEBHOOK_TOLERANCE_SEC = 300;
+
+export function signWebhookPayload(
+  timestamp: number | string,
+  payload: string,
+  secret: string
+): string {
+  return signPayload(`${timestamp}.${payload}`, secret);
+}
+
+export interface VerifyWebhookOptions {
+  /** Value of the X-Nodal-Timestamp header (Unix seconds). Omit only for legacy body-only signatures. */
+  timestamp?: number | string;
+  /** Maximum allowed clock skew between sender and receiver, in seconds. Defaults to 300. */
+  toleranceSec?: number;
+  /** Current time in Unix seconds — overridable for tests. */
+  nowSec?: number;
+}
+
+export function verifyWebhookSignature(
+  payload: string,
+  sig: string,
+  secret: string,
+  options: VerifyWebhookOptions = {}
+): boolean {
   if (typeof sig !== 'string' || !/^[0-9a-fA-F]{64}$/.test(sig)) return false;
-  const expected = Buffer.from(signPayload(payload, secret), 'hex');
+  const { timestamp, toleranceSec = DEFAULT_WEBHOOK_TOLERANCE_SEC } = options;
+  let signed: string;
+  if (timestamp === undefined) {
+    // Legacy body-only signature (WEBHOOK_LEGACY_SIGNATURE) — no replay protection.
+    signed = signPayload(payload, secret);
+  } else {
+    const ts = Number(timestamp);
+    if (!Number.isInteger(ts)) return false;
+    const nowSec = options.nowSec ?? Math.floor(Date.now() / 1000);
+    if (Math.abs(nowSec - ts) > toleranceSec) return false;
+    signed = signWebhookPayload(ts, payload, secret);
+  }
+  const expected = Buffer.from(signed, 'hex');
   const received = Buffer.from(sig, 'hex');
   if (expected.length !== received.length) return false;
   return crypto.timingSafeEqual(expected, received);
@@ -69,10 +110,18 @@ export async function dispatchWebhook(
   const initialDelayMs = options?.initialDelayMs ?? 1000;
 
   const body = JSON.stringify(result);
-  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  const timestamp = Math.floor(Date.now() / 1000);
+  const headers: Record<string, string> = {
+    'Content-Type': 'application/json',
+    'X-Nodal-Timestamp': String(timestamp),
+    // Stable across retries so receivers can dedupe redeliveries.
+    'X-Nodal-Delivery-Id': crypto.randomUUID(),
+  };
 
   if (config.WEBHOOK_SECRET) {
-    headers['X-Nodal-Signature'] = signPayload(body, config.WEBHOOK_SECRET);
+    headers['X-Nodal-Signature'] = config.WEBHOOK_LEGACY_SIGNATURE
+      ? signPayload(body, config.WEBHOOK_SECRET)
+      : signWebhookPayload(timestamp, body, config.WEBHOOK_SECRET);
   }
 
   let lastError: unknown;

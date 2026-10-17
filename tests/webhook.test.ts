@@ -12,7 +12,12 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { createHmac, timingSafeEqual } from 'crypto';
-import { signPayload, dispatchWebhook, verifyWebhookSignature } from '../backend/webhook';
+import {
+  signPayload,
+  signWebhookPayload,
+  dispatchWebhook,
+  verifyWebhookSignature,
+} from '../backend/webhook';
 import type { AgentResult } from '../backend/agent';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
@@ -35,6 +40,9 @@ vi.mock('../backend/config', () => ({
     },
     get WEBHOOK_SECRET() {
       return (globalThis as any).__webhookSecret;
+    },
+    get WEBHOOK_LEGACY_SIGNATURE() {
+      return (globalThis as any).__webhookLegacySignature ?? false;
     },
   },
 }));
@@ -120,6 +128,66 @@ describe('verifyWebhookSignature', () => {
   });
 });
 
+describe('verifyWebhookSignature — timestamped signatures (issue #739)', () => {
+  const payload = '{"foo":"bar"}';
+  const secret = 'mysecret';
+  const now = 1_700_000_000;
+
+  it('accepts a timestamped signature within tolerance', () => {
+    const sig = signWebhookPayload(now - 10, payload, secret);
+    expect(verifyWebhookSignature(payload, sig, secret, { timestamp: now - 10, nowSec: now })).toBe(
+      true
+    );
+  });
+
+  it('accepts the timestamp as a header string', () => {
+    const sig = signWebhookPayload(now, payload, secret);
+    expect(
+      verifyWebhookSignature(payload, sig, secret, { timestamp: String(now), nowSec: now })
+    ).toBe(true);
+  });
+
+  it('rejects a timestamp older than the default 300s tolerance', () => {
+    const ts = now - 301;
+    const sig = signWebhookPayload(ts, payload, secret);
+    expect(verifyWebhookSignature(payload, sig, secret, { timestamp: ts, nowSec: now })).toBe(false);
+  });
+
+  it('rejects a timestamp too far in the future', () => {
+    const ts = now + 301;
+    const sig = signWebhookPayload(ts, payload, secret);
+    expect(verifyWebhookSignature(payload, sig, secret, { timestamp: ts, nowSec: now })).toBe(false);
+  });
+
+  it('honours a custom toleranceSec', () => {
+    const ts = now - 30;
+    const sig = signWebhookPayload(ts, payload, secret);
+    expect(
+      verifyWebhookSignature(payload, sig, secret, { timestamp: ts, toleranceSec: 10, nowSec: now })
+    ).toBe(false);
+    expect(
+      verifyWebhookSignature(payload, sig, secret, { timestamp: ts, toleranceSec: 60, nowSec: now })
+    ).toBe(true);
+  });
+
+  it('rejects a replay that pairs an old signature with a fresh timestamp', () => {
+    const sig = signWebhookPayload(now - 1000, payload, secret);
+    expect(verifyWebhookSignature(payload, sig, secret, { timestamp: now, nowSec: now })).toBe(false);
+  });
+
+  it('rejects a non-numeric timestamp', () => {
+    const sig = signWebhookPayload(now, payload, secret);
+    expect(verifyWebhookSignature(payload, sig, secret, { timestamp: 'abc', nowSec: now })).toBe(
+      false
+    );
+  });
+
+  it('does not accept a legacy body-only signature when a timestamp is supplied', () => {
+    const sig = signPayload(payload, secret);
+    expect(verifyWebhookSignature(payload, sig, secret, { timestamp: now, nowSec: now })).toBe(false);
+  });
+});
+
 describe('dispatchWebhook', () => {
   let axiosPost: ReturnType<typeof vi.fn>;
 
@@ -127,6 +195,7 @@ describe('dispatchWebhook', () => {
     vi.clearAllMocks();
     (globalThis as any).__webhookUrl = undefined;
     (globalThis as any).__webhookSecret = undefined;
+    (globalThis as any).__webhookLegacySignature = undefined;
     const axios = (await import('axios')).default;
     axiosPost = axios.post as ReturnType<typeof vi.fn>;
   });
@@ -167,8 +236,62 @@ describe('dispatchWebhook', () => {
     expect(call).toBeDefined();
     if (!call) return;
     const [, body, opts] = call;
-    const expectedSig = signPayload(body as string, 'supersecret');
+    const timestamp = opts.headers['X-Nodal-Timestamp'];
+    const expectedSig = signWebhookPayload(timestamp, body as string, 'supersecret');
     expect(opts.headers['X-Nodal-Signature']).toBe(expectedSig);
+  });
+
+  it('sends X-Nodal-Timestamp and X-Nodal-Delivery-Id headers', async () => {
+    (globalThis as any).__webhookUrl = 'https://example.com/webhook';
+    axiosPost.mockResolvedValueOnce({ status: 200 });
+
+    const before = Math.floor(Date.now() / 1000);
+    await dispatchWebhook(successResult);
+    const after = Math.floor(Date.now() / 1000);
+
+    const [, , opts] = axiosPost.mock.calls[0]!;
+    const ts = Number(opts.headers['X-Nodal-Timestamp']);
+    expect(ts).toBeGreaterThanOrEqual(before);
+    expect(ts).toBeLessThanOrEqual(after);
+    expect(opts.headers['X-Nodal-Delivery-Id']).toMatch(
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+    );
+  });
+
+  it('keeps the delivery id stable across retries and unique per dispatch', async () => {
+    (globalThis as any).__webhookUrl = 'https://example.com/webhook';
+    axiosPost
+      .mockRejectedValueOnce({ response: { status: 503 } })
+      .mockResolvedValueOnce({ status: 200 })
+      .mockResolvedValueOnce({ status: 200 });
+
+    vi.useFakeTimers();
+    try {
+      const promise = dispatchWebhook(successResult);
+      await vi.runAllTimersAsync();
+      await promise;
+    } finally {
+      vi.useRealTimers();
+    }
+    await dispatchWebhook(successResult);
+
+    const ids = axiosPost.mock.calls.map(([, , opts]) => opts.headers['X-Nodal-Delivery-Id']);
+    expect(ids[0]).toBe(ids[1]);
+    expect(ids[2]).not.toBe(ids[0]);
+  });
+
+  it('signs the body only when WEBHOOK_LEGACY_SIGNATURE is enabled', async () => {
+    (globalThis as any).__webhookUrl = 'https://example.com/webhook';
+    (globalThis as any).__webhookSecret = 'supersecret';
+    (globalThis as any).__webhookLegacySignature = true;
+    axiosPost.mockResolvedValueOnce({ status: 200 });
+
+    await dispatchWebhook(successResult);
+
+    const [, body, opts] = axiosPost.mock.calls[0]!;
+    const signature: string = opts.headers['X-Nodal-Signature'];
+    expect(signature).toBe(signPayload(body as string, 'supersecret'));
+    expect(verifyWebhookSignature(body as string, signature, 'supersecret')).toBe(true);
   });
 
   it('POSTs on task failure result as well', async () => {
@@ -309,6 +432,7 @@ describe('dispatchWebhook — HMAC signature verification (issue #448)', () => {
     vi.clearAllMocks();
     (globalThis as any).__webhookUrl = 'https://example.com/hook';
     (globalThis as any).__webhookSecret = SECRET;
+    (globalThis as any).__webhookLegacySignature = undefined;
     const axios = (await import('axios')).default;
     axiosPost = axios.post as ReturnType<typeof vi.fn>;
     axiosPost.mockResolvedValue({ status: 200 });
@@ -341,9 +465,11 @@ describe('dispatchWebhook — HMAC signature verification (issue #448)', () => {
 
     const [, body, opts] = axiosPost.mock.calls[0]!;
     const signature: string = opts.headers['X-Nodal-Signature'];
+    const timestamp: string = opts.headers['X-Nodal-Timestamp'];
 
-    // Independently verify: receiver recomputes HMAC over the exact body bytes
-    expect(verifySignature(body, SECRET, signature)).toBe(true);
+    // Independently verify: receiver recomputes HMAC over `${timestamp}.${body}`
+    expect(verifySignature(`${timestamp}.${body}`, SECRET, signature)).toBe(true);
+    expect(verifyWebhookSignature(body, signature, SECRET, { timestamp })).toBe(true);
   });
 
   it('signature is computed over the exact serialized JSON body', async () => {
@@ -356,7 +482,8 @@ describe('dispatchWebhook — HMAC signature verification (issue #448)', () => {
     expect(JSON.parse(body)).toMatchObject({ success: true, taskType: 'stellar_payment' });
 
     // Recompute manually — must match
-    const expected = createHmac('sha256', SECRET).update(body).digest('hex');
+    const timestamp: string = opts.headers['X-Nodal-Timestamp'];
+    const expected = createHmac('sha256', SECRET).update(`${timestamp}.${body}`).digest('hex');
     expect(signature).toBe(expected);
   });
 

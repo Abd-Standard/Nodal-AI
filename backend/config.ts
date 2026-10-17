@@ -182,6 +182,11 @@ const EnvSchema = z.object({
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
+  // Backward-compat: sign the body only (no timestamp). Deprecated — removed next release.
+  WEBHOOK_LEGACY_SIGNATURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -354,6 +359,11 @@ export interface AgentConfig {
   readonly CONTRACT_EVENT_POLL_MS?: number | undefined;
   readonly WEBHOOK_URL?: string | undefined;
   readonly WEBHOOK_SECRET?: string | undefined;
+  /**
+   * When true, X-Nodal-Signature is HMAC(body) instead of HMAC(`${timestamp}.${body}`).
+   * Backward-compatibility flag for one release. Defaults to false.
+   */
+  readonly WEBHOOK_LEGACY_SIGNATURE: boolean;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────

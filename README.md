@@ -159,6 +159,41 @@ These limits apply to:
 - `x402_respond` tasks that trigger automatic payment via `X402PaymentTool`
 - `soroban_invoke` tasks whose contract calls internally move funds. A contract invocation can trigger Stellar Asset Contract (SAC) transfers (`transfer`, `transfer_from`, `burn`) that are invisible in the request payload, so `SorobanInvokeTool` derives the amount from the mandatory Soroban simulation: it sums the simulated SAC events that debit the agent, rejects the invocation when the total exceeds the limit (error: `"Contract invocation transfers X ... exceeds AGENT_SPENDING_LIMIT of Y"`), and records within-limit spends into the same rolling spending window as payments. Dry-runs (`simulateOnly: true`) are checked but never recorded, since no funds move.
 
+### Webhook Signatures
+
+When `WEBHOOK_URL` and `WEBHOOK_SECRET` are set, every webhook POST carries:
+
+| Header | Value |
+| --- | --- |
+| `X-Nodal-Timestamp` | Unix time (seconds) at which the delivery was signed. |
+| `X-Nodal-Signature` | Hex HMAC-SHA256 of `${timestamp}.${rawBody}` keyed with `WEBHOOK_SECRET`. |
+| `X-Nodal-Delivery-Id` | UUID unique to the delivery and identical across its retries — use it to dedupe. |
+
+Receivers should verify the signature over the **raw** request body, reject timestamps outside a tolerance window (300 s by default), and drop delivery ids they have already processed:
+
+```typescript
+import { verifyWebhookSignature } from "./backend/webhook";
+
+app.post("/nodal-webhook", express.raw({ type: "application/json" }), (req, res) => {
+  const rawBody = req.body.toString("utf8");
+  const ok = verifyWebhookSignature(
+    rawBody,
+    req.header("X-Nodal-Signature") ?? "",
+    process.env.WEBHOOK_SECRET!,
+    { timestamp: req.header("X-Nodal-Timestamp"), toleranceSec: 300 }
+  );
+  if (!ok) return res.status(401).end();
+  if (seenDeliveryIds.has(req.header("X-Nodal-Delivery-Id"))) return res.status(200).end();
+  seenDeliveryIds.add(req.header("X-Nodal-Delivery-Id"));
+  // ... handle JSON.parse(rawBody)
+  res.status(200).end();
+});
+```
+
+Without the helper, compute `HMAC-SHA256(secret, timestamp + "." + rawBody)` and compare it to the header in constant time.
+
+**Backward compatibility (one release):** set `WEBHOOK_LEGACY_SIGNATURE=true` to keep signing the body only (`HMAC(rawBody)`, no timestamp) while receivers migrate. Legacy signatures are verified by calling `verifyWebhookSignature(rawBody, sig, secret)` without a `timestamp`; they offer no replay protection and the flag will be removed in the next release.
+
 ### Mainnet Checklist
 
 Before deploying to **Stellar mainnet**, verify the following:
