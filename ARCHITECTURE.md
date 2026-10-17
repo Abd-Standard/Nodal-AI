@@ -86,19 +86,24 @@ The entry point for all agent tasks is `PayFiAgent.run(task)` inside [backend/ag
     │
     │  run(task)
     ▼
-[ PayFiAgent.run ] ────► [ assertWithinSpendingLimit ] 
-    │                         (Checks AGENT_SPENDING_LIMIT & MAINNET_SPENDING_CAP)
+[ PayFiAgent.run ]
     │
-    ├─► "stellar_payment" ──► StellarPaymentTool.execute()
-    ├─► "soroban_invoke"  ──► SorobanInvokeTool.execute()
-    └─► "x402_respond"    ──► X402PaymentTool.respond()
+    ▼
+[ tool registry ] ── tools.get(task.type) ──► AgentTool (or "Unknown task type")
+    │
+    ├─► tool.inputSchema.parse(payload)       (Zod validation before execute)
+    │
+    └─► tool.execute(input, ctx)
+            └─► ctx.assertWithinSpendingLimit(amount)   (payment tools)
+                  (Checks AGENT_SPENDING_LIMIT & MAINNET_SPENDING_CAP)
 ```
 
 1. **Task Request**: The caller calls `agent.run({ type, payload })`.
-2. **Spending Guard**: If the task involves a payment (`stellar_payment` or `x402_respond`), `assertWithinSpendingLimit(amount)` is called to verify that the value does not exceed the configured `AGENT_SPENDING_LIMIT` in [backend/config.ts](./backend/config.ts) or the global `MAINNET_SPENDING_CAP` (10,000 USDC/XLM).
-3. **Tool Delegation**: The agent delegates processing to the appropriate tool class instance (`paymentTool`, `sorobanTool`, or `x402Tool`).
-4. **Tool Execution**: The tool uses `config.agentKeypair()` to sign transaction envelopes and submits them via [backend/rpc_client.ts](./backend/rpc_client.ts).
-5. **Event Emission**: On completion or failure, the agent emits either `task:complete` or `task:failed` events.
+2. **Tool Lookup**: The agent looks `type` up in its tool registry — a map of [`AgentTool`](./backend/tools/AgentTool.ts)s keyed by name. Built-in tools are registered from the single array in [backend/tools/builtin.ts](./backend/tools/builtin.ts); third-party tools are added with `agent.registerTool()`. An unregistered type fails with `"Unknown task type: <value>"`.
+3. **Validation**: The payload is parsed with the tool's `inputSchema`, so the tool only ever receives validated input.
+4. **Spending Guard**: Payment tools (`stellar_payment`, `x402_respond`) call `ctx.assertWithinSpendingLimit(amount)` to verify that the value does not exceed the configured `AGENT_SPENDING_LIMIT` in [backend/config.ts](./backend/config.ts) or the global `MAINNET_SPENDING_CAP` (10,000 USDC/XLM).
+5. **Tool Execution**: The tool uses `config.agentKeypair()` to sign transaction envelopes and submits them via [backend/rpc_client.ts](./backend/rpc_client.ts).
+6. **Event Emission**: On completion or failure, the agent emits either `task:complete` or `task:failed` events.
 
 ---
 
@@ -128,12 +133,15 @@ sequenceDiagram
     PA->>MW: compose middleware chain → executeTask()
     MW->>PA: executeTask()
 
-    alt payment task (stellar_payment | x402_respond | batch_payment)
-        PA->>SC: assertWithinSpendingLimit(payload.amount)
-        SC-->>PA: pass or throw SpendingLimitError
+    PA->>PA: tools.get(type) → AgentTool (or throw "Unknown task type")
+    PA->>PA: tool.inputSchema.parse(payload)
+    PA->>T: tool.execute(input, ctx)
+
+    alt payment task (stellar_payment | x402_respond)
+        T->>SC: ctx.assertWithinSpendingLimit(input.amount)
+        SC-->>T: pass or throw SpendingLimitError
     end
 
-    PA->>T: tool.execute(payload) / tool.respond(payload) / tool.fetch()
     T->>N: loadAccount → build tx → [simulate] → sign → submit
     N-->>T: txHash / ledger / simulationResult
     T-->>PA: tool result
@@ -216,8 +224,8 @@ The following hooks fire in order around every task execution:
 1. **Draining check** — if `agent.drain()` has been called, new tasks are rejected immediately with `"Agent is shutting down — task rejected"`.
 2. **Concurrency gate** — tasks that arrive while `activeTasks >= MAX_CONCURRENT_TASKS` are either queued (bounded by `QUEUE_CAPACITY`) or rejected.
 3. **Middleware chain** — registered via `agent.use(fn)`. Runs in FIFO registration order; each middleware calls `next()` to continue. A middleware can short-circuit by returning a result without calling `next()`.
-4. **Spending limit guard** — called inside `executeTask()` for payment-bearing task types before the tool is invoked. Throws synchronously on violation.
-5. **Tool execution** — the matching tool's method is called with `task.payload`.
+4. **Tool lookup and validation** — the registered `AgentTool` for `task.type` is looked up and `task.payload` is parsed with its `inputSchema`. Unknown types and invalid payloads fail here.
+5. **Tool execution** — `tool.execute(input, ctx)` runs with the parsed input. Payment tools call `ctx.assertWithinSpendingLimit()` before moving funds; it throws synchronously on violation.
 6. **`task:complete` / `task:failed` event** — emitted on the `PayFiAgent` EventEmitter so external listeners can react without polling.
 7. **`saveResult`** — persists the `AgentResult` (plus a `timestamp`) to the local DB via `backend/persistence.ts`.
 8. **`dispatchWebhook`** — fire-and-forget POST to `WEBHOOK_URL` (if configured) with the serialised `AgentResult`. Errors in webhook delivery are logged but do not affect the returned result.
@@ -320,7 +328,7 @@ sequenceDiagram
 
 ## Tool Modules
 
-All tools live in `backend/tools/`. Each tool is a self-contained class responsible for one category of network interaction. The agent (`PayFiAgent`) instantiates tools in its constructor and dispatches to them from `run()`.
+All tools live in `backend/tools/`. Each tool is a self-contained class responsible for one category of network interaction. Each tool is exposed to the agent as an [`AgentTool`](./backend/tools/AgentTool.ts) — `{ name, description, inputSchema, valueMoving, execute }` — and `PayFiAgent` registers all built-ins from the single array returned by `createBuiltinTools()` in [backend/tools/builtin.ts](./backend/tools/builtin.ts).
 
 ### Existing Tools
 
@@ -594,43 +602,47 @@ export class MyNewTool {
 - Does it invoke a **Soroban contract**? → Call `prepareSorobanTx(tx)` before signing. This is mandatory, not optional.
 - Does it use a **Horizon Classic operation** (payment, changeTrust, pathPaymentStrictSend, feeBump, manageData, …)? → Skip `prepareSorobanTx`. Validate the envelope locally and submit directly.
 
-**5. Add a `TaskType` entry**
+**5. Add a `BuiltinTaskType` entry**
 
 In `backend/agent.ts`, add your new type to the union:
 
 ```typescript
-export type TaskType =
+export type BuiltinTaskType =
   | "stellar_payment"
   | "soroban_invoke"
   // ...
   | "my_new_task";   // ← add here
 ```
 
-**6. Wire the tool into `PayFiAgent`**
+**6. Register the tool in the built-in array**
 
-In `backend/agent.ts`:
+In `backend/tools/builtin.ts`, instantiate the tool and add one entry to the array returned by `createBuiltinTools()`. No other file needs to change — the agent validates the payload with `inputSchema` and calls `execute` with the parsed input:
 
 ```typescript
 // In the constructor:
 this.myNewTool = new MyNewTool(this.signer);
 
-// In the run() switch:
-case "my_new_task":
-  data = await this.myNewTool.execute(task.payload);
-  break;
+return [
+  // ...
+  defineTool({
+    name: "my_new_task",
+    description: "One line describing what the tool does.",
+    inputSchema: MyNewInputSchema,
+    valueMoving: true,
+    execute: (input) => myNewTool.execute(input),
+  }),
+];
 ```
 
 **7. Add a spending-limit guard if your tool moves value**
 
-If your tool accepts an `amount` field that moves funds, call `assertWithinSpendingLimit` in the `run()` case before delegating:
+If your tool accepts an `amount` field that moves funds, call `ctx.assertWithinSpendingLimit` before delegating:
 
 ```typescript
-case "my_new_task": {
-  const p = task.payload as Record<string, unknown>;
-  assertWithinSpendingLimit(p?.amount);
-  data = await this.myNewTool.execute(task.payload);
-  break;
-}
+execute: async (input, ctx) => {
+  ctx.assertWithinSpendingLimit(input.amount);
+  return myNewTool.execute(input);
+},
 ```
 
 **8. Write tests**
@@ -642,3 +654,42 @@ case "my_new_task": {
 **9. Update this document**
 
 Add an entry for your tool under [Existing Tools](#existing-tools) above, describing its purpose, key design decisions, and simulation gate status.
+
+### Registering a Third-Party Tool
+
+Tools that live outside this repository are registered on an agent instance with `registerTool()` — no fork of `backend/agent.ts` required. The payload is validated with the tool's `inputSchema` before `execute` runs, and the result flows through the same middleware, events, persistence, and webhooks as a built-in task.
+
+```typescript
+import { z } from "zod";
+import { PayFiAgent } from "./backend/agent";
+import type { AgentTool } from "./backend/tools/AgentTool";
+
+const PriceInputSchema = z.object({
+  base: z.string().min(1),
+  quote: z.string().min(1),
+});
+
+const priceOracleTool: AgentTool<z.infer<typeof PriceInputSchema>, { price: string }> = {
+  name: "price_oracle",
+  description: "Fetch the latest base/quote price from an external oracle.",
+  inputSchema: PriceInputSchema,
+  valueMoving: false,
+  async execute(input, ctx) {
+    ctx.logger.info({ base: input.base, quote: input.quote }, "Fetching oracle price");
+    const res = await fetch(`https://oracle.example.com/price/${input.base}/${input.quote}`);
+    return { price: (await res.json()).price };
+  },
+};
+
+const agent = new PayFiAgent();
+agent.registerTool(priceOracleTool);
+
+const result = await agent.run({
+  type: "price_oracle",
+  payload: { base: "XLM", quote: "USDC" },
+});
+```
+
+- `name` must be unique — registering a name that is already taken (including a built-in) throws.
+- Set `valueMoving: true` for tools that can move funds, and call `ctx.assertWithinSpendingLimit(amount)` inside `execute` so the agent's spending limits apply.
+- `agent.getTools()` returns every registered tool with its `name`, `description`, `inputSchema` and `valueMoving` flag — enough to describe the agent's capabilities to an LLM for function calling.
