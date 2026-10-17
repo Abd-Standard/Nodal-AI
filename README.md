@@ -508,6 +508,14 @@ Once past the spending check, `X402PaymentTool.respond()` validates the challeng
 
 If `rawChallenge` doesn't conform to this shape, `X402ChallengeSchema.parse()` throws and no payment is attempted.
 
+### Asset and price guards
+
+After parsing, `respond()` refuses challenges whose terms the operator has not approved:
+
+- **Spoofed issuer** — a challenge for a known asset code (`X402_ASSET_CODE`, plus any code listed in `X402_ALLOWED_ASSETS`) must use one of that code's configured issuers. A `USDC` challenge naming any other issuer fails with `x402: assetIssuer <G…> is not a trusted issuer for USDC`.
+- **Unexpected asset** — when `X402_ALLOWED_ASSETS` is set (comma-separated `XLM` or `CODE:ISSUER` entries), any other asset fails with `x402: asset <asset> is not in X402_ALLOWED_ASSETS`.
+- **Over-max price** — when `X402_MAX_PRICE` is set, a challenge `amount` above it fails with `x402: challenge amount <amount> exceeds X402_MAX_PRICE of <max>`.
+
 ### Nonce → memo derivation
 
 The challenge's `nonce` is a UUID v4 (36 characters), but Stellar's text memo field caps at 28 bytes. `X402PaymentTool` truncates it directly:

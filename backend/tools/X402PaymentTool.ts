@@ -69,6 +69,61 @@ export interface X402PaymentProof {
   signedAt: string;
 }
 
+// ─── Challenge terms validation ──────────────────────────────────────────────
+
+function parseAllowedAssets(raw: string): string[] {
+  return raw
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+}
+
+/**
+ * Rejects challenges that request an unexpected asset, a spoofed issuer for a
+ * known asset code (e.g. a fake `USDC`), or more than `X402_MAX_PRICE`.
+ */
+function assertAcceptableChallengeTerms(challenge: X402Challenge): void {
+  const allowed = config.X402_ALLOWED_ASSETS
+    ? parseAllowedAssets(config.X402_ALLOWED_ASSETS)
+    : undefined;
+
+  if (challenge.assetCode !== 'XLM') {
+    // Known codes: the configured x402 asset plus every code in the allow-list.
+    const trustedIssuers = new Map<string, Set<string>>();
+    const trust = (code: string, issuer: string) => {
+      const issuers = trustedIssuers.get(code) ?? new Set<string>();
+      issuers.add(issuer);
+      trustedIssuers.set(code, issuers);
+    };
+    trust(config.X402_ASSET_CODE, config.X402_ASSET_ISSUER);
+    for (const entry of allowed ?? []) {
+      const [code, issuer] = entry.split(':');
+      if (code && issuer) trust(code, issuer);
+    }
+
+    const issuers = trustedIssuers.get(challenge.assetCode);
+    if (issuers && !issuers.has(challenge.assetIssuer)) {
+      throw new Error(
+        `x402: assetIssuer ${challenge.assetIssuer} is not a trusted issuer for ${challenge.assetCode}`
+      );
+    }
+  }
+
+  if (allowed) {
+    const asset =
+      challenge.assetCode === 'XLM' ? 'XLM' : `${challenge.assetCode}:${challenge.assetIssuer}`;
+    if (!allowed.includes(asset)) {
+      throw new Error(`x402: asset ${asset} is not in X402_ALLOWED_ASSETS`);
+    }
+  }
+
+  if (config.X402_MAX_PRICE && parseFloat(challenge.amount) > parseFloat(config.X402_MAX_PRICE)) {
+    throw new Error(
+      `x402: challenge amount ${challenge.amount} exceeds X402_MAX_PRICE of ${config.X402_MAX_PRICE}`
+    );
+  }
+}
+
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 const RATE_LIMIT_WINDOW_MS = 60_000;
@@ -103,12 +158,14 @@ export class X402PaymentTool {
    * ### Processing steps
    * 1. Parse and validate `rawChallenge` against {@link X402ChallengeSchema}.
    * 2. Guard against self-payment (payTo must not equal the agent's public key).
-   * 3. If `ALLOWED_X402_ORIGINS` is configured, verify the challenge resource
+   * 3. Reject unexpected assets (`X402_ALLOWED_ASSETS`), spoofed issuers for
+   *    known asset codes, and amounts above `X402_MAX_PRICE`.
+   * 4. If `ALLOWED_X402_ORIGINS` is configured, verify the challenge resource
    *    hostname is in the allow-list.
-   * 4. Reject expired challenges (`expiresAt` < now).
-   * 5. Delegate to {@link StellarPaymentTool.execute} to sign and submit
+   * 5. Reject expired challenges (`expiresAt` < now).
+   * 6. Delegate to {@link StellarPaymentTool.execute} to sign and submit
    *    the payment, using `SHA-256(nonce)[0:28 hex]` as the transaction memo.
-   * 6. Return an {@link X402PaymentProof} with the settled `txHash`.
+   * 7. Return an {@link X402PaymentProof} with the settled `txHash`.
    *
    * @param rawChallenge - Raw (unvalidated) challenge object, typically the
    *   parsed JSON body of a `402 Payment Required` HTTP response.
@@ -117,7 +174,7 @@ export class X402PaymentTool {
    * @throws {z.ZodError} If `rawChallenge` does not conform to
    *   {@link X402ChallengeSchema} (missing fields, bad UUID, expired datetime, etc.).
    * @throws {Error} If the challenge has expired, the resource origin is not
-   *   allowed, the destination equals the agent's own address, or the underlying
+   *   allowed, the asset/issuer/amount is not acceptable, the destination equals the agent's own address, or the underlying
    *   Stellar payment fails.
    */
   async respond(rawChallenge: unknown): Promise<X402PaymentProof> {
@@ -137,6 +194,8 @@ export class X402PaymentTool {
     if (challenge.payTo === this.signer.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
+
+    assertAcceptableChallengeTerms(challenge);
 
     if (config.ALLOWED_X402_ORIGINS) {
       const allowedOrigins = config.ALLOWED_X402_ORIGINS.split(',').map((o) => o.trim());
