@@ -279,9 +279,8 @@ export interface AgentConfig {
    *
    * @example
    * ```typescript
-   * // Safely access the secret key for tool instantiation
-   * const secret = config.agentKeypair().secret();
-   * const tool = new StellarPaymentTool(secret);
+   * // Tools receive a Signer, never the secret key
+   * const tool = new StellarPaymentTool(new KeypairSigner(config.agentKeypair()));
    * ```
    */
   readonly agentKeypair: () => Keypair;

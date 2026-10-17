@@ -4,7 +4,6 @@
  */
 
 import {
-  Keypair,
   TransactionBuilder,
   Operation,
   Asset,
@@ -13,6 +12,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import {
   loadAccount,
   submitTransaction,
@@ -89,17 +89,17 @@ function buildPredicate(
 }
 
 export class ClaimableBalanceTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   private async verifyClaimant(balanceId: string): Promise<void> {
     const balance = await withRetry(
-      () => horizonServer.claimableBalances().claimant(this.keypair.publicKey()).call(),
+      () => horizonServer.claimableBalances().claimant(this.signer.publicKey()).call(),
       config.MAX_RETRIES,
       config.RETRY_DELAY_MS
     );
@@ -112,7 +112,7 @@ export class ClaimableBalanceTool {
 
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = ClaimableBalanceInputSchema.parse(rawInput);
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
 
     if (input.action === 'create') {
       const asset =
@@ -138,7 +138,7 @@ export class ClaimableBalanceTool {
         .setTimeout(SOROBAN_TX_TIMEOUT)
         .build();
 
-      tx.sign(this.keypair);
+      this.signer.signTransaction(tx);
       const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     }
@@ -157,7 +157,7 @@ export class ClaimableBalanceTool {
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
     const result = SubmitResultSchema.parse(await submitTransaction(tx));
     return { txHash: result.hash, ledger: result.ledger };
   }

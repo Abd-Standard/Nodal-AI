@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
 import { MultiSigPaymentTool, MultiSigInputSchema } from '../backend/tools/MultiSigPaymentTool';
+import { KeypairSigner } from '../backend/signer';
 import * as rpcClient from '../backend/rpc_client';
 import { ValidationError } from '../backend/errors';
 
@@ -70,7 +71,7 @@ describe('MultiSigPaymentTool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new MultiSigPaymentTool(TEST_SECRET);
+    tool = new MultiSigPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount() as any);
   });
 

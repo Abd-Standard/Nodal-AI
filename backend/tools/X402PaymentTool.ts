@@ -3,11 +3,12 @@
  * x402 machine-to-machine PayFi payment tool.
  */
 
-import { Keypair, Horizon } from '@stellar/stellar-sdk';
+import { Horizon } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { horizonServer, withRetry } from '../rpc_client';
 import { withBackoffGuard } from '../network';
 import { StellarPaymentTool } from './StellarPaymentTool';
@@ -75,22 +76,22 @@ const RATE_LIMIT_WINDOW_MS = 60_000;
 export class X402PaymentTool {
   private nonceStore: INonceStore;
   private paymentTool: StellarPaymentTool;
-  private keypair: Keypair;
+  private signer: Signer;
   private horizonServer: Horizon.Server;
   private paymentCount = 0;
   private windowStart = Date.now();
 
   /**
-   * @param secretKey   - Stellar secret key for signing payments.
+   * @param signer      - Signs payments; defaults to the agent signer.
    * @param nonceStore  - Pluggable nonce store.  Defaults to SqliteNonceStore
    *                      backed by the shared agent.db file.  Inject an
    *                      InMemoryNonceStore (or a custom Redis/DynamoDB
    *                      implementation of INonceStore) in tests or for
    *                      multi-instance deployments.
    */
-  constructor(secretKey: string = config.agentKeypair().secret(), nonceStore?: INonceStore) {
-    this.keypair = Keypair.fromSecret(secretKey);
-    this.paymentTool = new StellarPaymentTool(secretKey);
+  constructor(signer: Signer = createAgentSigner(), nonceStore?: INonceStore) {
+    this.signer = signer;
+    this.paymentTool = new StellarPaymentTool(signer);
     this.horizonServer = horizonServer;
     this.nonceStore = nonceStore ?? new SqliteNonceStore(new Database(config.DB_PATH));
   }
@@ -133,7 +134,7 @@ export class X402PaymentTool {
 
     const challenge = X402ChallengeSchema.parse(rawChallenge);
 
-    if (challenge.payTo === this.keypair.publicKey()) {
+    if (challenge.payTo === this.signer.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 
@@ -205,7 +206,7 @@ export class X402PaymentTool {
       network: config.STELLAR_NETWORK,
       txHash,
       nonce: challenge.nonce,
-      payer: this.keypair.publicKey(),
+      payer: this.signer.publicKey(),
       signedAt,
     };
   }

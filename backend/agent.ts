@@ -5,8 +5,8 @@
  *
  * Config usage pattern:
  *   - All network/identity values come from the validated `config` singleton.
- *   - Tools that need the Keypair call `config.agentKeypair()` explicitly —
- *     the secret never lives on the config object itself.
+ *   - Tools sign through the agent-owned `Signer` (backend/signer.ts) and never
+ *     receive the secret key; the secret never lives on the config object itself.
  *   - The spending limit is enforced here before delegating to tools.
  */
 
@@ -55,6 +55,7 @@ import * as rpcClient from './rpc_client';
 import { createLogger, generateCorrelationId } from './utils/logger';
 import { spendingTracker } from './spending_tracker';
 import { dispatchWebhook } from './webhook';
+import { createAgentSigner, Signer } from './signer';
 
 // Re-exported so existing importers (`server.ts`, tests) keep working after the
 // singleton moved to spending_tracker.ts.
@@ -246,6 +247,7 @@ function sanitizePayload(payload: unknown): unknown {
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
 export class PayFiAgent extends EventEmitter {
+  private readonly signer: Signer;
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
   private sorobanQueryTool: SorobanQueryTool;
@@ -294,34 +296,34 @@ export class PayFiAgent extends EventEmitter {
   constructor() {
     super();
 
-    // config.agentKeypair().secret() is the canonical way to obtain the signing secret.
-    // Direct access to config.AGENT_SECRET_KEY is intentionally blocked by the AgentConfig
-    // type (Omit<RawEnv, "AGENT_SECRET_KEY">); using agentKeypair() makes the access explicit.
-    this.paymentTool = new StellarPaymentTool(config.agentKeypair().secret());
-    this.sorobanTool = new SorobanInvokeTool(config.agentKeypair().secret());
-    this.sorobanQueryTool = new SorobanQueryTool(config.agentKeypair().secret());
-    this.x402Tool = new X402PaymentTool(config.agentKeypair().secret());
+    // Tools receive the agent-owned Signer, never the secret key itself, so the
+    // raw secret is not copied into every tool instance.
+    this.signer = createAgentSigner();
+    this.paymentTool = new StellarPaymentTool(this.signer);
+    this.sorobanTool = new SorobanInvokeTool(this.signer);
+    this.sorobanQueryTool = new SorobanQueryTool(this.signer);
+    this.x402Tool = new X402PaymentTool(this.signer);
     this.accountInfoTool = new AccountInfoTool();
-    this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
-    this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
-    this.batchPaymentTool = new BatchPaymentTool(config.agentKeypair().secret());
+    this.trustlineTool = new TrustlineTool(this.signer);
+    this.multiSigTool = new MultiSigPaymentTool(this.signer);
+    this.batchPaymentTool = new BatchPaymentTool(this.signer);
     this.balanceCheckTool = new BalanceCheckTool();
-    this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
-    this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
-    this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
-    this.liquidityPoolTool = new LiquidityPoolTool(config.agentKeypair().secret());
+    this.pathPaymentTool = new PathPaymentTool(this.signer);
+    this.feeBumpTool = new FeeBumpTool(this.signer);
+    this.dexOfferTool = new DexOfferTool(this.signer);
+    this.liquidityPoolTool = new LiquidityPoolTool(this.signer);
     this.stellarTomlTool = new StellarTomlTool();
-    this.dataEntryTool = new DataEntryTool(config.agentKeypair().secret());
-    this.sequenceNumberTool = new SequenceNumberTool(config.agentKeypair().secret());
-    this.sponsoredAccountTool = new SponsoredAccountTool(config.agentKeypair().secret());
+    this.dataEntryTool = new DataEntryTool(this.signer);
+    this.sequenceNumberTool = new SequenceNumberTool(this.signer);
+    this.sponsoredAccountTool = new SponsoredAccountTool(this.signer);
     this.anchorQuoteTool = new AnchorQuoteTool();
-    this.inflationTool = new InflationTool(config.agentKeypair().secret());
+    this.inflationTool = new InflationTool(this.signer);
     this.sorobanDeployTool = new SorobanDeployTool();
-    this.swapTool = new SwapTool(config.agentKeypair().secret());
+    this.swapTool = new SwapTool(this.signer);
     this.accountHistoryTool = new AccountHistoryTool();
-    this.setOptionsTool = new SetOptionsTool(config.agentKeypair().secret());
+    this.setOptionsTool = new SetOptionsTool(this.signer);
     this.sorobanEventIndexerTool = new SorobanEventIndexerTool();
-    this.stellarIdentityTool = new StellarIdentityTool(config.agentKeypair().secret());
+    this.stellarIdentityTool = new StellarIdentityTool(this.signer);
     this.friendBotTool = new FriendBotTool();
 
     // ── Register event listeners — every registration is mirrored in destroy() ──

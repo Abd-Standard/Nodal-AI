@@ -16,6 +16,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { StellarPaymentTool } from '../backend/tools/StellarPaymentTool';
+import { KeypairSigner } from '../backend/signer';
 import { SubmitResultSchema } from '../backend/tools/StellarPaymentTool';
 import * as rpcClient from '../backend/rpc_client';
 import type { MockHorizonServer } from './fixtures/MockHorizonServer';
@@ -581,7 +582,7 @@ describe('StellarPaymentTool', () => {
         ledger: 100,
       } as any);
 
-      const tool = new StellarPaymentTool(TEST_SECRET);
+      const tool = new StellarPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
       const result = await tool.execute({
         destination: VALID_DEST,
         amount: '1',
@@ -627,7 +628,7 @@ describe('StellarPaymentTool', () => {
         ledger: 200,
       } as any);
 
-      const tool = new StellarPaymentTool(TEST_SECRET);
+      const tool = new StellarPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
       const result = await tool.execute({
         destination: VALID_DEST,
         amount: '1',
@@ -667,7 +668,9 @@ describe('StellarPaymentTool — mutation-killing: exact return values', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(
-      makeMockAccount(new StellarPaymentTool(TEST_SECRET).publicKey) as any
+      makeMockAccount(
+        new StellarPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET))).publicKey
+      ) as any
     );
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: 'exact_hash_value',
@@ -676,7 +679,7 @@ describe('StellarPaymentTool — mutation-killing: exact return values', () => {
   });
 
   it('execute() returns an object whose txHash is exactly the Horizon hash', async () => {
-    const tool = new StellarPaymentTool(TEST_SECRET);
+    const tool = new StellarPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     const result = await tool.execute({ destination: VALID_DEST, amount: '1', assetCode: 'XLM' });
     // A mutation swapping result.txHash ↔ result.ledger would be caught here.
     expect(result.txHash).toBe('exact_hash_value');
@@ -684,14 +687,14 @@ describe('StellarPaymentTool — mutation-killing: exact return values', () => {
   });
 
   it('execute() returns an object whose ledger is exactly the Horizon ledger number', async () => {
-    const tool = new StellarPaymentTool(TEST_SECRET);
+    const tool = new StellarPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     const result = await tool.execute({ destination: VALID_DEST, amount: '1', assetCode: 'XLM' });
     expect(result.ledger).toBe(999);
     expect(result.ledger).not.toBe('exact_hash_value');
   });
 
   it('execute() returns exactly two keys (txHash and ledger), no extras', async () => {
-    const tool = new StellarPaymentTool(TEST_SECRET);
+    const tool = new StellarPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     const result = await tool.execute({ destination: VALID_DEST, amount: '1', assetCode: 'XLM' });
     const keys = Object.keys(result);
     expect(keys).toContain('txHash');
@@ -704,7 +707,7 @@ describe('StellarPaymentTool — mutation-killing: amount validation boundaries'
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new StellarPaymentTool(TEST_SECRET);
+    tool = new StellarPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
   });
 
@@ -739,7 +742,7 @@ describe('StellarPaymentTool — mutation-killing: destination key validation', 
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new StellarPaymentTool(TEST_SECRET);
+    tool = new StellarPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
   });
 

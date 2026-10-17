@@ -15,6 +15,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config, MAINNET_SPENDING_CAP } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { logger } from '../logger';
 import {
   loadAccount,
@@ -213,14 +214,14 @@ export function isSorobanSimulationResult(
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class SorobanInvokeTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
+  constructor(signer: Signer = createAgentSigner()) {
     if (SOROBAN_TX_TIMEOUT <= 0 || SOROBAN_TX_TIMEOUT > 300) {
       throw new Error(`SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT}`);
     }
-    this.keypair = Keypair.fromSecret(secretKey);
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
@@ -270,7 +271,7 @@ export class SorobanInvokeTool {
     const contract = new Contract(input.contractId);
 
     // 2. Load source account
-    const sourceAccount = await loadAccount(this.keypair.publicKey());
+    const sourceAccount = await loadAccount(this.signer.publicKey());
 
     // 3. Build invocation transaction
     const tx = new TransactionBuilder(sourceAccount, {
@@ -333,7 +334,7 @@ export class SorobanInvokeTool {
     // verifies the same object that will be submitted. If the transaction is ever
     // rebuilt (e.g., after a fee bump), this alias must be updated accordingly.
     const signedTx = preparedTx;
-    signedTx.sign(this.keypair);
+    this.signer.signTransaction(signedTx);
 
     // Guard: ensure at least one signature was attached. A no-op sign() call
     // (e.g., bad Keypair or future SDK changes) would produce zero signatures,
@@ -373,7 +374,7 @@ export class SorobanInvokeTool {
     events: readonly xdr.DiagnosticEvent[],
     record: boolean
   ): void {
-    const totalRaw = extractSacTransferTotal(events, this.keypair.publicKey());
+    const totalRaw = extractSacTransferTotal(events, this.signer.publicKey());
     if (totalRaw <= 0n) return;
 
     const amountStr = sacRawToDecimal(totalRaw);

@@ -4,7 +4,9 @@
  */
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Keypair } from '@stellar/stellar-sdk';
 import { TrustlineTool } from '../backend/tools/TrustlineTool';
+import { KeypairSigner } from '../backend/signer';
 import * as rpcClient from '../backend/rpc_client';
 import { BalanceCheckTool } from '../backend/tools/BalanceCheckTool';
 
@@ -89,7 +91,7 @@ describe('TrustlineTool', () => {
     vi.mocked(BalanceCheckTool).mockImplementation(
       () => ({ execute: vi.fn().mockResolvedValue('0') }) as any
     );
-    tool = new TrustlineTool(TEST_SECRET);
+    tool = new TrustlineTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
   });
 
   it('add trustline submits changeTrust operation and returns txHash', async () => {
@@ -110,7 +112,7 @@ describe('TrustlineTool', () => {
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(true) as any);
     const balanceCheck = vi.fn().mockResolvedValue('1.5');
     vi.mocked(BalanceCheckTool).mockImplementation(() => ({ execute: balanceCheck }) as any);
-    tool = new TrustlineTool(TEST_SECRET);
+    tool = new TrustlineTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
 
     await expect(
       tool.execute({ assetCode: 'USDC', assetIssuer: ISSUER, action: 'remove' })

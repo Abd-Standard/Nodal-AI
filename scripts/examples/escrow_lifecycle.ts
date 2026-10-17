@@ -37,6 +37,7 @@ import * as fs from 'fs';
 import { Asset, Keypair, nativeToScVal } from '@stellar/stellar-sdk';
 import { PayFiAgent } from '../../backend/agent';
 import { SorobanInvokeTool } from '../../backend/tools/SorobanInvokeTool';
+import { KeypairSigner } from '../../backend/signer';
 import { FriendBotTool } from '../../backend/tools/FriendBotTool';
 import { config } from '../../backend/config';
 import { resolveNetworkPassphrase } from '../../backend/rpc_client';
@@ -150,7 +151,7 @@ async function main(): Promise<void> {
     // A standalone SorobanInvokeTool, keyed to the arbiter's own secret —
     // PayFiAgent's tools always sign with the agent's single configured key,
     // so the arbiter's call has to go through its own tool instance.
-    const arbiterInvokeTool = new SorobanInvokeTool(arbiterKeypair.secret());
+    const arbiterInvokeTool = new SorobanInvokeTool(new KeypairSigner(arbiterKeypair));
     const releaseResult = await arbiterInvokeTool.execute({
       contractId,
       method: 'release',

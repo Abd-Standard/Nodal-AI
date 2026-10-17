@@ -21,7 +21,6 @@
  */
 
 import {
-  Keypair,
   TransactionBuilder,
   Operation,
   BASE_FEE,
@@ -30,6 +29,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { ValidationError } from '../errors';
 import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
 import { SubmitResultSchema } from './StellarPaymentTool';
@@ -55,17 +55,17 @@ export const SetOptionsInputSchema = z.object({
 export type SetOptionsInput = z.infer<typeof SetOptionsInputSchema>;
 
 export class SetOptionsTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = SetOptionsInputSchema.parse(rawInput);
-    const publicKey = this.keypair.publicKey();
+    const publicKey = this.signer.publicKey();
 
     if (
       input.setFlags !== undefined &&
@@ -122,7 +122,7 @@ export class SetOptionsTool {
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
     const result = SubmitResultSchema.parse(await submitTransaction(tx));
     return { txHash: result.hash, ledger: result.ledger };
   }

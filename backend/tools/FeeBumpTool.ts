@@ -13,6 +13,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { logger } from '../logger';
 import { resolveNetworkPassphrase, submitTransaction } from '../rpc_client';
 import { ValidationError } from '../errors';
@@ -36,16 +37,16 @@ export type FeeBumpInput = z.infer<typeof FeeBumpInputSchema>;
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class FeeBumpTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   get publicKey(): string {
-    return this.keypair.publicKey();
+    return this.signer.publicKey();
   }
 
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
@@ -60,7 +61,7 @@ export class FeeBumpTool {
       );
     }
 
-    const feeAccount = input.feeAccount ?? this.keypair.publicKey();
+    const feeAccount = input.feeAccount ?? this.signer.publicKey();
 
     // Deserialize the inner transaction from XDR
     let innerTx: Transaction;
@@ -122,7 +123,7 @@ export class FeeBumpTool {
       this.networkPassphrase
     );
 
-    feeBumpTx.sign(this.keypair);
+    this.signer.signTransaction(feeBumpTx);
 
     const result = SubmitResultSchema.parse(await submitTransaction(feeBumpTx));
     return { txHash: result.hash, ledger: result.ledger };

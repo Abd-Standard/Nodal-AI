@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { hash, Keypair } from '@stellar/stellar-sdk';
 import { createHash } from 'crypto';
 import { X402PaymentTool } from '../backend/tools/X402PaymentTool';
+import { KeypairSigner } from '../backend/signer';
 import { StellarPaymentTool } from '../backend/tools/StellarPaymentTool';
 import { config } from '../backend/config';
 import { TransactionFailureError, ErrorType } from '../backend/errors';
@@ -99,7 +100,7 @@ describe('X402PaymentTool', () => {
       execute: vi.fn().mockResolvedValue({ txHash: 'x402_mock_tx_hash', ledger: 99 }),
     };
     vi.mocked(StellarPaymentTool).mockImplementation(() => mockPaymentTool);
-    tool = new X402PaymentTool(TEST_SECRET);
+    tool = new X402PaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
   });
 
   // ── Schema validation ───────────────────────────────────────────────────────

@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
 import { ClaimableBalanceTool } from '../backend/tools/ClaimableBalanceTool';
+import { KeypairSigner } from '../backend/signer';
 import * as rpcClient from '../backend/rpc_client';
 
 vi.mock('../backend/rpc_client', () => ({
@@ -60,7 +61,7 @@ describe('ClaimableBalanceTool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new ClaimableBalanceTool(TEST_SECRET);
+    tool = new ClaimableBalanceTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     publicKey = Keypair.fromSecret(TEST_SECRET).publicKey();
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount() as any);
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({

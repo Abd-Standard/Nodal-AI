@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
 import { LiquidityPoolTool } from '../backend/tools/LiquidityPoolTool';
+import { KeypairSigner } from '../backend/signer';
 import { horizonServer, loadAccount, submitTransaction } from '../backend/rpc_client';
 
 vi.mock('../backend/rpc_client', async () => {
@@ -44,7 +45,7 @@ describe('LiquidityPoolTool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new LiquidityPoolTool(secretKey);
+    tool = new LiquidityPoolTool(new KeypairSigner(Keypair.fromSecret(secretKey)));
   });
 
   describe('info action', () => {
