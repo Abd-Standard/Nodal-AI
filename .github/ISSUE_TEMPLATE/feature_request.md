@@ -54,6 +54,10 @@ Which task type(s) does this feature touch, or does it introduce a new one?
 - [ ] `sponsored_account`
 - [ ] `anchor_quote`
 - [ ] `inflation`
+- [ ] `ledger_info`
+- [ ] `network_status`
+- [ ] `offer_book`
+- [ ] `soroban_storage`
 - [ ] New task type (specify below)
 - [ ] Not task-specific (infrastructure, DX, docs, etc.)
 

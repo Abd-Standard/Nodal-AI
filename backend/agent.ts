@@ -43,6 +43,10 @@ import { SetOptionsTool } from './tools/SetOptionsTool';
 import { SorobanEventIndexerTool } from './tools/SorobanEventIndexerTool';
 import { StellarIdentityTool } from './tools/StellarIdentityTool';
 import { FriendBotTool } from './tools/FriendBotTool';
+import { LedgerInfoTool } from './tools/LedgerInfoTool';
+import { NetworkStatusTool } from './tools/NetworkStatusTool';
+import { OfferBookTool } from './tools/OfferBookTool';
+import { SorobanStorageTool } from './tools/SorobanStorageTool';
 import { listen as listenContractEvents } from './tools/ContractEventListener';
 import {
   watchContractStorage,
@@ -119,7 +123,11 @@ export type TaskType =
   | 'set_options'
   | 'soroban_event_query'
   | 'stellar_identity_auth'
-  | 'friendbot';
+  | 'friendbot'
+  | 'ledger_info'
+  | 'network_status'
+  | 'offer_book'
+  | 'soroban_storage';
 
 export interface AgentTask {
   type: TaskType;
@@ -272,6 +280,10 @@ export class PayFiAgent extends EventEmitter {
   private sorobanEventIndexerTool: SorobanEventIndexerTool;
   private stellarIdentityTool: StellarIdentityTool;
   private friendBotTool: FriendBotTool;
+  private ledgerInfoTool: LedgerInfoTool;
+  private networkStatusTool: NetworkStatusTool;
+  private offerBookTool: OfferBookTool;
+  private sorobanStorageTool: SorobanStorageTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -323,6 +335,10 @@ export class PayFiAgent extends EventEmitter {
     this.sorobanEventIndexerTool = new SorobanEventIndexerTool();
     this.stellarIdentityTool = new StellarIdentityTool(config.agentKeypair().secret());
     this.friendBotTool = new FriendBotTool();
+    this.ledgerInfoTool = new LedgerInfoTool();
+    this.networkStatusTool = new NetworkStatusTool();
+    this.offerBookTool = new OfferBookTool();
+    this.sorobanStorageTool = new SorobanStorageTool();
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -762,6 +778,22 @@ export class PayFiAgent extends EventEmitter {
 
           case 'friendbot':
             data = await this.friendBotTool.execute(task.payload);
+            break;
+
+          case 'ledger_info':
+            data = await this.ledgerInfoTool.execute(task.payload);
+            break;
+
+          case 'network_status':
+            data = await this.networkStatusTool.execute();
+            break;
+
+          case 'offer_book':
+            data = await this.offerBookTool.execute(task.payload);
+            break;
+
+          case 'soroban_storage':
+            data = await this.sorobanStorageTool.execute(task.payload);
             break;
 
           default:

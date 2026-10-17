@@ -26,6 +26,10 @@ import { AccountInfoTool } from '../backend/tools/AccountInfoTool';
 import { TrustlineTool } from '../backend/tools/TrustlineTool';
 import { MultiSigPaymentTool } from '../backend/tools/MultiSigPaymentTool';
 import { BatchPaymentTool } from '../backend/tools/BatchPaymentTool';
+import { LedgerInfoTool } from '../backend/tools/LedgerInfoTool';
+import { NetworkStatusTool } from '../backend/tools/NetworkStatusTool';
+import { OfferBookTool } from '../backend/tools/OfferBookTool';
+import { SorobanStorageTool } from '../backend/tools/SorobanStorageTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
@@ -143,6 +147,30 @@ vi.mock('../backend/tools/AnchorQuoteTool', () => ({
 vi.mock('../backend/tools/InflationTool', () => ({
   InflationTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'inflation_mock_hash', ledger: 1 }),
+  })),
+}));
+
+vi.mock('../backend/tools/LedgerInfoTool', () => ({
+  LedgerInfoTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/NetworkStatusTool', () => ({
+  NetworkStatusTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/OfferBookTool', () => ({
+  OfferBookTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/SorobanStorageTool', () => ({
+  SorobanStorageTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
   })),
 }));
 
@@ -1493,5 +1521,96 @@ describe('PayFiAgent — unknown task type rejection (#450)', () => {
     await expect(agent.run({ type: 'another_unknown' as any, payload: {} })).resolves.toMatchObject(
       { success: false }
     );
+  });
+});
+
+describe('PayFiAgent — read-only query task types', () => {
+  let agent: PayFiAgent;
+  let ledgerInfoExecute: ReturnType<typeof vi.fn>;
+  let networkStatusExecute: ReturnType<typeof vi.fn>;
+  let offerBookExecute: ReturnType<typeof vi.fn>;
+  let sorobanStorageExecute: ReturnType<typeof vi.fn>;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }) }) as any
+    );
+
+    ledgerInfoExecute = vi.fn().mockResolvedValue({ sequence: 123, protocolVersion: 21 });
+    networkStatusExecute = vi.fn().mockResolvedValue({
+      horizon: { healthy: true, latencyMs: 10 },
+      soroban: { healthy: true, latencyMs: 12 },
+      network: 'mainnet',
+    });
+    offerBookExecute = vi.fn().mockResolvedValue({ bids: [], asks: [], spread: '0' });
+    sorobanStorageExecute = vi.fn().mockResolvedValue({ entries: [], latestLedger: 123 });
+
+    vi.mocked(LedgerInfoTool).mockImplementation(() => ({ execute: ledgerInfoExecute }) as any);
+    vi.mocked(NetworkStatusTool).mockImplementation(
+      () => ({ execute: networkStatusExecute }) as any
+    );
+    vi.mocked(OfferBookTool).mockImplementation(() => ({ execute: offerBookExecute }) as any);
+    vi.mocked(SorobanStorageTool).mockImplementation(
+      () => ({ execute: sorobanStorageExecute }) as any
+    );
+
+    agent = new PayFiAgent();
+  });
+
+  it('dispatches ledger_info to LedgerInfoTool', async () => {
+    const payload = { forceRefresh: true };
+    const result = await agent.run({ type: 'ledger_info', payload });
+
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe('ledger_info');
+    expect(ledgerInfoExecute).toHaveBeenCalledWith(payload);
+    expect(result.data).toEqual({ sequence: 123, protocolVersion: 21 });
+  });
+
+  it('dispatches network_status to NetworkStatusTool', async () => {
+    const result = await agent.run({ type: 'network_status', payload: {} });
+
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe('network_status');
+    expect(networkStatusExecute).toHaveBeenCalledTimes(1);
+    expect(result.data).toMatchObject({ network: 'mainnet' });
+  });
+
+  it('dispatches offer_book to OfferBookTool', async () => {
+    const payload = { sellingAsset: 'XLM', buyingAsset: `USDC:${ISSUER}`, limit: 5 };
+    const result = await agent.run({ type: 'offer_book', payload });
+
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe('offer_book');
+    expect(offerBookExecute).toHaveBeenCalledWith(payload);
+    expect(result.data).toEqual({ bids: [], asks: [], spread: '0' });
+  });
+
+  it('dispatches soroban_storage to SorobanStorageTool', async () => {
+    const payload = {
+      contractId: 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE',
+      keys: ['counter'],
+    };
+    const result = await agent.run({ type: 'soroban_storage', payload });
+
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe('soroban_storage');
+    expect(sorobanStorageExecute).toHaveBeenCalledWith(payload);
+    expect(result.data).toEqual({ entries: [], latestLedger: 123 });
+  });
+
+  it('returns a failed result when a query tool throws', async () => {
+    offerBookExecute.mockRejectedValueOnce(new Error('orderbook unavailable'));
+
+    const result = await agent.run({
+      type: 'offer_book',
+      payload: { sellingAsset: 'XLM', buyingAsset: `USDC:${ISSUER}` },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.taskType).toBe('offer_book');
+    expect(result.error).toContain('orderbook unavailable');
   });
 });
