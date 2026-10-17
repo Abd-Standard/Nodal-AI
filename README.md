@@ -170,6 +170,65 @@ Before deploying to **Stellar mainnet**, verify the following:
 
 All four checks are enforced at startup via `backend/config.ts` validation and at task dispatch time via `backend/agent.ts` guards.
 
+### Remote Signer Backends
+
+Signing goes through the `Signer` interface in `backend/signers/`. `createSigner()` picks the backend from `SIGNER_BACKEND`:
+
+| `SIGNER_BACKEND` | Signer | Where the key lives |
+|---|---|---|
+| `local` (default) | `LocalSigner` | In process memory, loaded from `AGENT_SECRET_KEY` or `AGENT_SECRET_KEY_ARN`. |
+| `vault` | `VaultTransitSigner` | Inside a HashiCorp Vault transit `ed25519` key. Only the 32-byte transaction hash is sent to Vault; the private key is never exported. |
+
+```typescript
+import { createSigner, signTransaction } from "./backend/signers";
+
+const signer = createSigner();
+await signTransaction(signer, tx); // signs tx.hash() and attaches the signature
+```
+
+`signTransaction()` attaches the signature with `addSignature`, which verifies it against the signer's public key, so a mismatched key fails before submission.
+
+#### HashiCorp Vault transit setup
+
+1. Enable the transit engine and create a non-exportable Ed25519 key:
+
+   ```bash
+   vault secrets enable transit
+   vault write -f transit/keys/nodal-agent type=ed25519 exportable=false
+   ```
+
+2. Create a policy that only allows reading the key's public half and signing with it:
+
+   ```hcl
+   # nodal-signer.hcl
+   path "transit/keys/nodal-agent" {
+     capabilities = ["read"]
+   }
+
+   path "transit/sign/nodal-agent" {
+     capabilities = ["update"]
+   }
+   ```
+
+   ```bash
+   vault policy write nodal-signer nodal-signer.hcl
+   vault token create -policy=nodal-signer -period=24h
+   ```
+
+   The token cannot rotate, export, or delete the key, and cannot use any other transit key.
+
+3. Look up the key's Stellar address and fund it. `await createSigner().publicKey()` returns the G-address derived from the Vault public key.
+
+4. Configure the agent:
+
+   ```bash
+   SIGNER_BACKEND=vault
+   VAULT_ADDR=https://vault.example.com:8200
+   VAULT_TRANSIT_KEY=nodal-agent
+   # VAULT_TRANSIT_MOUNT=transit   # only if the engine is mounted elsewhere
+   VAULT_TOKEN=hvs.xxxxx           # read from the environment, never stored on config
+   ```
+
 ---
 
 ## Contributing
