@@ -37,6 +37,13 @@ import { OfferBookTool } from '../backend/tools/OfferBookTool';
 import { SorobanStorageTool } from '../backend/tools/SorobanStorageTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
 import { isPaused } from '../backend/kill_switch';
+import { config } from '../backend/config';
+import {
+  savePendingApproval,
+  getPendingApproval,
+  decideApproval,
+  expirePendingApprovals,
+} from '../backend/persistence';
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
   PaymentInputSchema: passthroughSchema,
@@ -212,6 +219,11 @@ vi.mock('../backend/webhook', () => ({
 vi.mock('../backend/persistence', () => ({
   saveResult: vi.fn(),
   appendAuditEntry: vi.fn(),
+  savePendingApproval: vi.fn(),
+  getPendingApproval: vi.fn(),
+  listPendingApprovals: vi.fn(() => []),
+  decideApproval: vi.fn(() => true),
+  expirePendingApprovals: vi.fn(() => []),
 }));
 
 vi.mock('../backend/kill_switch', () => ({
@@ -1621,5 +1633,106 @@ describe('PayFiAgent — kill switch (#743)', () => {
     for (const type of ['account_info', 'balance_check', 'soroban_query', 'stellar_toml'] as const) {
       expect(VALUE_MOVING_TASK_TYPES.has(type)).toBe(false);
     }
+  });
+});
+
+describe('PayFiAgent — approval threshold (#736)', () => {
+  let agent: PayFiAgent;
+  const bigPayment = {
+    type: 'stellar_payment' as const,
+    payload: { destination: DEST, amount: '600', assetCode: 'USDC', assetIssuer: ISSUER },
+  };
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(isPaused).mockReturnValue(false);
+    vi.mocked(decideApproval).mockReturnValue(true);
+    vi.mocked(expirePendingApprovals).mockReturnValue([]);
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () =>
+        ({
+          execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }),
+        }) as any
+    );
+    (config as any).APPROVAL_THRESHOLD = '500';
+    (config as any).APPROVAL_TTL_MS = 60_000;
+    agent = new PayFiAgent();
+  });
+
+  afterEach(() => {
+    delete (config as any).APPROVAL_THRESHOLD;
+    delete (config as any).APPROVAL_TTL_MS;
+  });
+
+  function heldApproval() {
+    const [saved] = vi.mocked(savePendingApproval).mock.calls[0]!;
+    return { ...saved, status: 'pending_approval' as const, decidedAt: null };
+  }
+
+  it('holds a task above the threshold as pending_approval without executing it', async () => {
+    const result = await agent.run(bigPayment);
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe(ErrorType.PendingApproval);
+    expect(result.data).toMatchObject({ status: 'pending_approval' });
+    expect(savePendingApproval).toHaveBeenCalledTimes(1);
+    const paymentTool = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    expect(paymentTool.execute).not.toHaveBeenCalled();
+    // The amount is reserved while the approval is pending.
+    expect(spendingTracker.totalWithReserved()).toBe(600);
+  });
+
+  it('runs a task at or below the threshold immediately', async () => {
+    const result = await agent.run({
+      ...bigPayment,
+      payload: { ...bigPayment.payload, amount: '500' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(savePendingApproval).not.toHaveBeenCalled();
+  });
+
+  it('executes an approved task once, even when approved twice', async () => {
+    await agent.run(bigPayment);
+    const approval = heldApproval();
+    vi.mocked(getPendingApproval).mockReturnValue(approval);
+
+    const first = await agent.approve(approval.id);
+    vi.mocked(decideApproval).mockReturnValue(false);
+    const second = await agent.approve(approval.id);
+
+    expect(first?.result?.success).toBe(true);
+    expect(second?.result).toBeUndefined();
+    const paymentTool = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    expect(paymentTool.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('releases the reservation when a pending task is denied', async () => {
+    await agent.run(bigPayment);
+    const approval = heldApproval();
+    vi.mocked(getPendingApproval).mockReturnValue(approval);
+
+    agent.deny(approval.id);
+
+    expect(decideApproval).toHaveBeenCalledWith(approval.id, 'denied');
+    expect(spendingTracker.totalWithReserved()).toBe(0);
+  });
+
+  it('releases the reservation when a pending task expires', async () => {
+    await agent.run(bigPayment);
+    const approval = heldApproval();
+    vi.mocked(expirePendingApprovals).mockReturnValue([approval.id]);
+
+    agent.expireApprovals();
+
+    expect(spendingTracker.totalWithReserved()).toBe(0);
+  });
+
+  it('returns null for an unknown approval id', async () => {
+    vi.mocked(getPendingApproval).mockReturnValue(undefined);
+
+    expect(await agent.approve('missing')).toBeNull();
+    expect(agent.deny('missing')).toBeNull();
   });
 });

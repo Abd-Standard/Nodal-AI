@@ -161,6 +161,19 @@ const EnvSchema = z.object({
   // Spending cap
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
 
+  // Human-in-the-loop approval: value-moving tasks above this amount are held
+  // as pending_approval until approved or denied via POST /approvals/:id.
+  // Unset = no approval step.
+  APPROVAL_THRESHOLD: z
+    .string()
+    .regex(
+      /^(?!0+(\.0+)?$)\d+(\.\d{1,7})?$/,
+      "APPROVAL_THRESHOLD must be a positive decimal (e.g. '500' or '50.0000000')"
+    )
+    .optional(),
+  // How long a pending approval waits for a decision before it expires.
+  APPROVAL_TTL_MS: z.coerce.number().int().min(1_000).default(3_600_000),
+
   // Persistence
   DB_PATH: z.string().default('./agent.db'),
 
@@ -290,6 +303,18 @@ export interface AgentConfig {
    * "0" is not permitted. Defaults to "100".
    */
   readonly AGENT_SPENDING_LIMIT: string;
+
+  /**
+   * Amount above which a value-moving task is held as `pending_approval` until
+   * an operator approves or denies it. Optional — when unset no task is held.
+   */
+  readonly APPROVAL_THRESHOLD?: string | undefined;
+
+  /**
+   * How long (ms) a pending approval waits for a decision before it expires and
+   * its spending reservation is released. Defaults to 3,600,000 (1 hour).
+   */
+  readonly APPROVAL_TTL_MS: number;
 
   /**
    * The maximum number of retry attempts for transient network/RPC calls.

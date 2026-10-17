@@ -26,6 +26,8 @@ export enum ErrorType {
   ConfigError = 'CONFIG_ERROR',
   /** The operator kill switch is engaged; value-moving tasks are halted. */
   AgentPaused = 'AGENT_PAUSED',
+  /** The task exceeds APPROVAL_THRESHOLD and is waiting for a human decision. */
+  PendingApproval = 'PENDING_APPROVAL',
   UnknownError = 'UNKNOWN_ERROR',
 }
 

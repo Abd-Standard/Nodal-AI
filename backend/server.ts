@@ -11,6 +11,9 @@
  *   POST /admin/pause  → 200 { paused: true }   halt value-moving tasks (kill switch)
  *   POST /admin/resume → 200 { paused: false }  resume them
  *                  Both always require Bearer auth with WEBHOOK_SECRET; 401 when it is unset.
+ *   GET /approvals     → 200 { approvals: PendingApproval[] }  tasks awaiting a decision
+ *   POST /approvals/:id { "decision": "approve" | "deny" } → 200 { approval, result? }
+ *                  Always requires Bearer auth with WEBHOOK_SECRET; 401 when it is unset.
  *
  * Uses only the Node.js built-in `http` module — no additional dependencies.
  * Port is read from config.HEALTH_PORT (env var HEALTH_PORT, default 3000).
@@ -23,7 +26,7 @@ import { horizonServer, sorobanServer } from './rpc_client';
 import { db } from './db/client';
 import { handleError } from './middleware/error_handler';
 import { createLogger } from './utils/logger';
-import { spendingTracker } from './agent';
+import { spendingTracker, type PayFiAgent } from './agent';
 import { llmUsage } from './ai/llm';
 
 const log = createLogger('health-server');
@@ -123,13 +126,15 @@ const HEALTH_PATH = '/health';
 const STATUS_PATH = '/status';
 const SPENDING_PATH = '/spending';
 const METRICS_PATH = '/metrics';
+const APPROVALS_PATH = '/approvals';
 
 /**
  * Creates and returns the health-check HTTP server.
  * Does NOT call `.listen()` — the caller (typically `index.ts`) is responsible
- * for binding to `config.HEALTH_PORT`.
+ * for binding to `config.HEALTH_PORT`. The approval routes need `agent`; they
+ * answer 503 without one.
  */
-export function createHealthServer(): http.Server {
+export function createHealthServer(agent?: PayFiAgent): http.Server {
   const server = http.createServer((req, res) => {
     // ── GET /health ────────────────────────────────────────────────────────
     if (req.method === 'GET' && req.url === HEALTH_PATH) {
@@ -211,6 +216,35 @@ export function createHealthServer(): http.Server {
       return;
     }
 
+    // ── GET /approvals ─────────────────────────────────────────────────────
+    if (req.method === 'GET' && req.url === APPROVALS_PATH) {
+      if (!isAuthenticated(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+      if (!agent) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Agent not available' }));
+        return;
+      }
+
+      const body = JSON.stringify({ approvals: agent.listApprovals() });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(body);
+      return;
+    }
+
+    // ── POST /approvals/:id ────────────────────────────────────────────────
+    if (req.method === 'POST' && req.url?.startsWith(`${APPROVALS_PATH}/`)) {
+      const id = decodeURIComponent(req.url.slice(APPROVALS_PATH.length + 1));
+      void handleApprovalDecision(req, res, agent, id);
+      return;
+    }
+
     // ── 404 for everything else ────────────────────────────────────────────
     res.writeHead(404, { 'Content-Type': 'application/json' });
     res.end(JSON.stringify({ error: 'Not Found' }));
@@ -223,8 +257,8 @@ export function createHealthServer(): http.Server {
  * Convenience: create the server and immediately start listening.
  * Returns the bound server instance.
  */
-export function startHealthServer(): http.Server {
-  const server = createHealthServer();
+export function startHealthServer(agent?: PayFiAgent): http.Server {
+  const server = createHealthServer(agent);
   const port = config.HEALTH_PORT;
 
   server.listen(port, () => {
@@ -332,5 +366,82 @@ function handleResults(req: http.IncomingMessage, res: http.ServerResponse, url:
       ...errorResponse.headers,
     });
     res.end(body);
+  }
+}
+
+/** Reads and JSON-parses a request body; an empty body parses to `{}`. */
+function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => (data += chunk));
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * POST /approvals/:id — approve (execute once) or deny a pending task (#736).
+ * Moves money, so a Bearer token is always required — even on testnet.
+ */
+async function handleApprovalDecision(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  agent: PayFiAgent | undefined,
+  id: string
+): Promise<void> {
+  const send = (status: number, payload: unknown): void => {
+    const body = JSON.stringify(payload);
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+  };
+
+  if (!process.env.WEBHOOK_SECRET || !isAuthenticated(req)) {
+    send(401, { error: 'Unauthorized' });
+    return;
+  }
+  if (!agent) {
+    send(503, { error: 'Agent not available' });
+    return;
+  }
+
+  let decision: unknown;
+  try {
+    decision = ((await readJsonBody(req)) as { decision?: unknown } | null)?.decision;
+  } catch {
+    send(400, { error: 'Request body must be JSON' });
+    return;
+  }
+  if (decision !== 'approve' && decision !== 'deny') {
+    send(400, { error: 'decision must be "approve" or "deny"' });
+    return;
+  }
+
+  try {
+    if (decision === 'approve') {
+      const outcome = await agent.approve(id);
+      if (!outcome) send(404, { error: 'Approval not found' });
+      else send(200, outcome);
+    } else {
+      const approval = agent.deny(id);
+      if (!approval) send(404, { error: 'Approval not found' });
+      else send(200, { approval });
+    }
+  } catch (err) {
+    const errorResponse = handleError(err);
+    log.error({
+      msg: 'Failed to process approval decision',
+      status: errorResponse.status,
+      type: errorResponse.type,
+    });
+    send(errorResponse.status, errorResponse);
   }
 }
