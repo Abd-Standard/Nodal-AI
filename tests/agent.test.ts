@@ -33,6 +33,7 @@ import { MultiSigPaymentTool } from '../backend/tools/MultiSigPaymentTool';
 import { BatchPaymentTool } from '../backend/tools/BatchPaymentTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
 import { isPaused } from '../backend/kill_switch';
+import { emitTaskEvent } from '../backend/events';
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
@@ -1571,5 +1572,51 @@ describe('PayFiAgent — kill switch (#743)', () => {
     for (const type of ['account_info', 'balance_check', 'soroban_query', 'stellar_toml'] as const) {
       expect(VALUE_MOVING_TASK_TYPES.has(type)).toBe(false);
     }
+  });
+});
+
+describe('PayFiAgent — lifecycle events (#757)', () => {
+  it('emits started → submitted → confirmed → complete for a successful payment', async () => {
+    spendingTracker.clear();
+    // Stands in for rpc_client.submitTransaction, which emits the tx:* events.
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () =>
+        ({
+          execute: vi.fn(async () => {
+            emitTaskEvent('tx:submitted', { hash: 'abc' });
+            emitTaskEvent('tx:confirmed', { hash: 'abc', ledger: 7 });
+            return { txHash: 'abc', ledger: 7 };
+          }),
+        }) as any
+    );
+    const agent = new PayFiAgent();
+    const seen: Array<[string, unknown]> = [];
+    for (const event of ['task:started', 'tx:submitted', 'tx:confirmed', 'task:complete'] as const) {
+      agent.on(event, (detail: unknown) => seen.push([event, detail]));
+    }
+
+    const result = await agent.run({
+      type: 'stellar_payment',
+      payload: { destination: DEST, amount: '10', assetCode: 'USDC', assetIssuer: ISSUER },
+      correlationId: 'corr-1',
+    });
+
+    expect(result.success).toBe(true);
+    expect(seen.map(([event]) => event)).toEqual([
+      'task:started',
+      'tx:submitted',
+      'tx:confirmed',
+      'task:complete',
+    ]);
+    expect(seen[2]?.[1]).toEqual({
+      hash: 'abc',
+      ledger: 7,
+      taskType: 'stellar_payment',
+      correlationId: 'corr-1',
+    });
+  });
+
+  it('ignores task-scoped events raised outside an agent task', () => {
+    expect(() => emitTaskEvent('tx:submitted', { hash: 'abc' })).not.toThrow();
   });
 });
