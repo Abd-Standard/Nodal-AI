@@ -24,7 +24,7 @@ import { db } from './db/client';
 import { handleError } from './middleware/error_handler';
 import { createLogger } from './utils/logger';
 import { spendingTracker } from './agent';
-import { isPaused, pauseAgent, resumeAgent } from './kill_switch';
+import { llmUsage } from './ai/llm';
 
 const log = createLogger('health-server');
 
@@ -121,16 +121,7 @@ function isAuthenticated(req: http.IncomingMessage): boolean {
 const HEALTH_PATH = '/health';
 const STATUS_PATH = '/status';
 const SPENDING_PATH = '/spending';
-const ADMIN_PAUSE_PATH = '/admin/pause';
-const ADMIN_RESUME_PATH = '/admin/resume';
-
-/**
- * Admin routes can freeze or unfreeze fund movement, so unlike the read-only
- * routes they are never open: a WEBHOOK_SECRET must be configured and presented.
- */
-function isAdminAuthenticated(req: http.IncomingMessage): boolean {
-  return !!process.env.WEBHOOK_SECRET && isAuthenticated(req);
-}
+const METRICS_PATH = '/metrics';
 
 /**
  * Creates and returns the health-check HTTP server.
@@ -188,21 +179,29 @@ export function createHealthServer(): http.Server {
       return;
     }
 
-    // ── POST /admin/pause, POST /admin/resume ──────────────────────────────
-    if (req.method === 'POST' && (req.url === ADMIN_PAUSE_PATH || req.url === ADMIN_RESUME_PATH)) {
-      if (!isAdminAuthenticated(req)) {
+    // ── GET /metrics ───────────────────────────────────────────────────────
+    if (req.method === 'GET' && req.url === METRICS_PATH) {
+      if (!isAuthenticated(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized' }));
         return;
       }
 
-      if (req.url === ADMIN_PAUSE_PATH) {
-        pauseAgent('admin API');
-      } else {
-        resumeAgent('admin API');
-      }
+      const llmMetrics = llmUsage.getMetrics();
+      const spendingStatus = spendingTracker.getWindowStatus();
 
-      const body = JSON.stringify({ paused: isPaused() });
+      const body = JSON.stringify({
+        llm: llmMetrics,
+        spending: {
+          ...spendingStatus,
+          limit: parseFloat(config.AGENT_SPENDING_LIMIT),
+          percentUsed:
+            spendingStatus.total > 0
+              ? (spendingStatus.total / parseFloat(config.AGENT_SPENDING_LIMIT)) * 100
+              : 0,
+        },
+      });
+
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
