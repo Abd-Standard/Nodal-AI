@@ -238,6 +238,9 @@ const EnvSchema = z.object({
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
+  // Bearer token for the HTTP API (/status, /spending, /metrics, /approvals,
+  // /admin/*). Falls back to WEBHOOK_SECRET when unset — deprecated.
+  ADMIN_API_TOKEN: z.string().min(1).optional(),
   // Kill switch: start with value-moving tasks halted (see backend/kill_switch.ts).
   PAUSED: z
     .enum(['true', 'false'])
@@ -457,6 +460,12 @@ export interface AgentConfig {
   readonly WEBHOOK_URL?: string | undefined;
   readonly WEBHOOK_SECRET?: string | undefined;
   /**
+   * Bearer token required by the HTTP API. Separate from WEBHOOK_SECRET so
+   * leaking one does not compromise the other. When unset WEBHOOK_SECRET is
+   * accepted in its place (deprecated).
+   */
+  readonly ADMIN_API_TOKEN?: string | undefined;
+  /**
    * When true, X-Nodal-Signature is HMAC(body) instead of HMAC(`${timestamp}.${body}`).
    * Backward-compatibility flag for one release. Defaults to false.
    */
@@ -577,17 +586,22 @@ function parseConfigAndDerive(): AgentConfig {
   // /status and /spending expose payment history and spending data. Without a
   // token the server would serve them to anyone, so mainnet refuses to start;
   // testnet and futurenet keep open mode but warn once at startup.
-  if (!raw.WEBHOOK_SECRET) {
+  if (!raw.ADMIN_API_TOKEN && !raw.WEBHOOK_SECRET) {
     if (raw.STELLAR_NETWORK === 'mainnet') {
       process.stderr.write(
-        `❌ [Config] WEBHOOK_SECRET is required on mainnet — the HTTP API would otherwise ` +
+        `❌ [Config] ADMIN_API_TOKEN is required on mainnet — the HTTP API would otherwise ` +
           `serve payment history and spending data without authentication.\n`
       );
       process.exit(1);
     }
     process.stderr.write(
-      `⚠️  [Config] WEBHOOK_SECRET is not set — /status, /spending and /metrics are ` +
+      `⚠️  [Config] ADMIN_API_TOKEN is not set — /status, /spending and /metrics are ` +
         `unauthenticated (allowed on ${raw.STELLAR_NETWORK} only).\n`
+    );
+  } else if (!raw.ADMIN_API_TOKEN) {
+    process.stderr.write(
+      `⚠️  [Config] Using WEBHOOK_SECRET as the HTTP API token is deprecated — set a ` +
+        `separate ADMIN_API_TOKEN so the webhook signing secret is not also an API password.\n`
     );
   }
 

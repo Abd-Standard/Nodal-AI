@@ -7,19 +7,23 @@
  *   GET /health  → 200 { status: "ok", components: { horizon, soroban, database } }
  *                  503 { status: "degraded", components: { ... } } when a dependency is down
  *   GET /status  → 200 { results: PersistedResult[] }   (paginated via ?limit=&offset=,
- *                  default last 10; Bearer auth when WEBHOOK_SECRET is set)
+ *                  default last 10; Bearer auth when ADMIN_API_TOKEN is set)
  *   POST /admin/pause  → 200 { paused: true }   halt value-moving tasks (kill switch)
  *   POST /admin/resume → 200 { paused: false }  resume them
- *                  Both always require Bearer auth with WEBHOOK_SECRET; 401 when it is unset.
+ *                  Both always require Bearer auth with ADMIN_API_TOKEN; 401 when it is unset.
  *   GET /approvals     → 200 { approvals: PendingApproval[] }  tasks awaiting a decision
  *   POST /approvals/:id { "decision": "approve" | "deny" } → 200 { approval, result? }
- *                  Always requires Bearer auth with WEBHOOK_SECRET; 401 when it is unset.
+ *                  Always requires Bearer auth with ADMIN_API_TOKEN; 401 when it is unset.
+ *
+ * ADMIN_API_TOKEN is the API bearer token. WEBHOOK_SECRET is still accepted in
+ * its place when ADMIN_API_TOKEN is unset, but that fallback is deprecated.
  *
  * Uses only the Node.js built-in `http` module — no additional dependencies.
  * Port is read from config.HEALTH_PORT (env var HEALTH_PORT, default 3000).
  */
 
 import * as http from 'http';
+import { createHash, timingSafeEqual } from 'crypto';
 import { config } from './config';
 import { getResults } from './persistence';
 import { horizonServer, sorobanServer } from './rpc_client';
@@ -108,18 +112,37 @@ export async function checkDatabase(): Promise<ComponentStatus> {
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
 /**
+ * The bearer token the HTTP API accepts: ADMIN_API_TOKEN, falling back to the
+ * deprecated WEBHOOK_SECRET so existing deployments keep working. Read per
+ * request so a rotated value takes effect without re-importing the module.
+ */
+function apiToken(): string | undefined {
+  return process.env.ADMIN_API_TOKEN || process.env.WEBHOOK_SECRET || undefined;
+}
+
+/**
+ * Constant-time token comparison. Both sides are hashed first so the buffers
+ * handed to timingSafeEqual are always the same length, and the comparison
+ * leaks neither the token's contents nor its length.
+ */
+function tokensMatch(given: string, expected: string): boolean {
+  const a = createHash('sha256').update(given).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+}
+
+/**
  * Returns true if the request passes Bearer-token authentication.
- * When WEBHOOK_SECRET is unset, requests are allowed on testnet/futurenet only;
- * on mainnet they are always rejected. The secret is read per request so a
- * rotated value takes effect without re-importing the module.
+ * When no API token is configured, requests are allowed on testnet/futurenet
+ * only; on mainnet they are always rejected.
  */
 function isAuthenticated(req: http.IncomingMessage): boolean {
-  const secret = process.env.WEBHOOK_SECRET;
+  const secret = apiToken();
   if (!secret) return config.STELLAR_NETWORK !== 'mainnet';
   const auth = req.headers['authorization'];
   if (!auth) return false;
   const [scheme, token] = auth.split(' ');
-  return scheme?.toLowerCase() === 'bearer' && token === secret;
+  return scheme?.toLowerCase() === 'bearer' && token !== undefined && tokensMatch(token, secret);
 }
 
 const HEALTH_PATH = '/health';
@@ -148,7 +171,7 @@ export function createHealthServer(agent?: PayFiAgent): http.Server {
 
     // ── GET /status ────────────────────────────────────────────────────────
     // Delegates to handleResults(), which enforces Bearer-token auth when
-    // WEBHOOK_SECRET is set and honours `limit`/`offset` query parameters.
+    // ADMIN_API_TOKEN is set and honours `limit`/`offset` query parameters.
     // The previous inline branch served persisted results with no auth guard
     // and a hardcoded `getResults(10)`.
     if (req.method === 'GET' && req.url?.split('?')[0] === STATUS_PATH) {
@@ -326,7 +349,7 @@ function parseNonNegativeInt(value: string | null, fallback: number): number {
 
 /**
  * GET /status — paginated persisted AgentResult records, newest first.
- * Requires a matching Bearer token when WEBHOOK_SECRET is set.
+ * Requires a matching Bearer token when ADMIN_API_TOKEN is set.
  * Query parameters: `limit` (default 10, max 100) and `offset` (default 0).
  */
 function handleResults(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
@@ -404,7 +427,7 @@ async function handleApprovalDecision(
     res.end(body);
   };
 
-  if (!process.env.WEBHOOK_SECRET || !isAuthenticated(req)) {
+  if (!apiToken() || !isAuthenticated(req)) {
     send(401, { error: 'Unauthorized' });
     return;
   }

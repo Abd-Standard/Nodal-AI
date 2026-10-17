@@ -443,6 +443,7 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
     process.env.AGENT_SPENDING_LIMIT = "100";
     delete process.env.WEBHOOK_SECRET;
+    delete process.env.ADMIN_API_TOKEN;
 
     await expect(async () => {
       const { configPromise } = await import("../backend/config");
@@ -451,21 +452,53 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
 
     expect(exitSpy).toHaveBeenCalledWith(1);
     expect(stderrSpy).toHaveBeenCalledWith(
-      expect.stringContaining("WEBHOOK_SECRET is required on mainnet")
+      expect.stringContaining("ADMIN_API_TOKEN is required on mainnet")
     );
   });
 
   it("warns once on testnet when no API token is configured", async () => {
     setMinimalValidEnv();
     delete process.env.WEBHOOK_SECRET;
+    delete process.env.ADMIN_API_TOKEN;
 
     const { configPromise } = await import("../backend/config");
     await configPromise;
 
     expect(exitSpy).not.toHaveBeenCalled();
     const warnings = stderrSpy.mock.calls.filter(([msg]: [string]) =>
-      String(msg).includes("WEBHOOK_SECRET is not set")
+      String(msg).includes("ADMIN_API_TOKEN is not set")
     );
     expect(warnings).toHaveLength(1);
+  });
+
+  // ── Dedicated API token (#737) ──────────────────────────────────────────────
+  it("warns that WEBHOOK_SECRET as the API token is deprecated", async () => {
+    setMinimalValidEnv();
+    process.env.WEBHOOK_SECRET = "legacy-secret";
+    delete process.env.ADMIN_API_TOKEN;
+
+    const { configPromise } = await import("../backend/config");
+    await configPromise;
+
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Using WEBHOOK_SECRET as the HTTP API token is deprecated")
+    );
+  });
+
+  it("accepts ADMIN_API_TOKEN on mainnet without a deprecation warning", async () => {
+    setMinimalValidEnv();
+    process.env.STELLAR_NETWORK = "mainnet";
+    process.env.HORIZON_URL = "https://horizon.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
+    process.env.AGENT_SPENDING_LIMIT = "100";
+    process.env.ADMIN_API_TOKEN = "admin-token";
+    delete process.env.WEBHOOK_SECRET;
+
+    const { configPromise } = await import("../backend/config");
+    const cfg = await configPromise;
+
+    expect(cfg.ADMIN_API_TOKEN).toBe("admin-token");
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).not.toHaveBeenCalledWith(expect.stringContaining("deprecated"));
   });
 });

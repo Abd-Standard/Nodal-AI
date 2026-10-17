@@ -147,6 +147,7 @@ describe('backend/server.ts — health check HTTP server', () => {
     sorobanOk = true;
     databaseOk = true;
     delete process.env.WEBHOOK_SECRET;
+    delete process.env.ADMIN_API_TOKEN;
     vi.clearAllMocks();
   });
 
@@ -517,6 +518,56 @@ describe('backend/server.ts — health check HTTP server', () => {
 
       expect(bad._statusCode).toBe(400);
       expect(missing._statusCode).toBe(404);
+    });
+  });
+
+  describe('ADMIN_API_TOKEN (#737)', () => {
+    it('returns 401 when ADMIN_API_TOKEN is set and no token is supplied', () => {
+      process.env.ADMIN_API_TOKEN = 'admin-token';
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(makeReq('GET', '/status'), res);
+
+      expect(res._statusCode).toBe(401);
+      expect(getResults).not.toHaveBeenCalled();
+    });
+
+    it('returns 401 for an invalid token, including one of a different length', () => {
+      process.env.ADMIN_API_TOKEN = 'admin-token';
+      createHealthServer();
+
+      const wrong = makeRes();
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer admin-tokeX' }), wrong);
+      const shorter = makeRes();
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer admin' }), shorter);
+      const noToken = makeRes();
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer' }), noToken);
+
+      expect(wrong._statusCode).toBe(401);
+      expect(shorter._statusCode).toBe(401);
+      expect(noToken._statusCode).toBe(401);
+    });
+
+    it('returns 200 for a valid ADMIN_API_TOKEN', () => {
+      process.env.ADMIN_API_TOKEN = 'admin-token';
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer admin-token' }), res);
+
+      expect(res._statusCode).toBe(200);
+    });
+
+    it('rejects WEBHOOK_SECRET as the token once ADMIN_API_TOKEN is set', () => {
+      process.env.ADMIN_API_TOKEN = 'admin-token';
+      process.env.WEBHOOK_SECRET = 'webhook-secret';
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer webhook-secret' }), res);
+
+      expect(res._statusCode).toBe(401);
     });
   });
 });
