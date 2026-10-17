@@ -121,23 +121,56 @@ To report a vulnerability privately, use [GitHub Security Advisories](https://gi
 
 PayFiAgent enforces two layers of spending limits to prevent runaway payments:
 
-- **AGENT_SPENDING_LIMIT**: A configurable per-transaction ceiling (set via environment variable). Before every payment task (`stellar_payment` or `x402_respond`), the `assertWithinSpendingLimit()` function in `backend/agent.ts` checks the requested amount. If it exceeds `AGENT_SPENDING_LIMIT`, the task fails immediately with error: `"Payment amount X exceeds AGENT_SPENDING_LIMIT of Y"`.
-- **Mainnet Spending Cap**: A hardcoded safety ceiling of **10,000** on mainnet. Even if `AGENT_SPENDING_LIMIT` is misconfigured above this, mainnet transactions are blocked if they exceed 10,000, throwing: `"Payment amount X exceeds mainnet spending cap of 10,000"`.
+- **Per-asset limits (`SPENDING_LIMITS`)**: The recommended mode. Configure per-asset ceilings with `SPENDING_LIMITS='XLM:1000,USDC:GA5Z...:500'`. Each entry is `ASSET_CODE:LIMIT` (native) or `ASSET_CODE:ISSUER:LIMIT` (issued). Unknown assets are **denied by default**. Usage is reported via `GET /spending`.
+- **Global limit (`AGENT_SPENDING_LIMIT`)**: Legacy single-asset ceiling (default `100`). Applied when `SPENDING_LIMITS` is not set.
+- **Mainnet Spending Cap**: A hardcoded safety ceiling of **10,000** on mainnet. Applies regardless of configured limits.
+
+**Concurrency safety**: The check-and-reserve is protected by an in-process async mutex — concurrent tasks cannot both pass the limit check before either is recorded. For multi-process deployments, SQLite `INSERT OR REPLACE` provides row-level atomicity.
+
+**BigInt arithmetic**: All amount comparisons use `toStroops()` (BigInt, `backend/utils/amount.ts`), rejecting scientific notation, hex, and whitespace that `parseFloat` would silently accept.
+
+**Rollback persistence**: `SpendingTracker.rollback()` physically deletes the SQLite row so rolled-back spend does not reappear after a process restart.
 
 These limits apply to:
 - Direct `stellar_payment` tasks via `StellarPaymentTool`
 - `x402_respond` tasks that trigger automatic payment via `X402PaymentTool`
+
+#### `SPENDING_LIMITS` format
+
+```
+SPENDING_LIMITS='XLM:1000,USDC:GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5:500'
+```
+
+Each comma-separated entry is either:
+- `ASSET_CODE:LIMIT` — native asset or code-only (e.g. `XLM:1000`)
+- `ASSET_CODE:ISSUER:LIMIT` — issued asset (e.g. `USDC:GA5Z...:500`)
+
+When `SPENDING_LIMITS` is set, any asset **not listed is rejected**. To allow unlimited spend on an asset, set its limit high (e.g. `XLM:9999`).
+
+#### `GET /spending` endpoint
+
+Returns current rolling-window usage per asset:
+
+```json
+{
+  "windowMs": 86400000,
+  "assets": [
+    { "asset": "XLM",             "total": "50.0000000", "limit": "1000", "remaining": "950.0000000" },
+    { "asset": "USDC:GBBD47IF…",  "total": "0.0000000",  "limit": "500",  "remaining": "500.0000000" }
+  ]
+}
+```
 
 ### Mainnet Checklist
 
 Before deploying to **Stellar mainnet**, verify the following:
 
 - [ ] **Set `STELLAR_NETWORK=mainnet`** — This enables the mainnet spending cap and enforces HTTPS-only RPC connections.
-- [ ] **Set `AGENT_SPENDING_LIMIT` below 10,000** — The limit should reflect your acceptable per-transaction maximum (e.g., `1000` for USD denominations). Values above 10,000 will be rejected on mainnet.
+- [ ] **Set `SPENDING_LIMITS` or `AGENT_SPENDING_LIMIT` conservatively** — The limit should reflect your acceptable per-asset maximum. `AGENT_SPENDING_LIMIT` values above 10,000 will be rejected on mainnet.
 - [ ] **Verify `X402_ASSET_ISSUER`** — Confirm this is the canonical USDC anchor account on mainnet. Misconfiguration sends payments to the wrong issuer.
 - [ ] **Test with `simulateOnly: true` first** — For `soroban_invoke` tasks, set `simulateOnly: true` to dry-run contract logic without broadcasting. This validates gas estimation and state changes in a safe sandbox.
 
-All four checks are enforced at startup via `backend/config.ts` validation and at task dispatch time via `backend/agent.ts` guards.
+All checks are enforced at startup via `backend/config.ts` validation and at task dispatch time via `backend/agent.ts` guards.
 
 ---
 
