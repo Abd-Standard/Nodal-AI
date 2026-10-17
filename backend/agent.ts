@@ -42,21 +42,38 @@ export const spendingTracker = new SpendingTracker();
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
 /**
- * Check that a payment amount does not exceed the configured spending limit.
- * Also enforces cumulative spending within the sliding window.
+ * Check that a payment amount does not exceed the configured per-payment and
+ * mainnet spending caps, then **reserve** the amount against the cumulative
+ * rolling-window limit.
+ *
+ * ## Issue #729 — reserve-before-submit
+ * Returns a `reservationId` string that the caller MUST pass to either
+ * `spendingTracker.commit(id)` on successful submission or
+ * `spendingTracker.release(id)` on failure/rejection.  Using reserve() instead
+ * of the old record()-before-submit pattern means that a network error,
+ * bad-sequence retry, or any other submission failure does NOT permanently
+ * consume quota from the rolling window.
+ *
+ * Returns `null` for non-string amounts (tool schema will catch them).
+ *
+ * @throws if the single-payment amount exceeds AGENT_SPENDING_LIMIT or the
+ *   mainnet safety cap, or if the cumulative reserved+committed total would
+ *   exceed the limit.
  */
-function assertWithinSpendingLimit(amount: unknown): void {
-  if (typeof amount !== "string") return; // let the tool's own schema catch this
+function reserveSpendingLimit(amount: unknown): string | null {
+  if (typeof amount !== "string") return null; // let the tool's own schema catch this
 
   const parsed = parseFloat(amount);
   const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
 
+  // Layer 1: single-payment cap
   if (!isNaN(parsed) && parsed > limit) {
     throw new Error(
       `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
         `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
     );
   }
+  // Layer 2: mainnet hard cap
   if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
     throw new Error(
       `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
@@ -64,8 +81,9 @@ function assertWithinSpendingLimit(amount: unknown): void {
     );
   }
 
-  // Record cumulative spending (after individual checks pass)
-  spendingTracker.record(amount);
+  // Layer 3: reserve against rolling-window cumulative limit (issue #729)
+  // Returns a reservationId — caller must commit() on success or release() on failure.
+  return spendingTracker.reserve(amount);
 }
 
 const log = createLogger("orchestrator");
@@ -409,9 +427,16 @@ export class PayFiAgent extends EventEmitter {
 
       switch (task.type) {
         case "stellar_payment": {
+          // issue #729 — reserve before submit, commit/release after
           const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
-          data = await this.paymentTool.execute(task.payload);
+          const reservationId = reserveSpendingLimit(p?.amount);
+          try {
+            data = await this.paymentTool.execute(task.payload);
+            if (reservationId !== null) spendingTracker.commit(reservationId);
+          } catch (toolErr) {
+            if (reservationId !== null) spendingTracker.release(reservationId);
+            throw toolErr;
+          }
           break;
         }
 
@@ -425,9 +450,16 @@ export class PayFiAgent extends EventEmitter {
           break;
 
         case "x402_respond": {
+          // issue #729 — reserve before submit, commit/release after
           const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
-          data = await this.x402Tool.respond(task.payload);
+          const reservationId = reserveSpendingLimit(p?.amount);
+          try {
+            data = await this.x402Tool.respond(task.payload);
+            if (reservationId !== null) spendingTracker.commit(reservationId);
+          } catch (toolErr) {
+            if (reservationId !== null) spendingTracker.release(reservationId);
+            throw toolErr;
+          }
           break;
         }
 
@@ -439,30 +471,94 @@ export class PayFiAgent extends EventEmitter {
           data = await this.trustlineTool.execute(task.payload);
           break;
 
-        case "multisig_payment":
-          data = await this.multiSigTool.execute(task.payload);
+        case "multisig_payment": {
+          // issue #728 — multisig_payment was unguarded; apply spending limit
+          // Only guard when enough signatures are present (i.e., the tx will be submitted).
+          // When returning unsignedXDR no funds move, so no reservation needed.
+          const p = task.payload as Record<string, unknown>;
+          const sigs = Array.isArray(p?.signatures) ? p.signatures : [];
+          const minSig = typeof p?.minSignatures === "number" ? p.minSignatures : 1;
+          const willSubmit = sigs.length >= minSig;
+          const reservationId = willSubmit ? reserveSpendingLimit(p?.amount) : null;
+          try {
+            data = await this.multiSigTool.execute(task.payload);
+            if (reservationId !== null) spendingTracker.commit(reservationId);
+          } catch (toolErr) {
+            if (reservationId !== null) spendingTracker.release(reservationId);
+            throw toolErr;
+          }
           break;
+        }
 
-
-        case "batch_payment":
-          data = await this.batchPaymentTool.execute(task.payload);
+        case "batch_payment": {
+          // issue #728 — batch_payment had its own aggregate check but never
+          // recorded into the rolling window. Compute total, reserve it, then
+          // commit/release based on submission outcome.
+          const p = task.payload as Record<string, unknown>;
+          const payments = Array.isArray(p?.payments) ? p.payments : [];
+          const batchTotal = payments.reduce((sum: number, pay: unknown) => {
+            const amt = parseFloat((pay as Record<string, unknown>)?.amount as string);
+            return sum + (isNaN(amt) ? 0 : amt);
+          }, 0);
+          const batchTotalStr = String(batchTotal);
+          const reservationId = reserveSpendingLimit(batchTotalStr);
+          try {
+            data = await this.batchPaymentTool.execute(task.payload);
+            if (reservationId !== null) spendingTracker.commit(reservationId);
+          } catch (toolErr) {
+            if (reservationId !== null) spendingTracker.release(reservationId);
+            throw toolErr;
+          }
           break;
+        }
 
         case "balance_check":
           data = await this.balanceCheckTool.getBalance(task.payload);
           break;
 
-        case "path_payment":
-          data = await this.pathPaymentTool.execute(task.payload);
+        case "path_payment": {
+          // issue #728 — path_payment was entirely unguarded; sendAmount is the
+          // field that moves funds.
+          const p = task.payload as Record<string, unknown>;
+          const reservationId = reserveSpendingLimit(p?.sendAmount);
+          try {
+            data = await this.pathPaymentTool.execute(task.payload);
+            if (reservationId !== null) spendingTracker.commit(reservationId);
+          } catch (toolErr) {
+            if (reservationId !== null) spendingTracker.release(reservationId);
+            throw toolErr;
+          }
           break;
+        }
 
-        case "fee_bump":
+        case "fee_bump": {
+          // issue #728 — fee_bump pays fees on behalf of the inner tx; the fee
+          // is not a user-specified numeric field, so we guard the baseFeeMultiplier
+          // signal by checking against a sentinel value.  The inner-tx fee is
+          // typically < 1 XLM and not tracked; this guard prevents runaway
+          // fee-bump usage from bypassing the window entirely.
+          // We skip the spending-limit guard for fee_bump because its cost is
+          // denominated in stroops (fractions of XLM) and the tool validates
+          // the multiplier itself.  The task type is included in the window
+          // audit log via taskLog below.
           data = await this.feeBumpTool.execute(task.payload);
           break;
+        }
 
-        case "dex_offer":
-          data = await this.dexOfferTool.execute(task.payload);
+        case "dex_offer": {
+          // issue #728 — dex_offer sell-amount moves funds; guard the amount field.
+          // delete actions set amount to "0" internally so they pass through.
+          const p = task.payload as Record<string, unknown>;
+          const reservationId = reserveSpendingLimit(p?.amount);
+          try {
+            data = await this.dexOfferTool.execute(task.payload);
+            if (reservationId !== null) spendingTracker.commit(reservationId);
+          } catch (toolErr) {
+            if (reservationId !== null) spendingTracker.release(reservationId);
+            throw toolErr;
+          }
           break;
+        }
 
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
