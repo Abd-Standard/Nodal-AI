@@ -237,6 +237,65 @@ Before deploying to **Stellar mainnet**, verify the following:
 
 All four checks are enforced at startup via `backend/config.ts` validation and at task dispatch time via `backend/agent.ts` guards.
 
+### Remote Signer Backends
+
+Signing goes through the `Signer` interface in `backend/signers/`. `createSigner()` picks the backend from `SIGNER_BACKEND`:
+
+| `SIGNER_BACKEND` | Signer | Where the key lives |
+|---|---|---|
+| `local` (default) | `LocalSigner` | In process memory, loaded from `AGENT_SECRET_KEY` or `AGENT_SECRET_KEY_ARN`. |
+| `vault` | `VaultTransitSigner` | Inside a HashiCorp Vault transit `ed25519` key. Only the 32-byte transaction hash is sent to Vault; the private key is never exported. |
+
+```typescript
+import { createSigner, signTransaction } from "./backend/signers";
+
+const signer = createSigner();
+await signTransaction(signer, tx); // signs tx.hash() and attaches the signature
+```
+
+`signTransaction()` attaches the signature with `addSignature`, which verifies it against the signer's public key, so a mismatched key fails before submission.
+
+#### HashiCorp Vault transit setup
+
+1. Enable the transit engine and create a non-exportable Ed25519 key:
+
+   ```bash
+   vault secrets enable transit
+   vault write -f transit/keys/nodal-agent type=ed25519 exportable=false
+   ```
+
+2. Create a policy that only allows reading the key's public half and signing with it:
+
+   ```hcl
+   # nodal-signer.hcl
+   path "transit/keys/nodal-agent" {
+     capabilities = ["read"]
+   }
+
+   path "transit/sign/nodal-agent" {
+     capabilities = ["update"]
+   }
+   ```
+
+   ```bash
+   vault policy write nodal-signer nodal-signer.hcl
+   vault token create -policy=nodal-signer -period=24h
+   ```
+
+   The token cannot rotate, export, or delete the key, and cannot use any other transit key.
+
+3. Look up the key's Stellar address and fund it. `await createSigner().publicKey()` returns the G-address derived from the Vault public key.
+
+4. Configure the agent:
+
+   ```bash
+   SIGNER_BACKEND=vault
+   VAULT_ADDR=https://vault.example.com:8200
+   VAULT_TRANSIT_KEY=nodal-agent
+   # VAULT_TRANSIT_MOUNT=transit   # only if the engine is mounted elsewhere
+   VAULT_TOKEN=hvs.xxxxx           # read from the environment, never stored on config
+   ```
+
 ---
 
 ## Contributing
@@ -397,6 +456,10 @@ Each value below is wired into `PayFiAgent.run()` in `backend/agent.ts`. Any unr
 | `path_payment` | `PathPaymentTool` | Cross-asset path payment (strict send) routed through the Stellar DEX. |
 | `fee_bump` | `FeeBumpTool` | Wrap an existing transaction in a fee-bump envelope for a sponsored retry. |
 | `account_info` | `AccountInfoTool` | Fetch the agent's account balances, sequence number, and trustlines from Horizon. |
+| `ledger_info` | `LedgerInfoTool` | Fetch the latest ledger sequence and protocol version from Soroban RPC. Cached for 6 seconds unless `forceRefresh: true`. Read-only. |
+| `network_status` | `NetworkStatusTool` | Check health and latency of the configured Horizon and Soroban RPC endpoints. Read-only. |
+| `offer_book` | `OfferBookTool` | Query the Stellar DEX order book for an asset pair and return bids, asks, and the top-of-book spread. Read-only. |
+| `soroban_storage` | `SorobanStorageTool` | Read a Soroban contract's storage entry (`persistent`, `temporary`, or `instance`) and return the decoded value. Read-only. |
 
 > **Standalone utilities:** `BalanceCheckTool` (`backend/tools/BalanceCheckTool.ts`) and `SorobanQueryTool` (`backend/tools/SorobanQueryTool.ts`) are importable directly and are not dispatched through `PayFiAgent.run()`. Use them outside the agent task loop when you only need a read-only query.
 
@@ -423,6 +486,10 @@ Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `inflation`: `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
 - `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
 - `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
+- `ledger_info`: `{ forceRefresh?: boolean }`
+- `network_status`: no payload fields (pass `{}`)
+- `offer_book`: `{ sellingAsset: string | { code: string; issuer?: string }; buyingAsset: string | { code: string; issuer?: string }; limit?: number }` (string assets are `"XLM"`, `"native"` or `"CODE:ISSUER"`; `limit` is 1–200)
+- `soroban_storage`: `{ contractId: string; keys: unknown[]; durability?: "persistent" | "temporary" | "instance" }` (exactly one key; `durability` defaults to `"persistent"`)
 - `swap`: `{ sellAsset: { code: string; issuer?: string }; buyAsset: { code: string; issuer?: string }; sellAmount: string; maxSlippagePct: number }` (`maxSlippagePct` is 0–100)
 - `account_history`: `{ publicKey?: string; limit?: number; cursor?: string; assetCode?: string }` (`limit` is 1–200, default 10, and counts *matching* payments after non-`payment` operations and the `assetCode` filter are dropped; the tool pages through Horizon to fill it, up to 5 pages per call. The result adds `pagesFetched` and `pageLimitReached` — when `pageLimitReached` is true, fewer than `limit` records does not mean history is exhausted; continue from `nextCursor`)
 - `soroban_deploy`: `{ action: "upload" | "deploy"; wasm?: Buffer | string; wasmBuffer?: Buffer | string }` or `{ action: "instantiate"; wasmHash: string }` — `upload`/`deploy` require WASM bytes (a `Buffer`, file path, hex or base64 string)

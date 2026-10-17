@@ -102,6 +102,18 @@ const EnvSchema = z.object({
   AGENT_PUBLIC_KEY: StellarPublicKeySchema,
   AGENT_SECRET_KEY_ARN: z.string().optional(),
 
+  // Signing backend — `local` signs with the in-memory agent keypair, `vault`
+  // delegates to a HashiCorp Vault transit ed25519 key (VAULT_TOKEN is read
+  // from the environment by backend/signers, never stored on config).
+  SIGNER_BACKEND: z
+    .enum(['local', 'vault'], {
+      errorMap: () => ({ message: 'SIGNER_BACKEND must be one of: local | vault' }),
+    })
+    .default('local'),
+  VAULT_ADDR: z.string().url('VAULT_ADDR must be a valid URL').optional(),
+  VAULT_TRANSIT_MOUNT: z.string().min(1).default('transit'),
+  VAULT_TRANSIT_KEY: z.string().min(1).optional(),
+
   // x402 / PayFi asset
   X402_ASSET_CODE: z.string().min(1).max(12).default('USDC'),
   X402_ASSET_ISSUER: z
@@ -334,6 +346,19 @@ export interface AgentConfig {
    */
   readonly X402_ALLOWED_ASSETS?: string | undefined;
   readonly AGENT_SECRET_KEY_ARN?: string;
+
+  /**
+   * Which signing backend `createSigner()` returns.
+   * "local" (default) signs with agentKeypair(); "vault" signs with a
+   * HashiCorp Vault transit key so the signing key never leaves Vault.
+   */
+  readonly SIGNER_BACKEND: 'local' | 'vault';
+  /** Vault server address. Required when SIGNER_BACKEND is "vault". */
+  readonly VAULT_ADDR?: string | undefined;
+  /** Mount path of the Vault transit secrets engine. Defaults to "transit". */
+  readonly VAULT_TRANSIT_MOUNT: string;
+  /** Name of the Vault transit ed25519 key. Required when SIGNER_BACKEND is "vault". */
+  readonly VAULT_TRANSIT_KEY?: string | undefined;
 
   /**
    * OpenTelemetry collector endpoint.
