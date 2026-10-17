@@ -243,7 +243,7 @@ export class X402PaymentTool {
     this.nonceStore
       .prune(MAX_NONCE_TTL_MS)
       .catch((err) =>
-        logger.warn('x402: nonce pruning failed (non-fatal)', { error: String(err) })
+        logger.warn({ error: String(err) }, 'x402: nonce pruning failed (non-fatal)')
       );
 
     let signedAt: string;

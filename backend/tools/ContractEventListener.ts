@@ -127,12 +127,15 @@ export function listen(
       }
     } catch (err) {
       reconnectAttempts++;
-      logger.error('ContractEventListener polling error', {
-        contractId,
-        reconnectAttempts,
-        maxReconnectAttempts,
-        error: (err as Error).message,
-      });
+      logger.error(
+        {
+          contractId,
+          reconnectAttempts,
+          maxReconnectAttempts,
+          error: (err as Error).message,
+        },
+        'ContractEventListener polling error'
+      );
 
       if (reconnectAttempts >= maxReconnectAttempts) {
         isStopped = true;
@@ -151,10 +154,13 @@ export function listen(
           try {
             onErrorCallback(error);
           } catch (callbackErr) {
-            logger.error('ContractEventListener onError callback threw', {
-              contractId,
-              error: (callbackErr as Error).message,
-            });
+            logger.error(
+              {
+                contractId,
+                error: (callbackErr as Error).message,
+              },
+              'ContractEventListener onError callback threw'
+            );
           }
         }
 

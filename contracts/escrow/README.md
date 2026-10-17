@@ -156,6 +156,38 @@ Soroban emits contract events as **public on-chain data**. Every event is readab
 
 ---
 
+## Invariants
+
+These properties must hold after **every** call, in any order. They are checked by the
+stateful property test `prop_random_call_sequences_preserve_invariants` in
+[`src/test.rs`](./src/test.rs), which applies random sequences of up to 24 calls
+(`release`, `release_partial` with valid and invalid amounts, `refund`, `cancel`,
+`propose_new_arbiter`, `accept_arbiter_rotation`, calls from impostor addresses, and
+ledger time jumps) against a reference model and asserts the list below after each step.
+
+| # | Invariant |
+| :--- | :--- |
+| I1 | **Funds conservation:** `contract balance + released + refunded == deposited`. |
+| I2 | The contract, recipient and depositor balances match the model exactly — no call over- or under-pays. |
+| I3 | No balance goes negative, and the arbiter (current or proposed) never receives funds. |
+| I4 | Funds go to the recipient (`release` / `release_partial`) **or** back to the depositor (`refund` / `cancel`), never both. |
+| I5 | The `released` flag matches the model, and a settled escrow holds zero tokens. |
+| I6 | While active, the stored `amount` equals the contract's token balance and is positive. |
+| I7 | `depositor`, `recipient` and `expiry` never change; `arbiter` changes only via an accepted rotation. |
+| I8 | Every call either succeeds when the model says it should, or fails with exactly the `EscrowError` the model predicts (`NotArbiter`, `AlreadyReleased`, `InvalidAmount`, `NotExpired`, `RotationLocked`, …) and leaves all balances unchanged. A host trap counts as a failure. |
+
+Running the suite:
+
+```bash
+cargo test --manifest-path contracts/escrow/Cargo.toml prop_                 # 128 sequences
+ESCROW_INVARIANT_CASES=4096 cargo test --manifest-path contracts/escrow/Cargo.toml prop_
+```
+
+CI runs it on every push and pull request (`test-rust`), and the weekly scheduled run
+(`escrow-invariants-deep`) runs it with `ESCROW_INVARIANT_CASES=4096`.
+
+---
+
 ## Cargo.toml Dependencies
 
 The contract specifies minimal, optimized dependencies in [Cargo.toml](./Cargo.toml):
@@ -170,6 +202,8 @@ The contract specifies minimal, optimized dependencies in [Cargo.toml](./Cargo.t
 Follow these commands to build, deploy, and invoke the contract locally or on the testnet.
 
 > **Note:** `stellar` is the current CLI binary name (`soroban` was its former name). Older tutorials may still show `soroban contract ...` — substitute `stellar contract ...` in those examples.
+
+> **Releases:** for a tagged release, use `npm run deploy:escrow` instead of the manual steps below. It builds reproducibly (`scripts/build_escrow_wasm.sh`), refuses to deploy unless the WASM hash matches the pinned release artifact, verifies the deployed code on-chain, and records the release in `deployments/<network>.json`. See [`deployments/README.md`](../../deployments/README.md).
 
 ### 1. Build the Contract
 Compile the Rust contract into optimized WebAssembly:

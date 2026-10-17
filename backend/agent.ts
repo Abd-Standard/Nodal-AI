@@ -58,6 +58,7 @@ import { spendingTracker } from './spending_tracker';
 import { dispatchWebhook } from './webhook';
 import { createAgentSigner, Signer } from './signer';
 import { isPaused } from './kill_switch';
+import { queueDepth, recordTask } from './metrics';
 
 // Re-exported so existing importers (`server.ts`, tests) keep working after the
 // singleton moved to spending_tracker.ts.
@@ -430,13 +431,13 @@ export class PayFiAgent extends EventEmitter {
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
       const safe = err.message.replace(/S[A-Z2-7]{55}/g, '[REDACTED]');
-      logger.error('Unhandled agent error', { error: safe });
+      logger.error({ error: safe }, 'Unhandled agent error');
     };
     const onTaskComplete = (result: AgentResult) => {
-      logger.info('Task complete', { taskType: result.taskType });
+      logger.info({ taskType: result.taskType }, 'Task complete');
     };
     const onTaskFailed = (result: AgentResult) => {
-      logger.warn('Task failed', { taskType: result.taskType, error: result.error });
+      logger.warn({ taskType: result.taskType, error: result.error }, 'Task failed');
     };
 
     this.on('error', onError);
@@ -448,14 +449,17 @@ export class PayFiAgent extends EventEmitter {
     this._boundHandlers.set('task:failed', onTaskFailed as (...args: unknown[]) => void);
 
     // Log only safe fields — public key is derived, not the secret
-    logger.info('PayFiAgent initialised', {
-      network: config.STELLAR_NETWORK,
-      horizon: config.HORIZON_URL,
-      soroban: config.SOROBAN_RPC_URL,
-      agentPubkey: config.AGENT_PUBLIC_KEY,
-      spendingLimit: config.AGENT_SPENDING_LIMIT,
-      assetCode: config.X402_ASSET_CODE,
-    });
+    logger.info(
+      {
+        network: config.STELLAR_NETWORK,
+        horizon: config.HORIZON_URL,
+        soroban: config.SOROBAN_RPC_URL,
+        agentPubkey: config.AGENT_PUBLIC_KEY,
+        spendingLimit: config.AGENT_SPENDING_LIMIT,
+        assetCode: config.X402_ASSET_CODE,
+      },
+      'PayFiAgent initialised'
+    );
   }
 
   /**
@@ -481,13 +485,16 @@ export class PayFiAgent extends EventEmitter {
             // forwarding to onChallenge (or letting Zod's error surface
             // deep inside respond(), where it can't be attributed to the
             // stream that produced it).
-            logger.warn('Dropped invalid x402 challenge memo', {
-              error: err instanceof Error ? err.message : String(err),
-            });
+            logger.warn(
+              {
+                error: err instanceof Error ? err.message : String(err),
+              },
+              'Dropped invalid x402 challenge memo'
+            );
           }
         },
         onerror: (event: MessageEvent) => {
-          logger.warn('Payment stream error', { error: String(event) });
+          logger.warn({ error: String(event) }, 'Payment stream error');
           // The underlying connection is dead — tear it down so `_streamStop`
           // doesn't keep pointing at a broken stream forever, which would
           // otherwise permanently block a future startListening() call (its
@@ -497,7 +504,7 @@ export class PayFiAgent extends EventEmitter {
       });
 
     this._streamStop = closeStream as unknown as () => void;
-    logger.info('Payment stream started', { resourceUrl });
+    logger.info({ resourceUrl }, 'Payment stream started');
   }
 
   /** Stop the active Horizon payment stream subscription. */
@@ -527,7 +534,7 @@ export class PayFiAgent extends EventEmitter {
       this._contractListenerStop();
     }
     this._contractListenerStop = listenContractEvents(contractId, eventTypes, onEvent);
-    logger.info('Contract event listener started', { contractId });
+    logger.info({ contractId }, 'Contract event listener started');
   }
 
   /** Stop the active contract event listener. */
@@ -553,7 +560,7 @@ export class PayFiAgent extends EventEmitter {
     const handle = watchContractStorage(options);
     handle.on('change', onChange);
     this._storageWatcherStop = handle.stop;
-    logger.info('Contract storage watcher started', { contractId: options.contractId });
+    logger.info({ contractId: options.contractId }, 'Contract storage watcher started');
   }
 
   /** Stop the active contract storage watcher. */
@@ -609,7 +616,7 @@ export class PayFiAgent extends EventEmitter {
    */
   use(middleware: TaskMiddleware): void {
     this.middlewares.push(middleware);
-    logger.info('Middleware registered', { totalMiddlewares: this.middlewares.length });
+    logger.info({ totalMiddlewares: this.middlewares.length }, 'Middleware registered');
   }
 
   /**
@@ -637,10 +644,13 @@ export class PayFiAgent extends EventEmitter {
 
   async waitForPendingTasks(): Promise<void> {
     if (this.activeTasks === 0 && this.taskQueue.length === 0) return;
-    logger.info('Waiting for pending tasks to finish', {
-      activeTasks: this.activeTasks,
-      queuedTasks: this.taskQueue.length,
-    });
+    logger.info(
+      {
+        activeTasks: this.activeTasks,
+        queuedTasks: this.taskQueue.length,
+      },
+      'Waiting for pending tasks to finish'
+    );
     return new Promise<void>((resolve) => {
       const interval = setInterval(() => {
         if (this.activeTasks === 0 && this.taskQueue.length === 0) {
@@ -704,6 +714,7 @@ export class PayFiAgent extends EventEmitter {
         );
         return new Promise<AgentResult>((resolve) => {
           this.taskQueue.push({ task, correlationId, resolve });
+          queueDepth.set(this.taskQueue.length);
         });
       }
 
@@ -715,6 +726,7 @@ export class PayFiAgent extends EventEmitter {
         },
         'Task rejected — max concurrent tasks reached'
       );
+      recordTask(task.type, 'rejected');
       return {
         success: false,
         taskType: task.type,
@@ -725,7 +737,24 @@ export class PayFiAgent extends EventEmitter {
       };
     }
 
-    return this.executeTask(task, correlationId, taskLog);
+    return this.executeInstrumented(task, correlationId, taskLog);
+  }
+
+  /**
+   * Run executeTask() and record its outcome and latency in the Prometheus
+   * metrics (backend/metrics.ts). Kept outside executeTask() so every exit
+   * path — success, tool failure, middleware throw — is counted exactly once.
+   */
+  private async executeInstrumented(
+    task: AgentTask,
+    correlationId: string,
+    taskLog: ReturnType<typeof createLogger>
+  ): Promise<AgentResult> {
+    const startedAt = process.hrtime.bigint();
+    const result = await this.executeTask(task, correlationId, taskLog);
+    const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+    recordTask(task.type, result.success ? 'success' : 'failure', durationSeconds);
+    return result;
   }
 
   /**
@@ -736,8 +765,9 @@ export class PayFiAgent extends EventEmitter {
     if (this.taskQueue.length === 0) return;
     if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) return;
     const next = this.taskQueue.shift();
+    queueDepth.set(this.taskQueue.length);
     if (!next) return;
-    void this.executeTask(
+    void this.executeInstrumented(
       next.task,
       next.correlationId,
       createLogger('orchestrator', next.correlationId)

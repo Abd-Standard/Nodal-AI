@@ -11,6 +11,9 @@
  *   POST /admin/pause  → 200 { paused: true }   halt value-moving tasks (kill switch)
  *   POST /admin/resume → 200 { paused: false }  resume them
  *                  Both always require Bearer auth with WEBHOOK_SECRET; 401 when it is unset.
+ *   GET /metrics → 200 Prometheus text exposition (nodal_* metrics, see backend/metrics.ts);
+ *                  JSON LLM/spending snapshot when the request sends `Accept: application/json`.
+ *                  Always requires Bearer auth with WEBHOOK_SECRET; 401 when it is unset.
  *
  * Uses only the Node.js built-in `http` module — no additional dependencies.
  * Port is read from config.HEALTH_PORT (env var HEALTH_PORT, default 3000).
@@ -25,6 +28,7 @@ import { handleError } from './middleware/error_handler';
 import { createLogger } from './utils/logger';
 import { spendingTracker } from './agent';
 import { llmUsage } from './ai/llm';
+import { metricsRegistry, renderMetrics, spendingWindowTotal } from './metrics';
 
 const log = createLogger('health-server');
 
@@ -105,6 +109,15 @@ export async function checkDatabase(): Promise<ComponentStatus> {
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
 /**
+ * Strict variant of isAuthenticated() for endpoints that must never be open:
+ * a missing WEBHOOK_SECRET denies the request instead of allowing it, so the
+ * metrics endpoint is not world-readable on a misconfigured deployment.
+ */
+function isStrictlyAuthenticated(req: http.IncomingMessage): boolean {
+  return Boolean(process.env.WEBHOOK_SECRET) && isAuthenticated(req);
+}
+
+/**
  * Returns true if the request passes Bearer-token authentication.
  * When WEBHOOK_SECRET is unset, all requests are allowed. The secret is read
  * per request so a rotated value takes effect without re-importing the module.
@@ -181,9 +194,16 @@ export function createHealthServer(): http.Server {
 
     // ── GET /metrics ───────────────────────────────────────────────────────
     if (req.method === 'GET' && req.url === METRICS_PATH) {
-      if (!isAuthenticated(req)) {
+      if (!isStrictlyAuthenticated(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      // Prometheus scrapers send `text/plain` / OpenMetrics Accept headers;
+      // only an explicit JSON request gets the legacy JSON snapshot.
+      if (!req.headers['accept']?.includes('application/json')) {
+        void handlePrometheusMetrics(res);
         return;
       }
 
@@ -230,7 +250,8 @@ export function startHealthServer(): http.Server {
     process.stdout.write(`✅ [HealthServer] Listening on port ${port}\n`);
     process.stdout.write(
       `   GET /health → { status, components }\n` +
-        `   GET /status → { results: AgentResult[] }\n`
+        `   GET /status → { results: AgentResult[] }\n` +
+        `   GET /metrics → Prometheus text exposition (Bearer auth)\n`
     );
   });
 
@@ -266,6 +287,36 @@ async function handleHealth(_req: http.IncomingMessage, res: http.ServerResponse
     const errorResponse = handleError(err);
     log.error({
       msg: 'Unhandled request error',
+      status: errorResponse.status,
+      type: errorResponse.type,
+    });
+    const body = JSON.stringify(errorResponse);
+    res.writeHead(errorResponse.status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      ...errorResponse.headers,
+    });
+    res.end(body);
+  }
+}
+
+/** GET /metrics — Prometheus text exposition of the nodal_* metrics. */
+async function handlePrometheusMetrics(res: http.ServerResponse): Promise<void> {
+  try {
+    // Gauges derived from live state are refreshed at scrape time rather than
+    // on every mutation, so the value is never staler than the scrape itself.
+    spendingWindowTotal.set({ asset: config.X402_ASSET_CODE }, spendingTracker.total());
+
+    const body = await renderMetrics();
+    res.writeHead(200, {
+      'Content-Type': metricsRegistry.contentType,
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+  } catch (err) {
+    const errorResponse = handleError(err);
+    log.error({
+      msg: 'Failed to render Prometheus metrics',
       status: errorResponse.status,
       type: errorResponse.type,
     });

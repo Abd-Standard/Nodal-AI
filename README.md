@@ -226,6 +226,33 @@ Operators can freeze fund movement during an incident without stopping the proce
 curl -X POST -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:3000/admin/pause
 ```
 
+### Prometheus Metrics
+
+`GET /metrics` on the health server serves Prometheus text exposition (via `prom-client`, see `backend/metrics.ts`). It always requires `Authorization: Bearer <WEBHOOK_SECRET>` and returns `401` when `WEBHOOK_SECRET` is not configured. Send `Accept: application/json` to get the JSON LLM/spending snapshot instead.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `nodal_tasks_total` | counter | `type`, `status` (`success` \| `failure` \| `rejected`) | Tasks processed |
+| `nodal_task_duration_seconds` | histogram | `type` | Task execution latency |
+| `nodal_spending_window_total` | gauge | `asset` | Spend inside the rolling `SPENDING_WINDOW_MS` window |
+| `nodal_queue_depth` | gauge | — | Tasks waiting for a concurrency slot |
+| `nodal_rpc_breaker_state` | gauge | `circuit` | `0` closed, `1` half-open, `2` open |
+| `nodal_webhook_failures_total` | counter | — | Webhooks abandoned (non-retryable error or retries exhausted) |
+
+Process metrics (CPU, memory, event-loop lag) are exported with the `nodal_process_` prefix.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: nodal-agent
+    authorization:
+      credentials: <WEBHOOK_SECRET>
+    static_configs:
+      - targets: ['localhost:3000']
+```
+
+A ready-made Grafana dashboard lives in [`docs/grafana/nodal-dashboard.json`](docs/grafana/nodal-dashboard.json) — import it and pick your Prometheus data source.
+
 ### Mainnet Checklist
 
 Before deploying to **Stellar mainnet**, verify the following:

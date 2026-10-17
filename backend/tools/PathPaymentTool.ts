@@ -135,14 +135,17 @@ export class PathPaymentTool {
       return builder.setTimeout(SOROBAN_TX_TIMEOUT).build();
     };
 
-    logger.info('Executing path payment', {
-      source: this.signer.publicKey(),
-      destination: input.destination,
-      sendAmount: input.sendAmount,
-      sendAsset: input.sendAsset.code,
-      destAsset: input.destAsset.code,
-      destMinAmount: input.destMinAmount,
-    });
+    logger.info(
+      {
+        source: this.signer.publicKey(),
+        destination: input.destination,
+        sendAmount: input.sendAmount,
+        sendAsset: input.sendAsset.code,
+        destAsset: input.destAsset.code,
+        destMinAmount: input.destMinAmount,
+      },
+      'Executing path payment'
+    );
 
     let tx = buildTx();
     this.signer.signTransaction(tx);
@@ -152,9 +155,12 @@ export class PathPaymentTool {
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('tx_bad_seq')) {
-        logger.warn('tx_bad_seq detected, reloading account and retrying once', {
-          source: this.signer.publicKey(),
-        });
+        logger.warn(
+          {
+            source: this.signer.publicKey(),
+          },
+          'tx_bad_seq detected, reloading account and retrying once'
+        );
         // Bypass the account cache: the whole point of this retry is that the
         // sequence we used was wrong, so a cached record must not be reused.
         sourceAccount = await loadAccount(this.signer.publicKey(), { forceRefresh: true });
