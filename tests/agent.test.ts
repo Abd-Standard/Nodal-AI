@@ -1591,7 +1591,8 @@ describe('PayFiAgent — lifecycle events (#757)', () => {
     );
     const agent = new PayFiAgent();
     const seen: Array<[string, unknown]> = [];
-    for (const event of ['task:started', 'tx:submitted', 'tx:confirmed', 'task:complete'] as const) {
+    const events = ['task:started', 'tx:submitted', 'tx:confirmed', 'task:complete'] as const;
+    for (const event of events) {
       agent.on(event, (detail: unknown) => seen.push([event, detail]));
     }
 
