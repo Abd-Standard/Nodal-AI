@@ -16,13 +16,17 @@
  *   Property tests  : conservation of funds — the sum of released/refunded
  *                     tokens equals the initialised amount over many random
  *                     amounts (proptest)
+ *   Voluntary exit  : release_by_depositor, refund_by_recipient (auth + events)
+ *   Platform fee    : fee bounds, rounding, recipient + fee == released
  */
 
 #[cfg(test)]
 mod tests {
     extern crate std;
 
-    use crate::{EscrowContract, EscrowContractClient, EscrowState, MIN_ROTATION_DELAY};
+    use crate::{
+        EscrowContract, EscrowContractClient, EscrowState, MAX_FEE_BPS, MIN_ROTATION_DELAY,
+    };
     use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger},
@@ -1289,5 +1293,311 @@ mod tests {
             let state = client.get_state();
             prop_assert!(state.released, "escrow must be sealed after refund");
         });
+    }
+
+    // ── Voluntary settlement (issue #811) ──────────────────────────────────
+
+    struct Fixture<'a> {
+        depositor: Address,
+        recipient: Address,
+        arbiter: Address,
+        contract_id: Address,
+        token: TokenClient<'a>,
+        client: EscrowContractClient<'a>,
+    }
+
+    fn setup_escrow(env: &Env) -> Fixture<'_> {
+        env.mock_all_auths();
+        let depositor = Address::generate(env);
+        let recipient = Address::generate(env);
+        let arbiter = Address::generate(env);
+        let (token_id, token) = create_token(env, &depositor);
+        StellarAssetClient::new(env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(env, &contract_id);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
+        Fixture {
+            depositor,
+            recipient,
+            arbiter,
+            contract_id,
+            token,
+            client,
+        }
+    }
+
+    // 41. depositor can release early without the arbiter
+    #[test]
+    fn test_release_by_depositor_pays_recipient() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.release_by_depositor(&f.depositor);
+        assert_eq!(f.token.balance(&f.recipient), 500);
+        assert_eq!(f.token.balance(&f.contract_id), 0);
+        assert!(f.client.get_state().released);
+    }
+
+    // 42. release_by_depositor requires the depositor's signature
+    #[test]
+    fn test_release_by_depositor_requires_depositor_auth() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.release_by_depositor(&f.depositor);
+        let auths = env.auths();
+        assert_eq!(auths.len(), 1, "exactly one party must authorise");
+        assert_eq!(auths[0].0, f.depositor, "the depositor must authorise");
+    }
+
+    // 43. release_by_depositor rejects anyone but the depositor
+    #[test]
+    #[should_panic]
+    fn test_release_by_depositor_impostor_panics() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.release_by_depositor(&f.recipient);
+    }
+
+    // 44. release_by_depositor after release panics
+    #[test]
+    #[should_panic]
+    fn test_release_by_depositor_after_release_panics() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.release(&f.arbiter);
+        f.client.release_by_depositor(&f.depositor);
+    }
+
+    // 45. release_by_depositor emits its event
+    #[test]
+    fn test_release_by_depositor_emits_event() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.release_by_depositor(&f.depositor);
+        let events = env.events().all();
+        assert!(std::format!("{:?}", events).contains("released_by_depositor"));
+    }
+
+    // 46. recipient can voluntarily return the funds before expiry
+    #[test]
+    fn test_refund_by_recipient_returns_funds() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.refund_by_recipient(&f.recipient);
+        assert_eq!(f.token.balance(&f.depositor), 1_000);
+        assert_eq!(f.token.balance(&f.recipient), 0);
+        assert_eq!(f.token.balance(&f.contract_id), 0);
+        assert!(f.client.get_state().released);
+    }
+
+    // 47. refund_by_recipient requires the recipient's signature
+    #[test]
+    fn test_refund_by_recipient_requires_recipient_auth() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.refund_by_recipient(&f.recipient);
+        let auths = env.auths();
+        assert_eq!(auths.len(), 1, "exactly one party must authorise");
+        assert_eq!(auths[0].0, f.recipient, "the recipient must authorise");
+    }
+
+    // 48. refund_by_recipient rejects anyone but the recipient
+    #[test]
+    #[should_panic]
+    fn test_refund_by_recipient_impostor_panics() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.refund_by_recipient(&f.depositor);
+    }
+
+    // 49. refund_by_recipient after refund_by_recipient panics (no double refund)
+    #[test]
+    #[should_panic]
+    fn test_refund_by_recipient_twice_panics() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.refund_by_recipient(&f.recipient);
+        f.client.refund_by_recipient(&f.recipient);
+    }
+
+    // 50. refund_by_recipient emits its event
+    #[test]
+    fn test_refund_by_recipient_emits_event() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        f.client.refund_by_recipient(&f.recipient);
+        let events = env.events().all();
+        assert!(std::format!("{:?}", events).contains("refunded_by_recipient"));
+    }
+
+    // ── Platform fee (issue #812) ──────────────────────────────────────────
+
+    // 51. fee is split off on release with floor rounding
+    #[test]
+    fn test_release_with_fee_splits_payment() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let platform = Address::generate(&env);
+        let (token_id, token) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        // 2.5% of 999 = 24.975 → fee 24, recipient 975.
+        client.initialize_with_fee(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &999,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+            &250,
+            &platform,
+        );
+        assert_eq!(client.get_fee_config(), (250, Some(platform.clone())));
+        client.release(&arbiter);
+        assert_eq!(token.balance(&platform), 24);
+        assert_eq!(token.balance(&recipient), 975);
+        assert_eq!(token.balance(&contract_id), 0);
+        assert!(std::format!("{:?}", env.events().all()).contains("fee_paid"));
+    }
+
+    // 52. fee above MAX_FEE_BPS is rejected at initialize
+    #[test]
+    #[should_panic]
+    fn test_initialize_with_fee_above_max_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let platform = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize_with_fee(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+            &(MAX_FEE_BPS + 1),
+            &platform,
+        );
+    }
+
+    // 53. fee exactly at MAX_FEE_BPS is accepted
+    #[test]
+    fn test_initialize_with_fee_at_max_succeeds() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let platform = Address::generate(&env);
+        let (token_id, token) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize_with_fee(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+            &MAX_FEE_BPS,
+            &platform,
+        );
+        client.release_by_depositor(&depositor);
+        assert_eq!(token.balance(&platform), 50);
+        assert_eq!(token.balance(&recipient), 450);
+    }
+
+    // 54. refunds are never charged a fee
+    #[test]
+    fn test_refund_by_recipient_charges_no_fee() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let platform = Address::generate(&env);
+        let (token_id, token) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        client.initialize_with_fee(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &500,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+            &MAX_FEE_BPS,
+            &platform,
+        );
+        client.refund_by_recipient(&recipient);
+        assert_eq!(token.balance(&depositor), 1_000);
+        assert_eq!(token.balance(&platform), 0);
+    }
+
+    // 55. plain initialize reports no fee
+    #[test]
+    fn test_initialize_without_fee_reports_zero() {
+        let env = Env::default();
+        let f = setup_escrow(&env);
+        assert_eq!(f.client.get_fee_config(), (0, None));
+    }
+
+    // 56. property: recipient + fee == released, fee == floor(amount * bps / 10_000)
+    #[test]
+    fn prop_fee_split_conserves_released_amount() {
+        proptest!(
+            ProptestConfig::with_cases(128),
+            |(amount in amount_strategy(), fee_bps in 0..=MAX_FEE_BPS)| {
+                let env = Env::default();
+                env.mock_all_auths();
+                let depositor = Address::generate(&env);
+                let recipient = Address::generate(&env);
+                let arbiter = Address::generate(&env);
+                let platform = Address::generate(&env);
+                let (token_id, token) = create_token(&env, &depositor);
+                StellarAssetClient::new(&env, &token_id).mint(&depositor, &amount);
+                let contract_id = env.register_contract(None, EscrowContract);
+                let client = EscrowContractClient::new(&env, &contract_id);
+                client.initialize_with_fee(
+                    &depositor,
+                    &recipient,
+                    &arbiter,
+                    &token_id,
+                    &amount,
+                    &(env.ledger().timestamp() + EXPIRY_OFFSET),
+                    &fee_bps,
+                    &platform,
+                );
+
+                client.release(&arbiter);
+
+                let net = token.balance(&recipient);
+                let fee = token.balance(&platform);
+                prop_assert_eq!(net + fee, amount, "recipient + fee must equal released");
+                prop_assert_eq!(token.balance(&contract_id), 0);
+                prop_assert!(fee >= 0 && fee <= amount / 10 + 1, "fee must respect the 10% cap");
+                if let Some(product) = amount.checked_mul(fee_bps as i128) {
+                    prop_assert_eq!(fee, product / 10_000, "fee must be floor-rounded");
+                }
+            }
+        );
     }
 }

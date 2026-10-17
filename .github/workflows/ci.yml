@@ -159,6 +159,46 @@ jobs:
         env:
           MAX_WASM_SIZE_BYTES: 120000
 
+  # Generates the official TypeScript bindings for the escrow contract with the
+  # Stellar CLI (#814) and fails if backend/contracts/escrow's typed client no
+  # longer matches the contract's method set. The generated client is uploaded
+  # as an artifact for consumers that want the full AssembledTransaction API.
+  escrow-bindings:
+    runs-on: ubuntu-latest
+    env:
+      STELLAR_CLI_VERSION: 22.8.1
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # See test-rust's "Install Rust" step for why this isn't the action.
+      - name: Install Rust
+        run: rustup show
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Build contract WASM
+        run: cargo build --locked --manifest-path contracts/escrow/Cargo.toml --target wasm32-unknown-unknown --release
+
+      # Prebuilt release binary: `cargo install stellar-cli` needs a newer Rust
+      # than the 1.78 toolchain pinned for the contract.
+      - name: Install Stellar CLI
+        run: |
+          curl -sSfL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin stellar
+          stellar --version
+
+      - name: Generate bindings and check typed client
+        run: bash scripts/generate_escrow_bindings.sh
+
+      - name: Upload escrow bindings
+        uses: actions/upload-artifact@v4
+        with:
+          name: escrow-ts-bindings
+          path: contracts/escrow/bindings
+          retention-days: 14
+
   # Builds the production image and checks that native modules load inside
   # it, so a missing better-sqlite3 binding can't silently ship again (#606).
   docker-smoke:
