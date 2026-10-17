@@ -26,6 +26,8 @@ export enum ErrorType {
   ConfigError = 'CONFIG_ERROR',
   /** The operator kill switch is engaged; value-moving tasks are halted. */
   AgentPaused = 'AGENT_PAUSED',
+  /** The agent is draining for shutdown; the task was never executed. */
+  AgentShuttingDown = 'AGENT_SHUTTING_DOWN',
   UnknownError = 'UNKNOWN_ERROR',
 }
 
@@ -121,6 +123,13 @@ export class AgentPausedError extends StructuredError {
   constructor(message: string, cause?: unknown) {
     super(message, ErrorType.AgentPaused, cause);
     Object.setPrototypeOf(this, AgentPausedError.prototype);
+  }
+}
+
+export class AgentShuttingDownError extends StructuredError {
+  constructor(message = 'Agent is shutting down — task rejected', cause?: unknown) {
+    super(message, ErrorType.AgentShuttingDown, cause);
+    Object.setPrototypeOf(this, AgentShuttingDownError.prototype);
   }
 }
 

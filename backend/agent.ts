@@ -16,7 +16,14 @@ import { rpc } from '@stellar/stellar-sdk';
 import { config, MAINNET_SPENDING_CAP } from './config';
 import { logger } from './logger';
 import { saveResult } from './persistence';
-import { AgentPausedError, StructuredError, getErrorType, sanitizeCause } from './errors';
+import {
+  AgentPausedError,
+  AgentShuttingDownError,
+  ErrorType,
+  StructuredError,
+  getErrorType,
+  sanitizeCause,
+} from './errors';
 import { StellarPaymentTool } from './tools/StellarPaymentTool';
 import { SorobanInvokeTool } from './tools/SorobanInvokeTool';
 import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from './tools/X402PaymentTool';
@@ -539,7 +546,23 @@ export class PayFiAgent extends EventEmitter {
 
   drain(): void {
     this.isDraining = true;
-    logger.info('Agent draining — rejecting new tasks');
+    // Queued tasks have not started, so settle them now rather than letting
+    // them race the hard-kill timer — otherwise their callers hang forever.
+    const queued = this.taskQueue.splice(0);
+    for (const { task, correlationId, resolve } of queued) {
+      resolve(this.shuttingDownResult(task, correlationId));
+    }
+    logger.info('Agent draining — rejecting new tasks', { rejectedQueuedTasks: queued.length });
+  }
+
+  private shuttingDownResult(task: AgentTask, correlationId: string): AgentResult {
+    return {
+      success: false,
+      taskType: task.type,
+      error: new AgentShuttingDownError().message,
+      errorType: ErrorType.AgentShuttingDown,
+      correlationId,
+    };
   }
 
   /**
@@ -558,19 +581,39 @@ export class PayFiAgent extends EventEmitter {
     logger.info('Middleware registered', { totalMiddlewares: this.middlewares.length });
   }
 
-  async waitForPendingTasks(): Promise<void> {
-    if (this.activeTasks === 0 && this.taskQueue.length === 0) return;
+  /**
+   * Resolve once no tasks are active or queued.
+   *
+   * @param timeoutMs - Give up after this long. Omit to wait indefinitely.
+   * @returns `true` if every task settled, `false` if the timeout fired first.
+   */
+  async waitForPendingTasks(timeoutMs?: number): Promise<boolean> {
+    const idle = () => this.activeTasks === 0 && this.taskQueue.length === 0;
+    if (idle()) return true;
     logger.info('Waiting for pending tasks to finish', {
       activeTasks: this.activeTasks,
       queuedTasks: this.taskQueue.length,
+      timeoutMs,
     });
-    return new Promise<void>((resolve) => {
+    return new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const interval = setInterval(() => {
-        if (this.activeTasks === 0 && this.taskQueue.length === 0) {
+        if (idle()) {
           clearInterval(interval);
-          resolve();
+          clearTimeout(timer);
+          resolve(true);
         }
       }, 100);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          clearInterval(interval);
+          logger.warn('Timed out waiting for pending tasks', {
+            activeTasks: this.activeTasks,
+            queuedTasks: this.taskQueue.length,
+          });
+          resolve(false);
+        }, timeoutMs);
+      }
     });
   }
 
@@ -605,12 +648,7 @@ export class PayFiAgent extends EventEmitter {
     const taskLog = createLogger('orchestrator', correlationId);
 
     if (this.isDraining) {
-      return {
-        success: false,
-        taskType: task.type,
-        error: 'Agent is shutting down — task rejected',
-        correlationId,
-      };
+      return this.shuttingDownResult(task, correlationId);
     }
 
     // ── Concurrency rate limit — queue when saturated if queueCapacity allows,
