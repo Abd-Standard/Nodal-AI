@@ -1,6 +1,13 @@
 {
   "$schema": "https://typedoc.org/schema.json",
-  "entryPoints": ["backend/index.ts"],
+  "entryPoints": [
+    "backend/index.ts",
+    "backend/agent.ts",
+    "backend/tools/*.ts",
+    "backend/errors.ts",
+    "backend/nonce_store.ts",
+    "backend/spending_tracker.ts"
+  ],
   "entryPointStrategy": "expand",
   "out": "docs/api",
   "tsconfig": "tsconfig.json",
@@ -11,5 +18,25 @@
   "excludeProtected": false,
   "excludeExternals": true,
   "skipErrorChecking": true,
+  "highlightLanguages": [
+    "bash",
+    "console",
+    "css",
+    "html",
+    "javascript",
+    "json",
+    "jsonc",
+    "json5",
+    "yaml",
+    "tsx",
+    "typescript",
+    "mermaid"
+  ],
+  "externalSymbolLinkMappings": {
+    "@stellar/stellar-base": {
+      "nativeToScVal": "https://stellar.github.io/js-stellar-sdk/",
+      "xdr.ScVal": "https://stellar.github.io/js-stellar-sdk/"
+    }
+  },
   "githubPages": false
 }

@@ -6,7 +6,7 @@
 
 import { describe, it, expect, beforeEach } from 'vitest';
 import Database from 'better-sqlite3';
-import { saveResult, getResults, _setDb } from '../backend/persistence';
+import { saveResult, getResults, _setDb, closeDb } from '../backend/persistence';
 import type { AgentResult } from '../backend/agent';
 
 function makeInMemoryDb(): Database.Database {
@@ -189,5 +189,26 @@ describe('persistence', () => {
     // an empty collection — not an error.
     const byCorrelation = allResults.filter((r) => r.correlationId === 'phantom-id-does-not-exist');
     expect(byCorrelation).toHaveLength(0);
+  });
+
+  // ─── closeDb tests (#644) ──────────────────────────────────────────────────
+
+  it('closeDb() actually closes the underlying handle', () => {
+    const db = makeInMemoryDb();
+    _setDb(db);
+
+    // Sanity: the handle is usable before closing.
+    expect(db.open).toBe(true);
+
+    closeDb();
+
+    // The real better-sqlite3 handle must be closed, not just a flag flipped.
+    expect(db.open).toBe(false);
+  });
+
+  it('closeDb() is idempotent and safe when no handle is open', () => {
+    _setDb(null);
+    expect(() => closeDb()).not.toThrow();
+    expect(() => closeDb()).not.toThrow();
   });
 });

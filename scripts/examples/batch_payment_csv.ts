@@ -9,7 +9,9 @@
  *   GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5,1.5000000,XLM
  *   GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN,10.0000000,USDC
  *
- * `assetCode` is optional per row and defaults to XLM.
+ * The `assetCode` column is optional — omit it entirely (see
+ * sample_payments_xlm_only.csv) or leave a row's value blank, and it defaults
+ * to XLM.
  *
  * Usage:
  *   npx ts-node scripts/examples/batch_payment_csv.ts <path-to-csv>
@@ -32,7 +34,7 @@ interface CsvPayment {
   assetCode: string;
 }
 
-const REQUIRED_COLUMNS = ['destination', 'amount', 'assetCode'];
+const REQUIRED_COLUMNS = ['destination', 'amount'];
 
 async function parseCsv(path: string): Promise<CsvPayment[]> {
   const rl = createInterface({

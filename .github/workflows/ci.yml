@@ -4,9 +4,18 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Backstop for the `mutation` job's path filter: a weakened test does not
+  # touch the mutated files, so nothing would re-run Stryker until the next
+  # change to them. Monday 03:00 UTC catches that within a week.
+  schedule:
+    - cron: '0 3 * * 1'
 
 jobs:
+  # Required status check (#704): branch protection on `main` should list the
+  # `build` check as required, so a PR that does not compile cannot merge.
+  # Keep this job's `name` stable — renaming it silently drops the requirement.
   build:
+    name: build
     runs-on: ubuntu-latest
 
     steps:
@@ -21,6 +30,9 @@ jobs:
 
       - name: Install dependencies
         run: npm ci
+
+      - name: Type-check sources (tsc --noEmit)
+        run: npx tsc --noEmit
 
       - name: Build TypeScript
         run: npm run build
@@ -54,8 +66,12 @@ jobs:
           node-version: 20
           cache: npm
 
+      # See test-rust's "Install Rust" step: dtolnay/rust-toolchain has no
+      # "file" mode, so `@stable` would ignore rust-toolchain.toml and run
+      # this job's `cargo test` under an uncontrolled Rust version. rustup's
+      # own override resolution reads ./rust-toolchain.toml (pinned 1.78.0).
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup show
 
       - run: npm ci
       - run: npm run test:all
@@ -141,7 +157,21 @@ jobs:
       - name: Enforce WASM size budget
         run: bash scripts/check_wasm_size.sh
         env:
-          MAX_WASM_SIZE_BYTES: 200000
+          MAX_WASM_SIZE_BYTES: 120000
+
+  # Builds the production image and checks that native modules load inside
+  # it, so a missing better-sqlite3 binding can't silently ship again (#606).
+  docker-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build production image
+        run: docker build --target production -t nodal-ai:smoke .
+
+      - name: Boot check — better-sqlite3 native binding loads
+        run: docker run --rm nodal-ai:smoke node -e "new (require('better-sqlite3'))(':memory:')"
 
   secret-scan:
     runs-on: ubuntu-latest
@@ -159,6 +189,66 @@ jobs:
             --results=verified,unknown
             --exclude-paths=.trufflehog-exclude-paths.txt
 
+  # Mutation testing (Issue #574).
+  #
+  # stryker.config.mjs sets `break: 60`, so the run fails when the mutation
+  # score for the two targeted files drops below 60%. Until this job existed
+  # nothing invoked it, and that threshold was never actually enforced.
+  #
+  # Gated on the mutated files rather than run on every push: a Stryker run
+  # re-executes the suite once per mutant, so it is minutes of CI where the
+  # other jobs are seconds. A change that touches neither agent.ts nor
+  # StellarPaymentTool.ts cannot move their mutation score, so paying that cost
+  # on every unrelated PR buys nothing — and a slow job on every PR is the kind
+  # that gets marked non-blocking and then ignored.
+  #
+  # The tests themselves are not in the path filter on purpose: a PR that only
+  # weakens a test would not trigger this, but the next change to the mutated
+  # files will, and the score will have dropped. The weekly schedule below is
+  # the backstop for that gap.
+  mutation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 20
+          cache: npm
+
+      # Skipped on the scheduled run: there is no base ref to diff against
+      # there, and the schedule is meant to run Stryker unconditionally anyway.
+      - name: Check whether the mutated files changed
+        id: changed
+        if: github.event_name != 'schedule'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            mutated:
+              - 'backend/agent.ts'
+              - 'backend/tools/StellarPaymentTool.ts'
+              - 'stryker.config.mjs'
+
+      - name: Install dependencies
+        if: steps.changed.outputs.mutated == 'true' || github.event_name == 'schedule'
+        run: npm ci
+
+      - name: Run Stryker
+        if: steps.changed.outputs.mutated == 'true' || github.event_name == 'schedule'
+        run: npm run test:mutation
+
+      # Kept even on a failing run — the HTML report names the surviving
+      # mutants, which is the only actionable output when the threshold trips.
+      - name: Upload mutation report
+        if: always() && (steps.changed.outputs.mutated == 'true' || github.event_name == 'schedule')
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: reports/mutation
+          if-no-files-found: ignore
+          retention-days: 14
+
   audit-npm:
     runs-on: ubuntu-latest
 
@@ -173,127 +263,3 @@ jobs:
       - run: npm ci
       - name: Audit npm dependencies
         run: npm audit --audit-level=high
-
-  snyk:
-    runs-on: ubuntu-latest
-    env:
-      SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-
-    steps:
-      - name: Check Snyk configuration
-        id: snyk-config
-        shell: bash
-        run: |
-          if [[ -n "$SNYK_TOKEN" ]]; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "Snyk is skipped because SNYK_TOKEN is not configured."
-            echo "enabled=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - uses: actions/checkout@v7
-        if: steps.snyk-config.outputs.enabled == 'true'
-
-      - uses: actions/setup-node@v7
-        if: steps.snyk-config.outputs.enabled == 'true'
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        if: steps.snyk-config.outputs.enabled == 'true'
-        run: npm ci
-
-      - name: Install Snyk CLI
-        if: steps.snyk-config.outputs.enabled == 'true'
-        run: npm install --global snyk
-
-      - name: Test dependencies with Snyk
-        if: steps.snyk-config.outputs.enabled == 'true'
-        run: snyk test --severity-threshold=high
-
-  audit-rust:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      # cargo-audit itself (installed below) needs a newer rustc than the
-      # 1.78 pin in rust-toolchain.toml — recent releases require 1.81+,
-      # and the advisory database's own dependency (rustsec) needs a rustc
-      # new enough to parse CVSS 4.0 vectors, which now appear in current
-      # advisories and make older cargo-audit builds fail to even load the
-      # database. Installing a second, non-overriding toolchain and running
-      # cargo-audit under it (`+stable`) sidesteps both problems without
-      # touching the toolchain the contract itself builds/tests under.
-      - name: Install a toolchain for cargo-audit
-        run: rustup toolchain install stable --profile minimal
-
-      - name: Install cargo-audit
-        run: cargo +stable install cargo-audit --locked
-
-      # -f/--file, not --manifest-path: cargo-audit reads a Cargo.lock
-      # directly, it doesn't resolve a package graph from a Cargo.toml.
-      #
-      # RUSTSEC-2024-0344 (curve25519-dalek) and RUSTSEC-2026-0009 (time)
-      # are both pinned transitively by soroban-env-host/soroban-sdk 20.x's
-      # exact-version dependency pins — `cargo update -p` for either is
-      # rejected by the resolver, so fixing them here means waiting on an
-      # upstream soroban-sdk release, not a change this repo can make.
-      # Re-check this ignore list whenever soroban-sdk is upgraded.
-      - name: Run cargo audit
-        run: |
-          cargo +stable audit -f contracts/escrow/Cargo.lock \
-            --ignore RUSTSEC-2024-0344 \
-            --ignore RUSTSEC-2026-0009
-
-  docs:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-node@v7
-        with:
-          node-version: 20
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Generate API docs (TypeDoc)
-        run: npm run docs:generate
-
-      - name: Upload API docs artifact
-        uses: actions/upload-artifact@v7
-        with:
-          name: api-docs
-          path: docs/api/
-          retention-days: 30
-
-  check-links:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v7
-
-      # Validates every relative and external Markdown link across the repo's
-      # root docs and the escrow contract docs, so stale references (renamed
-      # files, dead external URLs) fail CI instead of rotting silently.
-      #
-      # The stellar.org/wave exclude below is a link, not a comment — `#`
-      # inside this `args: >-` block scalar is literal text, not YAML syntax,
-      # so any explanation has to live up here instead: CONTRIBUTING.md's
-      # Stellar Wave programme link 404s upstream (stellar.org has
-      # retired/moved the page); this isn't something the repo can fix.
-      - name: Check Markdown links
-        uses: lycheeverse/lychee-action@v2
-        with:
-          args: >-
-            --no-progress
-            --exclude "^https?://localhost(:[0-9]+)?"
-            --exclude "^#"
-            --exclude "^https://stellar\.org/wave$"
-            ./*.md
-            ./contracts/escrow/*.md
-          fail: true

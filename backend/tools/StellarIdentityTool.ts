@@ -3,12 +3,14 @@
  * SEP-0010 Web Auth challenge-response for anchor authentication.
  */
 
-import { Keypair, Transaction, StrKey } from '@stellar/stellar-sdk';
+import { Transaction } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { withRetry } from '../rpc_client';
 import { withBackoffGuard } from '../network';
 import { createLogger } from '../utils/logger';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
 const log = createLogger('stellar-identity');
 
@@ -23,11 +25,7 @@ const AuthResponseSchema = z.object({
 
 export const WebAuthInputSchema = z.object({
   anchorUrl: z.string().url(),
-  publicKey: z
-    .string()
-    .length(56)
-    .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid Stellar public key')
-    .optional(),
+  publicKey: stellarPublicKeySchema('publicKey').optional(),
 });
 
 export type WebAuthInput = z.infer<typeof WebAuthInputSchema>;
@@ -37,10 +35,10 @@ export interface WebAuthResult {
 }
 
 export class StellarIdentityTool {
-  private keypair: Keypair;
+  private signer: Signer;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
   }
 
   async getChallenge(
@@ -66,14 +64,14 @@ export class StellarIdentityTool {
 
   async execute(rawInput: unknown): Promise<WebAuthResult> {
     const input = WebAuthInputSchema.parse(rawInput);
-    const publicKey = input.publicKey ?? this.keypair.publicKey();
+    const publicKey = input.publicKey ?? this.signer.publicKey();
     const baseUrl = input.anchorUrl.replace(/\/$/, '');
 
     log.info({ anchorUrl: baseUrl, publicKey }, 'Starting SEP-0010 web auth');
 
     const challenge = await this.getChallenge(baseUrl, publicKey);
     const tx = new Transaction(challenge.transaction, challenge.networkPassphrase);
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
     const signedXdr = tx.toXDR();
 
     const response = await withBackoffGuard(() =>

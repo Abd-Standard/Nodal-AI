@@ -5,8 +5,13 @@
  * including the secondary mainnet spending cap guard.
  */
 
-import { describe, it, test, expect, vi, beforeEach } from 'vitest';
-import { PayFiAgent, spendingTracker, type TaskType } from '../backend/agent';
+import { describe, it, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  PayFiAgent,
+  spendingTracker,
+  VALUE_MOVING_TASK_TYPES,
+  type TaskType,
+} from '../backend/agent';
 import { StellarPaymentTool } from '../backend/tools/StellarPaymentTool';
 import { BalanceCheckTool } from '../backend/tools/BalanceCheckTool';
 import { PathPaymentTool } from '../backend/tools/PathPaymentTool';
@@ -26,21 +31,29 @@ import { AccountInfoTool } from '../backend/tools/AccountInfoTool';
 import { TrustlineTool } from '../backend/tools/TrustlineTool';
 import { MultiSigPaymentTool } from '../backend/tools/MultiSigPaymentTool';
 import { BatchPaymentTool } from '../backend/tools/BatchPaymentTool';
+import { LedgerInfoTool } from '../backend/tools/LedgerInfoTool';
+import { NetworkStatusTool } from '../backend/tools/NetworkStatusTool';
+import { OfferBookTool } from '../backend/tools/OfferBookTool';
+import { SorobanStorageTool } from '../backend/tools/SorobanStorageTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
+import { isPaused } from '../backend/kill_switch';
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
+  PaymentInputSchema: passthroughSchema,
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/SorobanInvokeTool', () => ({
+  SorobanInvokeInputSchema: passthroughSchema,
   SorobanInvokeTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/X402PaymentTool', () => ({
+  X402ChallengeSchema: passthroughSchema,
   X402PaymentTool: vi.fn().mockImplementation(() => ({
     respond: vi.fn(),
   })),
@@ -53,6 +66,7 @@ vi.mock('../backend/tools/AccountInfoTool', () => ({
 }));
 
 vi.mock('../backend/tools/TrustlineTool', () => ({
+  TrustlineInputSchema: passthroughSchema,
   TrustlineTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
     checkTrustline: vi.fn(),
@@ -60,24 +74,28 @@ vi.mock('../backend/tools/TrustlineTool', () => ({
 }));
 
 vi.mock('../backend/tools/MultiSigPaymentTool', () => ({
+  MultiSigInputSchema: passthroughSchema,
   MultiSigPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/BatchPaymentTool', () => ({
+  BatchPaymentInputSchema: passthroughSchema,
   BatchPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/SorobanQueryTool', () => ({
+  SorobanQueryInputSchema: passthroughSchema,
   SorobanQueryTool: vi.fn().mockImplementation(() => ({
     query: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/BalanceCheckTool', () => ({
+  BalanceCheckInputSchema: passthroughSchema,
   BalanceCheckTool: vi.fn().mockImplementation(() => ({
     getBalance: vi.fn().mockResolvedValue({
       publicKey: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
@@ -87,62 +105,99 @@ vi.mock('../backend/tools/BalanceCheckTool', () => ({
 }));
 
 vi.mock('../backend/tools/PathPaymentTool', () => ({
+  PathPaymentInputSchema: passthroughSchema,
   PathPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'path_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/FeeBumpTool', () => ({
+  FeeBumpInputSchema: passthroughSchema,
   FeeBumpTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'fee_bump_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/DexOfferTool', () => ({
+  DexOfferInputSchema: passthroughSchema,
   DexOfferTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'dex_mock_hash', ledger: 1, offerId: '0' }),
   })),
 }));
 
 vi.mock('../backend/tools/LiquidityPoolTool', () => ({
+  LiquidityPoolInputSchema: passthroughSchema,
   LiquidityPoolTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ poolId: 'pool_mock_id' }),
   })),
 }));
 
 vi.mock('../backend/tools/StellarTomlTool', () => ({
+  StellarTomlInputSchema: passthroughSchema,
   StellarTomlTool: vi.fn().mockImplementation(() => ({
     fetchToml: vi.fn().mockResolvedValue({ VERSION: '2.0.0' }),
   })),
 }));
 
 vi.mock('../backend/tools/DataEntryTool', () => ({
+  DataEntryInputSchema: passthroughSchema,
   DataEntryTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'data_entry_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/SequenceNumberTool', () => ({
+  SequenceNumberInputSchema: passthroughSchema,
   SequenceNumberTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ sequence: '12345678' }),
   })),
 }));
 
 vi.mock('../backend/tools/SponsoredAccountTool', () => ({
+  SponsoredAccountInputSchema: passthroughSchema,
   SponsoredAccountTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'sponsored_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/AnchorQuoteTool', () => ({
+  AnchorQuoteInputSchema: passthroughSchema,
   AnchorQuoteTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ quoteId: 'quote_mock_id', price: '1.0' }),
   })),
 }));
 
 vi.mock('../backend/tools/InflationTool', () => ({
+  InflationInputSchema: passthroughSchema,
   InflationTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'inflation_mock_hash', ledger: 1 }),
+  })),
+}));
+
+vi.mock('../backend/tools/LedgerInfoTool', () => ({
+  LedgerInfoInputSchema: passthroughSchema,
+  LedgerInfoTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/NetworkStatusTool', () => ({
+  NetworkStatusTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/OfferBookTool', () => ({
+  OfferBookInputSchema: passthroughSchema,
+  OfferBookTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/SorobanStorageTool', () => ({
+  SorobanStorageInputSchema: passthroughSchema,
+  SorobanStorageTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
   })),
 }));
 
@@ -156,6 +211,11 @@ vi.mock('../backend/webhook', () => ({
 
 vi.mock('../backend/persistence', () => ({
   saveResult: vi.fn(),
+  appendAuditEntry: vi.fn(),
+}));
+
+vi.mock('../backend/kill_switch', () => ({
+  isPaused: vi.fn(() => false),
 }));
 
 // Named so `instanceof rpcClient.StellarRPCError` checks in agent.ts's error
@@ -1001,6 +1061,11 @@ describe('PayFiAgent — payload sanitisation', () => {
     expect(result.error).not.toContain('SABCDEFGHIJKLMNOPQRSTUVWXYZ234567');
   });
 
+  it("recursively redacts nested sensitive keys in deeply nested objects", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    mockInstance.execute.mockRejectedValueOnce(
+      new Error("simulated nested payload failure")
+    );
   it('recursively redacts nested sensitive keys in deeply nested objects', async () => {
     const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
     if (!mockInstance) throw new Error('Mock instance not found');
@@ -1030,6 +1095,11 @@ describe('PayFiAgent — payload sanitisation', () => {
     expect(result.error).toBe('simulated nested payload failure');
   });
 
+  it("includes errorType in AgentResult for structured errors", async () => {
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    mockInstance.execute.mockRejectedValueOnce(
+      new ValidationError("Invalid payment parameters")
+    );
   it('includes errorType in AgentResult for structured errors', async () => {
     const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]?.value;
     if (!mockInstance) throw new Error('Mock instance not found');
@@ -1483,5 +1553,73 @@ describe('PayFiAgent — unknown task type rejection (#450)', () => {
     await expect(agent.run({ type: 'another_unknown' as any, payload: {} })).resolves.toMatchObject(
       { success: false }
     );
+  });
+});
+
+// ── #743: global kill switch ─────────────────────────────────────────────────
+
+describe('PayFiAgent — kill switch (#743)', () => {
+  let agent: PayFiAgent;
+  const paymentTask = {
+    type: 'stellar_payment' as const,
+    payload: { destination: DEST, amount: '100', assetCode: 'USDC', assetIssuer: ISSUER },
+  };
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }) }) as any
+    );
+    vi.mocked(AccountInfoTool).mockImplementation(
+      () => ({ fetch: vi.fn().mockResolvedValue({ accountId: DEST }) }) as any
+    );
+    agent = new PayFiAgent();
+  });
+
+  afterEach(() => {
+    vi.mocked(isPaused).mockReturnValue(false);
+  });
+
+  it('fails value-moving tasks with errorType AGENT_PAUSED while paused', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
+
+    const result = await agent.run(paymentTask);
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe(ErrorType.AgentPaused);
+    expect(result.error).toMatch(/Agent is paused/);
+    const paymentTool = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    expect(paymentTool.execute).not.toHaveBeenCalled();
+    expect(spendingTracker.total()).toBe(0);
+  });
+
+  it('keeps read-only tasks working while paused', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
+
+    const result = await agent.run({ type: 'account_info', payload: {} });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual({ accountId: DEST });
+  });
+
+  it('runs value-moving tasks again once resumed', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
+    expect((await agent.run(paymentTask)).success).toBe(false);
+
+    vi.mocked(isPaused).mockReturnValue(false);
+    const result = await agent.run(paymentTask);
+
+    expect(result.success).toBe(true);
+    expect(result.errorType).toBeUndefined();
+  });
+
+  it('classifies signing tasks as value-moving and lookups as read-only', () => {
+    for (const type of ['stellar_payment', 'x402_respond', 'soroban_invoke', 'swap'] as const) {
+      expect(VALUE_MOVING_TASK_TYPES.has(type)).toBe(true);
+    }
+    for (const type of ['account_info', 'balance_check', 'soroban_query', 'stellar_toml'] as const) {
+      expect(VALUE_MOVING_TASK_TYPES.has(type)).toBe(false);
+    }
   });
 });

@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair, xdr, Asset } from '@stellar/stellar-sdk';
 import { DexOfferTool, DexOfferInputSchema } from '../backend/tools/DexOfferTool';
+import { KeypairSigner } from '../backend/signer';
 import { ValidationError } from '../backend/errors';
 import * as rpcClient from '../backend/rpc_client';
 import { NotFoundError } from '@stellar/stellar-sdk';
@@ -144,7 +145,7 @@ describe('DexOfferTool', () => {
     vi.clearAllMocks();
     mockOfferCall.mockReset();
     mockOfferCall.mockResolvedValue({ id: '42' });
-    tool = new DexOfferTool(TEST_SECRET);
+    tool = new DexOfferTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: 'offer_tx_hash',

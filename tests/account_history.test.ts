@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
-import { AccountHistoryTool } from '../backend/tools/AccountHistoryTool';
+import { AccountHistoryTool, MAX_HISTORY_PAGES } from '../backend/tools/AccountHistoryTool';
 
 const { mockPaymentsCall, paymentsQuery, mockForAccount } = vi.hoisted(() => {
   const call = vi.fn();
@@ -31,6 +31,11 @@ vi.mock('../backend/rpc_client', () => ({
       forAccount: mockForAccount,
     }),
   },
+  withRetry: (fn: () => Promise<unknown>) => fn(),
+}));
+
+vi.mock('../backend/network', () => ({
+  withBackoffGuard: (fn: () => Promise<unknown>) => fn(),
 }));
 
 vi.mock('../backend/config', () => {
@@ -134,5 +139,91 @@ describe('AccountHistoryTool', () => {
     const result = await tool.fetch({ limit: 10 });
 
     expect(result.nextCursor).toBeNull();
+  });
+
+  describe('limit counts matching records, not raw Horizon records', () => {
+    const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+
+    function nonPayment(id: string, type: string) {
+      return makePaymentRecord({ id, type, paging_token: `token-${id}` });
+    }
+    function payment(id: string, overrides: Record<string, unknown> = {}) {
+      return makePaymentRecord({ id, paging_token: `token-${id}`, ...overrides });
+    }
+    function usdc(id: string) {
+      return payment(id, {
+        asset_type: 'credit_alphanum4',
+        asset_code: 'USDC',
+        asset_issuer: USDC_ISSUER,
+      });
+    }
+
+    it('fetches further pages when non-payment operations are dropped', async () => {
+      mockPaymentsCall
+        .mockResolvedValueOnce({
+          records: [
+            nonPayment('1', 'create_account'),
+            payment('2'),
+            nonPayment('3', 'path_payment_strict_send'),
+          ],
+        })
+        .mockResolvedValueOnce({
+          records: [payment('4'), nonPayment('5', 'account_merge'), payment('6')],
+        });
+
+      const result = await tool.fetch({ limit: 3 });
+
+      expect(result.records.map((r) => r.id)).toEqual(['2', '4', '6']);
+      expect(result.pagesFetched).toBe(2);
+      expect(result.pageLimitReached).toBe(false);
+      // Second page resumes after the last raw record of the first page.
+      expect(paymentsQuery.cursor).toHaveBeenCalledWith('token-3');
+      // More history may exist after a full page, so a cursor is returned.
+      expect(result.nextCursor).toBe('token-6');
+    });
+
+    it('keeps paging until assetCode matches fill the limit, stopping mid-page', async () => {
+      mockPaymentsCall
+        .mockResolvedValueOnce({ records: [payment('1'), usdc('2')] })
+        .mockResolvedValueOnce({ records: [payment('3'), payment('4')] })
+        .mockResolvedValueOnce({ records: [usdc('5'), payment('6')] });
+
+      const result = await tool.fetch({ assetCode: 'USDC', limit: 2 });
+
+      expect(result.records.map((r) => r.id)).toEqual(['2', '5']);
+      expect(result.records.every((r) => r.asset === `USDC:${USDC_ISSUER}`)).toBe(true);
+      expect(result.pagesFetched).toBe(3);
+      expect(result.pageLimitReached).toBe(false);
+      // Cursor points at the last *returned* record so record 6 isn't skipped.
+      expect(result.nextCursor).toBe('token-5');
+    });
+
+    it('returns a null cursor when a short page exhausts history', async () => {
+      mockPaymentsCall
+        .mockResolvedValueOnce({ records: [payment('1'), nonPayment('2', 'create_account')] })
+        .mockResolvedValueOnce({ records: [nonPayment('3', 'account_merge')] });
+
+      const result = await tool.fetch({ limit: 2 });
+
+      expect(result.records.map((r) => r.id)).toEqual(['1']);
+      expect(result.pagesFetched).toBe(2);
+      expect(result.pageLimitReached).toBe(false);
+      expect(result.nextCursor).toBeNull();
+    });
+
+    it(`stops after MAX_HISTORY_PAGES (${MAX_HISTORY_PAGES}) and flags pageLimitReached`, async () => {
+      let n = 0;
+      mockPaymentsCall.mockImplementation(async () => ({
+        records: [payment(String(++n)), payment(String(++n))],
+      }));
+
+      const result = await tool.fetch({ assetCode: 'USDC', limit: 2 });
+
+      expect(mockPaymentsCall).toHaveBeenCalledTimes(MAX_HISTORY_PAGES);
+      expect(result.records).toHaveLength(0);
+      expect(result.pagesFetched).toBe(MAX_HISTORY_PAGES);
+      expect(result.pageLimitReached).toBe(true);
+      expect(result.nextCursor).toBe(`token-${MAX_HISTORY_PAGES * 2}`);
+    });
   });
 });

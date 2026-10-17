@@ -17,6 +17,9 @@ The contract stores its state in the persistent instance storage using the `Data
 | `Amount` | `i128` | The amount of token locked (in stroop-equivalent decimal units). |
 | `Expiry` | `u64` | The Unix timestamp (seconds) after which a refund can be executed by the depositor. |
 | `Released` | `bool` | A boolean flag indicating if the escrow has been settled (released or refunded). |
+| `InitializedAt` | `u64` | The ledger timestamp (seconds) at which `initialize` ran; returned as `initialized_at` in `EscrowState`. |
+| `PendingArbiter` | `Address` | The replacement arbiter proposed by the depositor via `propose_new_arbiter`. Present only while a rotation is pending; removed by `accept_arbiter_rotation`. |
+| `PendingArbiterTime` | `u64` | The ledger timestamp (seconds) at which the pending rotation was proposed. `accept_arbiter_rotation` succeeds only once `MIN_ROTATION_DELAY` (24 hours) has elapsed since this time; removed together with `PendingArbiter`. |
 
 ---
 
@@ -77,6 +80,35 @@ All public entry points are defined on the `EscrowContract` struct:
 - **Purpose**: Reads and returns the current lifecycle state of the escrow (`Uninitialized`, `Active`, or `Settled`).
 - **Authorization**: None (Read-only query).
 
+### `release_partial(env: Env, arbiter: Address, release_amount: i128)`
+- **Purpose**: Releases a partial amount of the locked funds to the recipient, enabling milestone-based payouts. The escrow stays `Active` until the remaining stored amount reaches zero, at which point it is sealed (`Released = true`).
+- **Authorization**: Requires stored arbiter signature (`stored_arbiter.require_auth()`); the `arbiter` argument must match the registered arbiter.
+- **Validation**:
+  - Only the registered arbiter can execute.
+  - Escrow must be in the `Active` state (not yet released or refunded).
+  - `release_amount` must be positive and must not exceed the stored locked amount.
+
+### `cancel(env: Env, depositor: Address, arbiter: Address)`
+- **Purpose**: Cooperatively cancels the escrow and returns the full locked amount to the depositor.
+- **Authorization**: Requires both stored depositor and stored arbiter signatures (`stored_depositor.require_auth()` and `stored_arbiter.require_auth()`).
+- **Validation**:
+  - The `depositor` and `arbiter` arguments must match the registered depositor and arbiter respectively.
+  - Escrow must be in the `Active` state.
+
+### `propose_new_arbiter(env: Env, depositor: Address, new_arbiter: Address)`
+- **Purpose**: Proposes a replacement arbiter, starting the time-locked rotation window enforced by `MIN_ROTATION_DELAY` (24 hours).
+- **Authorization**: Requires stored depositor signature (`stored_depositor.require_auth()`); the `depositor` argument must match the registered depositor.
+- **Validation**:
+  - Only the registered depositor can execute.
+  - Escrow must be initialized.
+
+### `accept_arbiter_rotation(env: Env)`
+- **Purpose**: Finalizes the pending arbiter rotation once the time-lock has expired, replacing the registered arbiter and clearing the pending rotation keys.
+- **Authorization**: None (permissionless once the time-lock has expired — callable by anyone).
+- **Validation**:
+  - A rotation must have been proposed via `propose_new_arbiter` (otherwise `NoPendingRotation`).
+  - At least `MIN_ROTATION_DELAY` (24 hours) must have elapsed since the proposal (otherwise `RotationLocked`).
+
 ---
 
 ## EscrowError Reference
@@ -85,13 +117,19 @@ If an execution condition is violated, the contract panics with one of the follo
 
 | Code | Variant | Description |
 | :--- | :--- | :--- |
-| `1` | `AlreadyInitialized` | Escrow state has already been initialized. |
-| `2` | `AmountNotPositive` | Amount to lock must be greater than 0. |
-| `3` | `ExpiryNotInFuture` | Expiry timestamp must be greater than the current ledger timestamp. |
-| `4` | `NotArbiter` | The calling address is not the stored arbiter. |
-| `5` | `NotDepositor` | The calling address is not the stored depositor. |
-| `6` | `NotExpired` | Attempted refund before the expiration timestamp. |
-| `7` | `AlreadySettled` | Escrow is already settled (funds were already released or refunded). |
+| `1` | `AlreadyInitialized` | The escrow contract is already initialised. |
+| `2` | `AlreadyReleased` | The funds have already been released or refunded. |
+| `3` | `NotExpired` | The escrow has not yet expired. |
+| `4` | `NotArbiter` | The caller is not the authorized arbiter. |
+| `5` | `NotDepositor` | The caller is not the authorized depositor. |
+| `6` | `InvalidAmount` | The transfer amount must be positive. |
+| `7` | `InvalidExpiry` | The expiry timestamp must be in the future. |
+| `8` | `NotInitialized` | The escrow has not been initialized yet. |
+| `9` | `InvalidParties` | Depositor, recipient, and arbiter must all be distinct addresses. |
+| `10` | `RotationLocked` | The arbiter rotation time-lock has not yet expired. |
+| `11` | `NoPendingRotation` | No pending arbiter rotation proposal. |
+
+> **Keep this table in sync:** it is generated from the `EscrowError` enum in [`src/lib.rs`](src/lib.rs) (codes and doc comments). Whenever that enum changes, regenerate the table from it rather than editing rows by hand.
 
 ---
 
@@ -122,8 +160,8 @@ Soroban emits contract events as **public on-chain data**. Every event is readab
 
 The contract specifies minimal, optimized dependencies in [Cargo.toml](./Cargo.toml):
 
-- **`soroban-sdk`**: The standard SDK for writing Smart Contracts on Stellar. The `alloc` feature enables dynamic allocation support.
-- **`testutils`**: Enables simulation, mocking, ledger manipulation, and event debugging inside the test environment.
+- **`soroban-sdk`**: The standard SDK for writing Smart Contracts on Stellar. The `alloc` feature enables dynamic allocation support. The `testutils` feature flag (enabled on the `soroban-sdk` dev-dependency) enables simulation, mocking, ledger manipulation, and event debugging inside the test environment.
+- **`proptest`** (dev-dependency): Property-based testing framework used by `src/test.rs` to verify the contract's arithmetic and state-transition logic over many randomly generated inputs (e.g. conservation of funds across partial releases).
 
 ---
 
@@ -131,18 +169,20 @@ The contract specifies minimal, optimized dependencies in [Cargo.toml](./Cargo.t
 
 Follow these commands to build, deploy, and invoke the contract locally or on the testnet.
 
+> **Note:** `stellar` is the current CLI binary name (`soroban` was its former name). Older tutorials may still show `soroban contract ...` — substitute `stellar contract ...` in those examples.
+
 ### 1. Build the Contract
 Compile the Rust contract into optimized WebAssembly:
 ```bash
 cargo build --target wasm32-unknown-unknown --release
-# Alternatively, use soroban contract build (if toolchain is installed):
-# soroban contract build
+# Alternatively, use stellar contract build (if toolchain is installed):
+# stellar contract build
 ```
 
 ### 2. Deploy to Testnet
 Deploy the contract to the Stellar testnet and retrieve the contract ID:
 ```bash
-soroban contract deploy \
+stellar contract deploy \
   --wasm target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm \
   --source-account my-keypair-name \
   --network testnet
@@ -151,7 +191,7 @@ soroban contract deploy \
 ### 3. Initialize Escrow (Example Command)
 Lock 100 tokens with a future expiry timestamp (e.g. `1813689600`):
 ```bash
-soroban contract invoke \
+stellar contract invoke \
   --id CD_YOUR_CONTRACT_ID_HERE \
   --source-account depositor-keypair \
   --network testnet \
@@ -167,7 +207,7 @@ soroban contract invoke \
 
 ### 4. Query Lifecycle State
 ```bash
-soroban contract invoke \
+stellar contract invoke \
   --id CD_YOUR_CONTRACT_ID_HERE \
   --source-account any-account \
   --network testnet \
@@ -177,7 +217,7 @@ soroban contract invoke \
 
 ### 5. Release Funds (by Arbiter)
 ```bash
-soroban contract invoke \
+stellar contract invoke \
   --id CD_YOUR_CONTRACT_ID_HERE \
   --source-account arbiter-keypair \
   --network testnet \

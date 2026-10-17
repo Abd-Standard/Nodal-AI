@@ -91,12 +91,17 @@ Examples:
 ## Pull Request Checklist
 
 Before submitting your PR, make sure:
-- ✅ All tests pass (`npm run test` and `cargo test --manifest-path contracts/escrow/Cargo.toml`)
+- ✅ All tests pass (`npm run test:all` and `cargo test --manifest-path contracts/escrow/Cargo.toml`)
+- ✅ TypeScript compiles cleanly (`npm run build` and `tsc --noEmit`)
+- ✅ Linting passes (`npm run lint`)
+- ✅ No npm or Cargo vulnerabilities introduced (`npm run audit`)
+- ✅ All tests pass (`npm run test:all`, which runs `cargo test` for the escrow contract and the TypeScript suite)
 - ✅ TypeScript compiles cleanly (`tsc --noEmit`)
 - ✅ Linting passes (`npm run lint`)
 - ✅ Formatting passes (`npm run format:check`) — run `npm run format` to auto-fix
 - ✅ No secrets or private keys are in the diff
 - ✅ You've referenced the issue number in your PR description
+- ✅ Your branch is up to date with `main` (required by branch protection)
 
 ---
 
@@ -112,7 +117,7 @@ Before submitting your PR, make sure:
 
 3. **Make Your Changes**:
    - Follow the project structure in `README.md`
-   - Ensure all tests pass: `npm run test`
+   - Ensure all tests pass: `npm run test:all`
    - Run the linter: `npm run lint`
    - Check formatting: `npm run format:check` (or `npm run format` to auto-fix)
    - For TypeScript changes, compile: `npm run build`
@@ -133,9 +138,17 @@ Before submitting your PR, make sure:
 Vitest snapshot tests (e.g., `tests/__snapshots__/agent.test.ts.snap`) lock down the serialization contracts and payload shapes of `AgentResult` across tools to prevent breaking webhook consumers.
 
 When your changes intentionally alter an output shape:
-- Update snapshots intentionally using `npm test -- -u` or `npx vitest run -u <path-to-test>`.
+- Update snapshots intentionally using `npm run test:ts -- -u` or `npx vitest run -u <path-to-test>`.
 - Review the diff in `tests/__snapshots__/*.snap` to ensure all modified fields are intentional and backwards-compatible.
 - **Never update snapshots blindly** just to make tests pass; always commit the updated snapshots with your PR.
+
+### Mutation & Fuzz Testing
+
+Two optional quality tools go beyond the standard suite. Neither runs in CI by default — run them locally when you touch the code they target.
+
+**Mutation testing** (`npm run test:mutation`) runs [Stryker](https://stryker-mutator.io/) against the TypeScript suite using `stryker.config.mjs`. Stryker mutates your source (flipping comparisons, removing conditionals, altering return values) and re-runs the tests to see whether they catch the change. A surviving mutant means a test gap. This is most valuable on **validation-heavy code** — Zod schemas and payment math — where a subtly wrong boundary or arithmetic branch can slip past tests that only assert the happy path. Run it when you add or change validation rules, amount/limit calculations, or anything in the payment tools, and use the surviving-mutant report to add the missing assertions.
+
+**Fuzz testing** (`npm run test:fuzz`) runs the property-based tests under `tests/fuzz/` with Vitest. These feed randomized and edge-case inputs (malformed payloads, extreme amounts, boundary values) into the same validation and payment paths to surface crashes, unhandled rejections, and schema inputs that should be rejected but aren't. Run it when you change input schemas, parsing, or numeric handling, and add a fuzz case whenever you fix a bug that a random input could have caught.
 
 ---
 
@@ -156,69 +169,19 @@ The most common contribution to this repo is adding a new tool to the agent (e.g
 
 ## Automated Checks
 
-All pull requests are automatically validated by GitHub Actions. The CI workflow (`.github/workflows/ci.yml`) runs:
+All pull requests are automatically validated by GitHub Actions. The CI workflow (`.github/workflows/ci.yml`) runs the following jobs, **all of which are required status checks** on `main` (see Branch Protection Rules above):
 
-- **Build**: Compiles TypeScript with `npm run build`
-- **Lint**: Enforces code style with `npm run lint` and formatting with `npm run format:check`
-- **Test**: Runs integration tests with `npm run test`
-- **Test Rust**: Validates Soroban contracts with `cargo test`
-- **Audit**: Checks for vulnerabilities in npm and Cargo dependencies
+| Job | Command | Requirement |
+|-----|---------|-------------|
+| **Build** | `npm run build` | TypeScript must compile with zero errors |
+| **Lint** | `npm run lint` | ESLint must report zero errors |
+| **Test** | `npm run test:all` | All TypeScript and Rust tests must pass |
+| **Test Rust** | `cargo test` | Soroban contract tests must pass |
+| **Lint Rust** | `cargo clippy` + `cargo fmt --check` | No Clippy warnings or formatting issues |
+| **Audit npm** | `npm run audit` | No high or critical npm vulnerabilities |
+| **Audit Rust** | `cargo audit` | No Cargo dependency advisories |
 
-All jobs **must pass** before your PR can be merged.
-
----
-
-## Code Formatting
-
-This repo uses [Prettier](https://prettier.io/) to keep formatting consistent and diffs small. Configuration lives in `.prettierrc.json`; files listed in `.prettierignore` (build output, dependencies, generated docs, etc.) are excluded.
-
-- `npm run format` — formats `backend/`, `tests/`, and `scripts/` TypeScript files in place.
-- `npm run format:check` — verifies formatting without writing changes; this is what CI runs.
-
-Run `npm run format` before committing to avoid CI failures.
-
----
-
-## Running Tests in Docker
-
-For a fast, isolated test run that doesn't require booting the full `agent` HTTP server, use the `test-only` Compose profile. It starts only `stellar-quickstart` and the test runner:
-
-```bash
-docker-compose --profile test-only up --build --abort-on-container-exit --exit-code-from test-runner-only
-```
-
-Use the `test` profile instead if you need the full stack (including the running `agent` service) for your test run:
-
-```bash
-docker-compose --profile test up --build
-```
-
-See the [README's Docker section](./README.md#docker) for more details.
-
----
-
-## Test Conventions
-
-### Global timer and spy cleanup
-
-The file `tests/helpers/globalSetup.ts` is registered as a Vitest `setupFiles` entry in `vitest.config.ts`. It registers an `afterEach` hook that fires after **every** test in the suite:
-
-```typescript
-afterEach(() => {
-  vi.useRealTimers();    // restore real timers after every test
-  vi.restoreAllMocks();  // restore all spied/mocked functions
-});
-```
-
-**What this means for you when writing tests:**
-
-- You **do not** need to call `vi.useRealTimers()` or `vi.restoreAllMocks()` yourself in `afterEach` / `afterAll` — the global hook covers it.
-- You **may still** call `vi.useFakeTimers()` inside an individual test or `beforeEach` block whenever you need controlled time. The global hook will clean up after the test completes.
-- You **should not** add a bare `vi.useFakeTimers()` at the top level of a test file (outside a `beforeEach`) unless you also pair it with an explicit `afterEach(() => vi.useRealTimers())` — module-level calls run only once and can affect test ordering.
-
-**Why the hook exists:**
-
-Individual test files previously called `vi.useFakeTimers()` / `vi.restoreAllMocks()` inconsistently. When a file forgot to clean up, fake timer state leaked into the next file executed on the same worker thread, causing timing-sensitive tests (polling, retries, streams) to hang or behave non-deterministically. The global hook eliminates this class of flaky test.
+All jobs **must pass** before your PR can be merged. A PR with a failing `build` job (e.g. TypeScript type errors) cannot be merged regardless of approvals.
 
 ---
 
@@ -245,27 +208,44 @@ git push --no-verify
 
 ## Branch Protection Rules
 
-Repository maintainers should enable the following branch protection rules on `main`:
+> **Maintainer task (issue #727):** The rules below **must** be active on `main` before any further PRs are merged. Recent merges (#712–#714) landed while `tsc --noEmit` was failing because branch protection was not enforced. The rules prevent this from happening again.
 
-1. **Require status checks to pass before merging**:
-   - ✅ Build (TypeScript)
-   - ✅ Lint
-   - ✅ Test (TypeScript)
-   - ✅ Test Rust Contracts
-   - ✅ Audit
+Repository maintainers must enable the following branch protection rules on `main`:
 
-2. **Dismiss stale pull request approvals when new commits are pushed**
+### Required status checks
 
-3. **Require a pull request review before merging** (recommended: 1 approval minimum)
+All of the following CI jobs **must** be added as required status checks and must pass before a PR can be merged:
 
-**To configure**:
+| CI job | Command | What it checks |
+|--------|---------|----------------|
+| `build` | `npm run build` | TypeScript compiles without errors (`tsc`) |
+| `lint` | `npm run lint` | ESLint passes for `backend/**/*.ts` and `tests/**/*.ts` |
+| `test` | `npm run test:all` | Full TypeScript + Rust test suites |
+| `test-rust` | `cargo test` | Soroban contract unit tests |
+| `lint-rust` | `cargo clippy` + `cargo fmt --check` | Rust code quality |
+| `audit-npm` | `npm run audit` | No high/critical npm vulnerabilities |
+| `audit-rust` | `cargo audit` | No Cargo dependency advisories |
+
+### Additional required rules
+
+- **Require branches to be up to date before merging** — a PR must include all commits on `main` before the merge button is enabled. This prevents a PR that passes CI on a stale base from landing while main has moved to a broken state.
+- **Require a pull request before merging** — direct pushes to `main` are blocked; all changes must go through a PR.
+- **Dismiss stale pull request approvals when new commits are pushed** — an approval on an old revision cannot satisfy the review requirement.
+- **Require at least 1 approving review** (recommended).
+
+### How to configure
+
 1. Go to **Settings** → **Branches** → **Branch protection rules**
-2. Create a rule for `main`
-3. Check:
-   - "Require a pull request before merging"
-   - "Require status checks to pass before merging"
-   - "Require branches to be up to date before merging"
-4. Add the CI job names to the status checks list
+2. Click **Add rule**, set branch name pattern to `main`
+3. Enable:
+   - ☑ **Require a pull request before merging**
+   - ☑ **Require status checks to pass before merging**
+     - ☑ **Require branches to be up to date before merging**
+     - Search for and add each job name: `build`, `lint`, `test`, `test-rust`, `lint-rust`, `audit-npm`, `audit-rust`
+   - ☑ **Dismiss stale pull request approvals when new commits are pushed**
+4. Click **Save changes**
+
+> **Note:** Status check names must exactly match the `jobs.<id>` keys in `.github/workflows/ci.yml`. If you rename a job, update the branch protection rule accordingly.
 
 ---
 
@@ -274,77 +254,6 @@ Repository maintainers should enable the following branch protection rules on `m
 - **TypeScript**: Follow ESLint rules defined in `.eslintrc.cjs`
 - **Rust**: Follow standard `cargo fmt` and Clippy recommendations
 - **Env Access**: Always use `backend/config.ts` for environment variables, never `process.env` directly in tool code
-- **Logging**: In `backend/` source files, always use the structured logger from `backend/utils/logger.ts` (via `createLogger`) instead of raw `console.log` or `console.error`. The `no-console` ESLint rule is enforced as an error for all files under `backend/**`, except `backend/logger.ts` itself (which is the logger implementation). Violating this rule will fail CI.
-
-  ```typescript
-  // ✅ Correct
-  import { createLogger } from "../utils/logger";
-  const log = createLogger("my-tool");
-  log.info({ someField: "value" }, "Operation completed");
-
-  // ❌ Forbidden in backend/ (ESLint error)
-  console.log("Operation completed");
-  ```
-
----
-
-## Automated PR Labelling
-
-Pull requests are automatically labelled by a GitHub Actions workflow (`.github/workflows/labeller.yml`) based on the file paths changed. This reduces triage effort for maintainers and helps contributors understand which theme their PR falls under.
-
-| Files changed | Label applied |
-|---|---|
-| `backend/tools/**` | `tooling` |
-| `backend/**` (non-tools) | `backend` |
-| `contracts/**` | `smart-contracts` |
-| `tests/**` | `testing` |
-| `.github/**` | `ci-cd` |
-| `docs/**`, `*.md` | `documentation` |
-| `scripts/**` | `dx` |
-
-Labels are defined in `.github/labeler.yml`. To add a new path-to-label mapping, open a PR editing that file.
-
----
-
-## Release Process
-
-Nodal AI uses [Conventional Commits](https://www.conventionalcommits.org/) to automate changelog generation and GitHub Releases.
-
-### How it works
-
-1. **Version tags trigger the release workflow** (`.github/workflows/release.yml`).  
-   Push a tag matching `v<major>.<minor>.<patch>` (or a pre-release like `v1.2.3-rc.1`) to `main`:
-   ```bash
-   git tag v1.2.3
-   git push origin v1.2.3
-   ```
-2. The workflow runs `npm run changelog:update`, which prepends a new section to `CHANGELOG.md` from all conventional commits since the previous tag.
-3. A GitHub Release is created automatically with the extracted changelog section as its body.
-4. The updated `CHANGELOG.md` is committed back to `main` via a `[skip ci]` commit.
-
-### Updating the changelog locally
-
-To preview or manually update the changelog without pushing a tag:
-
-```bash
-npm run changelog:update
-```
-
-This appends new entries to `CHANGELOG.md` in place.  Review the diff and commit it if it looks correct:
-
-```bash
-git add CHANGELOG.md
-git commit -m "chore(release): update CHANGELOG.md"
-```
-
-### Conventional Commits quick reference
-
-| Prefix | Release type | Example |
-|---|---|---|
-| `fix:` | Patch | `fix(agent): handle missing nonce in x402 payload` |
-| `feat:` | Minor | `feat(tools): add SponsoredAccountTool` |
-| `feat!:` or `BREAKING CHANGE:` | Major | `feat!: remove deprecated TaskType aliases` |
-| `chore:`, `docs:`, `test:`, `refactor:` | No release | `docs: update CONTRIBUTING.md` |
 
 ---
 
@@ -367,7 +276,7 @@ To check for vulnerabilities in dependencies:
 
 ## Code of Conduct
 
-We are committed to providing a welcoming and inclusive environment for all contributors. Please refer to [CODE_OF_CONDUCT.md](.github/CODE_OF_CONDUCT.md) for our full expectations. In summary:
+We are committed to providing a welcoming and inclusive environment for all contributors. Please:
 - Be respectful and considerate of others
 - Use inclusive language
 - Accept constructive feedback gracefully
@@ -380,5 +289,9 @@ We are committed to providing a welcoming and inclusive environment for all cont
 Open an issue on GitHub with the `question` label, and a maintainer will get back to you shortly.
 
 ---
+- **Build**: Compiles TypeScript with `npm run build`
+- **Lint**: Enforces code style with `npm run lint` and formatting with `npm run format:check`
+- **Test**: Runs the Rust contract tests and the TypeScript suite with `npm run test:all`
+- **Test Rust**: Validates Soroban contracts with `
 
-Thank you for contributing to Nodal AI! 🚀
+/* … truncated 8272 chars — edit only what you need near the top … */

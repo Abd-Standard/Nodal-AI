@@ -1,28 +1,33 @@
 /**
  * backend/tools/MultiSigPaymentTool.ts
  * Build M-of-N multi-signature payment transactions for high-value PayFi operations.
+ *
+ * NOTE: Unlike StellarPaymentTool and X402PaymentTool, this tool does not currently
+ * enforce a spending-limit check. Spending-limit enforcement for multisig payments
+ * is tracked separately (see issue #669); until it lands, callers must apply their
+ * own value caps before invoking this tool.
  */
 
 import {
-  Keypair,
   TransactionBuilder,
   Operation,
   Asset,
   BASE_FEE,
   Memo,
-  StrKey,
   xdr,
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
 import { ValidationError } from '../errors';
 import { SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
 export const MultiSigInputSchema = z
   .object({
-    destination: z.string().length(56, 'Invalid Stellar public key'),
+    destination: stellarPublicKeySchema('destination'),
     amount: z
       .string()
       .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, 'Amount must be a valid Stellar decimal')
@@ -33,12 +38,7 @@ export const MultiSigInputSchema = z
       .string()
       .refine((v) => Buffer.byteLength(v, 'utf8') <= 28, 'Memo must be at most 28 bytes')
       .optional(),
-    additionalSigners: z.array(
-      z
-        .string()
-        .length(56, 'Invalid signer public key')
-        .refine((value) => StrKey.isValidEd25519PublicKey(value), 'Invalid signer public key')
-    ),
+    additionalSigners: z.array(stellarPublicKeySchema('Signer public key')),
     minSignatures: z.number().int().min(1),
     signatures: z.array(z.string()).optional(),
   })
@@ -58,11 +58,11 @@ export interface MultiSigResult {
 }
 
 export class MultiSigPaymentTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
@@ -87,7 +87,7 @@ export class MultiSigPaymentTool {
     const asset =
       input.assetCode === 'XLM' ? Asset.native() : new Asset(input.assetCode, input.assetIssuer!);
 
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
 
     const builder = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -105,7 +105,7 @@ export class MultiSigPaymentTool {
     // If pre-collected signatures are provided and meet threshold, sign and submit
     if (input.signatures && input.signatures.length >= input.minSignatures) {
       // Agent signs first
-      tx.sign(this.keypair);
+      this.signer.signTransaction(tx);
       // Apply additional signatures from provided decorated signatures (XDR-encoded)
       for (const sigXdr of input.signatures) {
         try {

@@ -1,10 +1,11 @@
 {
-  "name": "stellar-agent-kit",
+  "name": "nodal-ai",
   "version": "1.0.0",
   "description": "Modular, secure Stellar Agent Kit with PayFi / x402 support",
   "private": true,
   "scripts": {
     "setup": "npx ts-node scripts/setup.ts",
+    "audit:verify": "npx ts-node scripts/audit_verify.ts",
     "build": "tsc",
     "pretest": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
@@ -17,9 +18,10 @@
     "test:rust:coverage": "cargo tarpaulin --locked --manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust",
     "check:wasm-size": "bash scripts/check_wasm_size.sh",
     "test:e2e": "vitest run tests/e2e/**",
+    "test:e2e:escrow": "vitest run tests/e2e/escrow_flow.test.ts",
     "test:all": "npm run test:rust && npm run test:ts",
     "test:mutation": "stryker run stryker.config.mjs",
-    "lint": "eslint backend/**/*.ts tests/**/*.ts",
+    "lint": "eslint \"backend/**/*.ts\" \"tests/**/*.ts\"",
     "format": "prettier --write \"backend/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\"",
     "format:check": "prettier --check \"backend/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\"",
     "audit": "npm audit --audit-level=high",
@@ -46,6 +48,7 @@
     "dotenv": "16.6.1",
     "express": "5.2.1",
     "opossum": "8.5.0",
+    "picomatch": "4.0.7",
     "pino": "10.3.1",
     "zod": "3.25.76",
     "yaml": "2.7.1"
@@ -69,5 +72,8 @@
     "typedoc": "0.28.20",
     "typescript": "5.9.3",
     "vitest": "3.2.7"
+  },
+  "overrides": {
+    "toml": "4.2.0"
   }
 }

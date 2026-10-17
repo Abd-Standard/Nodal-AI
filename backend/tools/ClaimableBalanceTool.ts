@@ -4,46 +4,53 @@
  */
 
 import {
-  Keypair,
   TransactionBuilder,
   Operation,
   Asset,
   Claimant,
   BASE_FEE,
-  StrKey,
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import {
   loadAccount,
   submitTransaction,
   horizonServer,
   resolveNetworkPassphrase,
+  withRetry,
 } from '../rpc_client';
 import { SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
-const ClaimPredicateSchema = z.discriminatedUnion('type', [
-  z.object({ type: z.literal('unconditional') }),
-  z.object({ type: z.literal('beforeAbsoluteTime'), timestamp: z.number().int().positive() }),
-]);
+const ClaimPredicateSchema: z.ZodType<
+  | { type: 'unconditional' }
+  | { type: 'beforeAbsoluteTime'; timestamp: number }
+  | { type: 'beforeRelativeTime'; seconds: number }
+  | { type: 'not'; predicate: z.infer<typeof ClaimPredicateSchema> }
+  | { type: 'and'; predicates: z.infer<typeof ClaimPredicateSchema>[] }
+  | { type: 'or'; predicates: z.infer<typeof ClaimPredicateSchema>[] }
+> = z.lazy(() =>
+  z.discriminatedUnion('type', [
+    z.object({ type: z.literal('unconditional') }),
+    z.object({ type: z.literal('beforeAbsoluteTime'), timestamp: z.number().int().positive() }),
+    z.object({ type: z.literal('beforeRelativeTime'), seconds: z.number().int().positive() }),
+    z.object({ type: z.literal('not'), predicate: ClaimPredicateSchema }),
+    z.object({ type: z.literal('and'), predicates: z.array(ClaimPredicateSchema).min(1) }),
+    z.object({ type: z.literal('or'), predicates: z.array(ClaimPredicateSchema).min(1) }),
+  ])
+);
 
 const ClaimantSchema = z.object({
-  destination: z
-    .string()
-    .length(56)
-    .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid claimant public key'),
+  destination: stellarPublicKeySchema('Claimant public key'),
   predicate: ClaimPredicateSchema.optional(),
 });
 
 const CreateClaimableBalanceSchema = z.object({
   action: z.literal('create'),
   assetCode: z.string().min(1).max(12),
-  assetIssuer: z
-    .string()
-    .length(56)
-    .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid asset issuer')
-    .optional(),
+  assetIssuer: stellarPublicKeySchema('Asset issuer').optional(),
   amount: z.string().min(1),
   claimants: z.array(ClaimantSchema).min(1),
 });
@@ -66,23 +73,36 @@ function buildPredicate(
   if (!predicate || predicate.type === 'unconditional') {
     return Claimant.predicateUnconditional();
   }
-  return Claimant.predicateBeforeAbsoluteTime(String(predicate.timestamp));
+
+  switch (predicate.type) {
+    case 'beforeAbsoluteTime':
+      return Claimant.predicateBeforeAbsoluteTime(String(predicate.timestamp));
+    case 'beforeRelativeTime':
+      return Claimant.predicateBeforeRelativeTime(String(predicate.seconds));
+    case 'not':
+      return Claimant.predicateNot(buildPredicate(predicate.predicate));
+    case 'and':
+      return Claimant.predicateAnd(predicate.predicates.map(buildPredicate));
+    case 'or':
+      return Claimant.predicateOr(predicate.predicates.map(buildPredicate));
+  }
 }
 
 export class ClaimableBalanceTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   private async verifyClaimant(balanceId: string): Promise<void> {
-    const balance = await horizonServer
-      .claimableBalances()
-      .claimant(this.keypair.publicKey())
-      .call();
+    const balance = await withRetry(
+      () => horizonServer.claimableBalances().claimant(this.signer.publicKey()).call(),
+      config.MAX_RETRIES,
+      config.RETRY_DELAY_MS
+    );
     const records = (balance as { records?: Array<{ id: string }> }).records ?? [];
     const isClaimant = records.some((record) => record.id === balanceId);
     if (!isClaimant) {
@@ -92,7 +112,7 @@ export class ClaimableBalanceTool {
 
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = ClaimableBalanceInputSchema.parse(rawInput);
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
 
     if (input.action === 'create') {
       const asset =
@@ -118,7 +138,7 @@ export class ClaimableBalanceTool {
         .setTimeout(SOROBAN_TX_TIMEOUT)
         .build();
 
-      tx.sign(this.keypair);
+      this.signer.signTransaction(tx);
       const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     }
@@ -137,7 +157,7 @@ export class ClaimableBalanceTool {
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
     const result = SubmitResultSchema.parse(await submitTransaction(tx));
     return { txHash: result.hash, ledger: result.ledger };
   }

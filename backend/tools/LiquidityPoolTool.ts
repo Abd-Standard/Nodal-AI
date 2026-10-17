@@ -4,28 +4,22 @@
  */
 
 import {
-  Keypair,
   TransactionBuilder,
   Operation,
-  Asset,
   BASE_FEE,
-  LiquidityPoolAsset,
-  LiquidityPoolParameters,
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import {
   horizonServer,
   loadAccount,
   resolveNetworkPassphrase,
   submitTransaction,
+  withRetry,
 } from '../rpc_client';
+import { withBackoffGuard } from '../network';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
-
-const AssetSchema = z.object({
-  code: z.string(),
-  issuer: z.string().optional(),
-});
 
 export const LiquidityPoolInputSchema = z.discriminatedUnion('action', [
   z.object({
@@ -77,11 +71,11 @@ export interface LiquidityPoolInfoResult {
 }
 
 export class LiquidityPoolTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
@@ -91,10 +85,13 @@ export class LiquidityPoolTool {
     const input = LiquidityPoolInputSchema.parse(rawInput);
 
     if (input.action === 'info') {
-      const res: any = await horizonServer
-        .liquidityPools()
-        .liquidityPoolId(input.liquidityPoolId)
-        .call();
+      const res: any = await withBackoffGuard(() =>
+        withRetry(
+          () => horizonServer.liquidityPools().liquidityPoolId(input.liquidityPoolId).call(),
+          config.MAX_RETRIES,
+          config.RETRY_DELAY_MS
+        )
+      );
 
       const poolInfo: LiquidityPoolInfoResult = {
         id: res.id,
@@ -112,7 +109,7 @@ export class LiquidityPoolTool {
       return { poolInfo };
     }
 
-    const sourceAccount = await loadAccount(this.keypair.publicKey());
+    const sourceAccount = await loadAccount(this.signer.publicKey());
     const builder = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,
       networkPassphrase: this.networkPassphrase,
@@ -140,7 +137,7 @@ export class LiquidityPoolTool {
     }
 
     const tx = builder.setTimeout(SOROBAN_TX_TIMEOUT).build();
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
 
     const result = await submitTransaction(tx);
     return {

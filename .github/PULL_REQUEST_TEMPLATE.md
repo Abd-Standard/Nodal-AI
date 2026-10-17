@@ -19,7 +19,7 @@ Describe the testing you performed to validate these changes:
 - [ ] Unit tests added/updated
 - [ ] Integration tests added/updated
 - [ ] Manual testing completed
-- [ ] All tests pass locally (`npm run test` and `cargo test`)
+- [ ] All tests pass locally (`npm run test:all` — runs `cargo test` and the TypeScript suite)
 
 What did you test?
 - Test 1
@@ -28,7 +28,7 @@ What did you test?
 ## Checklist
 
 Before submitting, please confirm:
-- [ ] All tests pass (`npm run test` and `cargo test --manifest-path contracts/escrow/Cargo.toml`)
+- [ ] All tests pass (`npm run test:all` — runs `cargo test` for the escrow contract and the TypeScript suite)
 - [ ] TypeScript compiles cleanly (`tsc --noEmit`)
 - [ ] Linting passes (`npm run lint`)
 - [ ] No secrets or private keys are in the diff

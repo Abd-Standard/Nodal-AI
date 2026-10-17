@@ -133,7 +133,7 @@ If `AGENT_SECRET_KEY` is suspected to be compromised or needs rotation for opera
 Generate a new keypair locally. Do not commit it to version control.
 
 ```bash
-node -e "const { Keypair } = require('js-stellar-sdk'); const kp = Keypair.random(); console.log('Public:', kp.publicKey()); console.log('Secret:', kp.secret());"
+node -e "const { Keypair } = require('@stellar/stellar-sdk'); const kp = Keypair.random(); console.log('Public:', kp.publicKey()); console.log('Secret:', kp.secret());"
 ```
 
 Save the output securely (e.g., in your secrets manager or encrypted note).
@@ -143,7 +143,7 @@ Save the output securely (e.g., in your secrets manager or encrypted note).
 Using the **current** `AGENT_SECRET_KEY`, submit a `setOptions` transaction to add the new public key as an additional signer:
 
 ```typescript
-import { Keypair, TransactionBuilder, Networks, Operation } from 'js-stellar-sdk';
+import { Keypair, TransactionBuilder, Networks, Operation, Horizon, BASE_FEE } from '@stellar/stellar-sdk';
 import { config } from './backend/config';
 
 const server = new Horizon.Server('https://horizon.stellar.org');
@@ -153,7 +153,7 @@ const newPublicKey = 'G...'; // The new keypair's public key
 const account = await server.loadAccount(currentKeypair.publicKey());
 const tx = new TransactionBuilder(account, {
   fee: BASE_FEE,
-  networkPassphrase: Networks.PUBLIC_NETWORK_PASSPHRASE,
+  networkPassphrase: Networks.PUBLIC,
 })
   .addOperation(
     Operation.setOptions({
@@ -188,13 +188,20 @@ Restart any running agent processes so they pick up the new key.
 
 #### Step 4: Verify the New Key Works
 
-Test that the agent can sign transactions with the new key:
+Test that the agent can sign transactions with the new key. This snippet reuses the `server` and `account` from Step 2 (re-create them first if you are running it standalone):
 
 ```typescript
+import { TransactionBuilder, Networks, Operation, Horizon, BASE_FEE } from '@stellar/stellar-sdk';
+import { config } from './backend/config';
+
+// Standalone setup (skip if reusing Step 2's variables):
+// const server = new Horizon.Server('https://horizon.stellar.org');
 const newKeypair = config.agentKeypair();
+// const account = await server.loadAccount(newKeypair.publicKey());
+
 const testTx = new TransactionBuilder(account, {
   fee: BASE_FEE,
-  networkPassphrase: Networks.PUBLIC_NETWORK_PASSPHRASE,
+  networkPassphrase: Networks.PUBLIC,
 })
   .addOperation(Operation.bumpSequence({ bumpTo: account.sequenceNumber() }))
   .setTimeout(180)
@@ -207,14 +214,18 @@ console.log('✅ New key can sign transactions:', result.id);
 
 #### Step 5: Remove the Old Key as a Signer
 
-Once the new key is confirmed working and the old key is no longer needed, remove it from the signers list:
+Once the new key is confirmed working and the old key is no longer needed, remove it from the signers list. This snippet also reuses the `server` and `account` from Step 2:
 
 ```typescript
+import { TransactionBuilder, Networks, Operation, Horizon, BASE_FEE } from '@stellar/stellar-sdk';
+import { config } from './backend/config';
+
 const oldPublicKey = '...'; // The old keypair's public key
+const newKeypair = config.agentKeypair();
 
 const tx = new TransactionBuilder(account, {
   fee: BASE_FEE,
-  networkPassphrase: Networks.PUBLIC_NETWORK_PASSPHRASE,
+  networkPassphrase: Networks.PUBLIC,
 })
   .addOperation(
     Operation.setOptions({
@@ -237,35 +248,3 @@ console.log('✅ Old signer removed:', txResult.id);
 ⚠️ **Do not remove the old key until the new key is confirmed working.** If you remove the old key before verifying the new one works, the account will have no active signers and become permanently inaccessible.
 
 ⚠️ **Do not update `AGENT_SECRET_KEY` in production until the new signer is confirmed on-chain.** Mismatched signers and active keys will cause transaction signing failures.
-
-⚠️ **Keep a secure offline backup of the old key** until you are certain it is no longer needed, in case recovery is necessary.
-
----
-
-## Additional Hardening Notes
-
-- **Mainnet spending cap:** `AGENT_SPENDING_LIMIT` is rejected at startup if it exceeds `10,000` on `mainnet`, preventing runaway agent spend.
-- **Exponential back-off:** All RPC calls use retry logic with jitter to reduce the attack surface of timing-based denial-of-service against the agent.
-- **Dependency pinning:** Keep `package.json` dependencies pinned to exact versions and audit regularly with `npm audit`.
-
----
-
-## Known Limitations
-
-Users should be aware of the following limitations when deploying Nodal AI:
-
-### 1. In-Memory Nonce Store
-
-The x402 nonce store is in-memory and not persisted to disk. If the agent process restarts, previously-seen nonces are cleared. This creates a window where replayed x402 challenges could be accepted until the agent is re-initialized with fresh state. See [#207](https://github.com/Nodal-stellar/Nodal-AI/issues/207) for persistent nonce store implementation.
-
-### 2. Soroban Simulation Disabled for Payment Estimates
-
-`StellarPaymentTool` does not use Soroban simulation to estimate transaction fees. Fee estimates are calculated as base-fee only, without accounting for transaction complexity or network congestion. Production deployments should verify fee estimates through a secondary mechanism or use a higher fee buffer.
-
-### 3. AWS Secret Fetch Pattern
-
-`config.ts` uses `execSync` to fetch `AGENT_SECRET_KEY` from AWS Secrets Manager. This pattern has inherent security risks including exposing command output in error logs and blocking the event loop during secret retrieval. See [#210](https://github.com/Nodal-stellar/Nodal-AI/issues/210) for a planned non-blocking alternative.
-
-### 4. Webhook Delivery Retry Limits
-
-Webhook delivery has no retry mechanism for non-2xx responses beyond the initial `withRetry` attempts configured in the deployment. If a webhook consumer is temporarily unavailable, events may be silently dropped without re-queueing or manual intervention capability.

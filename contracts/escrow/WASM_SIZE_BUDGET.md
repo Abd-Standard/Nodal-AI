@@ -10,21 +10,24 @@ injecting large data segments, and the binary would still load and run normally.
 
 | Setting | Value |
 | :--- | :--- |
-| Budget | **200,000 bytes** (~195 KiB) |
+| Budget | **120,000 bytes** (~117 KiB) |
 | Where enforced | `.github/workflows/ci.yml` → `wasm-size-check` job |
 | Check script | `scripts/check_wasm_size.sh` |
 | Override | `MAX_WASM_SIZE_BYTES` environment variable |
 
-## Why 200,000 bytes?
+## Why 120,000 bytes?
 
+- Stellar's network hard limit for deployable contract WASM is **128 KiB
+  (131,072 bytes)**. The budget must sit below that limit, otherwise a binary
+  could pass CI and still be rejected at deploy time.
+- 120,000 bytes leaves ~11 KB of headroom under the network limit, so the check
+  fails before an artifact becomes undeployable.
 - The escrow contract is small; a legitimate release build is far below this
-  threshold, so the budget does not constrain normal development.
-- 200,000 bytes leaves generous headroom for legitimate growth (new features,
-  dependencies) while still failing loudly if an attack injects a large data
-  segment into the binary.
+  threshold, so the budget does not constrain normal development, while still
+  failing loudly if an attack injects a large data segment into the binary.
 - The budget is deliberately **explicit and adjustable**: when the contract
   legitimately outgrows it, raise `MAX_WASM_SIZE_BYTES` in CI as part of the
-  change that grew the contract — never silently.
+  change that grew the contract — never silently, and never above 131,072 bytes.
 
 ## How the check works
 
@@ -37,8 +40,7 @@ injecting large data segments, and the binary would still load and run normally.
 ## Related context
 
 - Stellar's current network hard limit for deployable contract WASM is
-  **128 KiB (131,072 bytes)**. Keep the deployed artifact below that limit
-  regardless of this budget.
+  **128 KiB (131,072 bytes)**; the budget above is set below it on purpose.
 - Run the check locally with:
   ```bash
   cargo build --manifest-path contracts/escrow/Cargo.toml --target wasm32-unknown-unknown --release

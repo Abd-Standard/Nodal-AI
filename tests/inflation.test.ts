@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
 import { InflationTool } from '../backend/tools/InflationTool';
+import { KeypairSigner } from '../backend/signer';
 import * as rpcClient from '../backend/rpc_client';
 
 vi.mock('../backend/rpc_client', () => ({
@@ -62,7 +63,7 @@ describe('InflationTool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new InflationTool(TEST_SECRET);
+    tool = new InflationTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: 'inflation_hash',
       ledger: 7,

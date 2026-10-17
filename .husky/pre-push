@@ -1,4 +1,5 @@
-#!/bin/sh
-. "$(dirname "$0")/_/husky.sh"
+#!/usr/bin/env sh
+# Regression guard (#704): never push code that does not type-check.
+npx tsc --noEmit
 
 npm run test:ts

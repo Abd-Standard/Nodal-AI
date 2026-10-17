@@ -54,20 +54,40 @@ export function resolveAsset(input: OfferBookInput['sellingAsset']): Asset {
   if (input instanceof Asset) {
     return input;
   }
+
   if (typeof input === 'string') {
     if (input.toUpperCase() === 'XLM' || input.toLowerCase() === 'native') {
       return Asset.native();
     }
     if (input.includes(':')) {
-      // `includes(':')` guarantees split() yields at least two parts.
       const [code, issuer] = input.split(':') as [string, string];
       return new Asset(code, issuer);
     }
-    return new Asset(input, config.X402_ASSET_ISSUER);
+
+    const defaultIssuer = config.X402_ASSET_ISSUER;
+    const defaultCode = config.X402_ASSET_CODE?.toUpperCase() ?? 'USDC';
+    if (defaultIssuer && input.toUpperCase() === defaultCode) {
+      return new Asset(input, defaultIssuer);
+    }
+
+    throw new Error(
+      `Asset code "${input}" requires an issuer. Use "${input}:ISSUER" format or provide an issuer in the object form.`
+    );
   }
-  if (input.code.toUpperCase() === 'XLM' || !input.issuer) {
+
+  if (input.code.toUpperCase() === 'XLM') {
     return Asset.native();
   }
+
+  if (!input.issuer) {
+    const defaultIssuer = config.X402_ASSET_ISSUER;
+    const defaultCode = config.X402_ASSET_CODE?.toUpperCase() ?? 'USDC';
+    if (defaultIssuer && input.code.toUpperCase() === defaultCode) {
+      return new Asset(input.code, defaultIssuer);
+    }
+    return Asset.native();
+  }
+
   return new Asset(input.code, input.issuer);
 }
 

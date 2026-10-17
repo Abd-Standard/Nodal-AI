@@ -21,24 +21,14 @@ import { z } from 'zod';
 import * as dotenv from 'dotenv';
 import { Keypair } from '@stellar/stellar-sdk';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
+import { isValidStellarPublicKey } from './utils/stellarSchemas';
+
+export const MAINNET_SPENDING_CAP = 10_000;
 
 // Load .env file (no-op when running in CI / production with real env vars)
 dotenv.config();
 
 // ─── Custom Zod refinements ───────────────────────────────────────────────────
-
-function isValidStellarPublicKey(value: string): boolean {
-  if (!value.startsWith('G')) {
-    return false;
-  }
-
-  try {
-    Keypair.fromPublicKey(value);
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 /**
  * Validates a Stellar secret key (S…, 56 chars, base32).
@@ -112,6 +102,18 @@ const EnvSchema = z.object({
   AGENT_PUBLIC_KEY: StellarPublicKeySchema,
   AGENT_SECRET_KEY_ARN: z.string().optional(),
 
+  // Signing backend — `local` signs with the in-memory agent keypair, `vault`
+  // delegates to a HashiCorp Vault transit ed25519 key (VAULT_TOKEN is read
+  // from the environment by backend/signers, never stored on config).
+  SIGNER_BACKEND: z
+    .enum(['local', 'vault'], {
+      errorMap: () => ({ message: 'SIGNER_BACKEND must be one of: local | vault' }),
+    })
+    .default('local'),
+  VAULT_ADDR: z.string().url('VAULT_ADDR must be a valid URL').optional(),
+  VAULT_TRANSIT_MOUNT: z.string().min(1).default('transit'),
+  VAULT_TRANSIT_KEY: z.string().min(1).optional(),
+
   // x402 / PayFi asset
   X402_ASSET_CODE: z.string().min(1).max(12).default('USDC'),
   X402_ASSET_ISSUER: z
@@ -124,6 +126,37 @@ const EnvSchema = z.object({
       message: 'X402_ASSET_ISSUER is not a valid Ed25519 public key',
     }),
   ALLOWED_X402_ORIGINS: z.string().optional(),
+  // Maximum amount a single x402 challenge may request. Unset = no per-challenge cap.
+  X402_MAX_PRICE: z
+    .string()
+    .regex(
+      /^(?!0+(\.0+)?$)\d+(\.\d{1,7})?$/,
+      "X402_MAX_PRICE must be a positive decimal (e.g. '5' or '0.5000000')"
+    )
+    .optional(),
+  // Comma-separated assets x402 challenges may request: "XLM" or "CODE:ISSUER".
+  // Unset = any asset, but a known code must still use its configured issuer.
+  X402_ALLOWED_ASSETS: z
+    .string()
+    .refine(
+      (val) =>
+        val
+          .split(',')
+          .map((entry) => entry.trim())
+          .every((entry) => {
+            if (entry === 'XLM') return true;
+            const [code, issuer, ...extra] = entry.split(':');
+            return (
+              extra.length === 0 &&
+              !!code &&
+              code.length <= 12 &&
+              !!issuer &&
+              isValidStellarPublicKey(issuer)
+            );
+          }),
+      { message: 'X402_ALLOWED_ASSETS must be a comma-separated list of "XLM" or "CODE:ISSUER"' }
+    )
+    .optional(),
 
   // Spending cap
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
@@ -192,6 +225,17 @@ const EnvSchema = z.object({
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
+  // Kill switch: start with value-moving tasks halted (see backend/kill_switch.ts).
+  PAUSED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  // Backward-compat: sign the body only (no timestamp). Deprecated — removed next release.
+  WEBHOOK_LEGACY_SIGNATURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -284,14 +328,37 @@ export interface AgentConfig {
    *
    * @example
    * ```typescript
-   * // Safely access the secret key for tool instantiation
-   * const secret = config.agentKeypair().secret();
-   * const tool = new StellarPaymentTool(secret);
+   * // Tools receive a Signer, never the secret key
+   * const tool = new StellarPaymentTool(new KeypairSigner(config.agentKeypair()));
    * ```
    */
   readonly agentKeypair: () => Keypair;
   readonly ALLOWED_X402_ORIGINS?: string;
+  /**
+   * Maximum amount a single x402 challenge may request. Challenges above it are rejected.
+   * Optional — when unset only AGENT_SPENDING_LIMIT applies.
+   */
+  readonly X402_MAX_PRICE?: string | undefined;
+  /**
+   * Comma-separated allow-list of assets an x402 challenge may request, each "XLM" or
+   * "CODE:ISSUER". Optional — when unset any asset is accepted, but a challenge for a
+   * known code (X402_ASSET_CODE) must use its configured issuer.
+   */
+  readonly X402_ALLOWED_ASSETS?: string | undefined;
   readonly AGENT_SECRET_KEY_ARN?: string;
+
+  /**
+   * Which signing backend `createSigner()` returns.
+   * "local" (default) signs with agentKeypair(); "vault" signs with a
+   * HashiCorp Vault transit key so the signing key never leaves Vault.
+   */
+  readonly SIGNER_BACKEND: 'local' | 'vault';
+  /** Vault server address. Required when SIGNER_BACKEND is "vault". */
+  readonly VAULT_ADDR?: string | undefined;
+  /** Mount path of the Vault transit secrets engine. Defaults to "transit". */
+  readonly VAULT_TRANSIT_MOUNT: string;
+  /** Name of the Vault transit ed25519 key. Required when SIGNER_BACKEND is "vault". */
+  readonly VAULT_TRANSIT_KEY?: string | undefined;
 
   /**
    * OpenTelemetry collector endpoint.
@@ -304,7 +371,7 @@ export interface AgentConfig {
    * Spending window in milliseconds for rate/cap computation.
    * Defines the time window over which spending is tracked and enforced.
    * Validated by EnvSchema to be a positive integer.
-   * Defaults to 60,000 (1 minute).
+   * Defaults to 86,400,000 (24 hours).
    */
   readonly SPENDING_WINDOW_MS: number;
   /**
@@ -364,6 +431,16 @@ export interface AgentConfig {
   readonly CONTRACT_EVENT_POLL_MS?: number | undefined;
   readonly WEBHOOK_URL?: string | undefined;
   readonly WEBHOOK_SECRET?: string | undefined;
+  /**
+   * When true, X-Nodal-Signature is HMAC(body) instead of HMAC(`${timestamp}.${body}`).
+   * Backward-compatibility flag for one release. Defaults to false.
+   */
+  readonly WEBHOOK_LEGACY_SIGNATURE: boolean;
+  /**
+   * When true the agent starts paused: value-moving tasks fail with
+   * errorType AGENT_PAUSED until resumed via POST /admin/resume. Defaults to false.
+   */
+  readonly PAUSED: boolean;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -409,12 +486,34 @@ function parseConfigAndDerive(): AgentConfig {
     process.stderr.write(
       `\n❌ [Config] Invalid environment — fix the following before starting:\n` +
         formatValidationErrors(result.error) +
-        `\n\nSee ..env for reference.\n\n`
+        `\n\nSee .env for reference.\n\n`
     );
     process.exit(1);
   }
 
   const raw: RawEnv = result.data;
+
+  // ── Mainnet HTTPS enforcement ──────────────────────────────────────────────
+  // On mainnet, both RPC endpoints MUST use HTTPS to prevent credential/data
+  // exposure over unencrypted connections. Testnet and futurenet permit HTTP
+  // for local devnets and CI environments.
+  if (raw.STELLAR_NETWORK === "mainnet") {
+    const httpsErrors: string[] = [];
+    if (!raw.HORIZON_URL.startsWith("https://")) {
+      httpsErrors.push(`  • HORIZON_URL: must use HTTPS on mainnet (got: ${raw.HORIZON_URL})`);
+    }
+    if (!raw.SOROBAN_RPC_URL.startsWith("https://")) {
+      httpsErrors.push(`  • SOROBAN_RPC_URL: must use HTTPS on mainnet (got: ${raw.SOROBAN_RPC_URL})`);
+    }
+    if (httpsErrors.length > 0) {
+      process.stderr.write(
+        `\n❌ [Config] Mainnet requires HTTPS for all RPC endpoints:\n` +
+        httpsErrors.join("\n") +
+        `\n\nSee .env.example for reference.\n\n`
+      );
+      process.exit(1);
+    }
+  }
 
   // ── Derive public key from secret ──────────────────────────────────────────
   let keypair: Keypair;
@@ -440,10 +539,10 @@ function parseConfigAndDerive(): AgentConfig {
   // ── Mainnet safety guard ───────────────────────────────────────────────────
   if (raw.STELLAR_NETWORK === 'mainnet') {
     const limit = parseFloat(raw.AGENT_SPENDING_LIMIT);
-    if (limit > 10_000) {
+    if (limit > MAINNET_SPENDING_CAP) {
       process.stderr.write(
         `❌ [Config] AGENT_SPENDING_LIMIT (${raw.AGENT_SPENDING_LIMIT}) exceeds ` +
-          `the mainnet safety cap of 10,000. Lower it or explicitly override.\n`
+          `the mainnet safety cap of ${MAINNET_SPENDING_CAP.toLocaleString('en-US')}. Lower it or explicitly override.\n`
       );
       process.exit(1);
     }
@@ -452,7 +551,6 @@ function parseConfigAndDerive(): AgentConfig {
   // ── Build the config object — secret key stays in closure only ────────────
   const {
     AGENT_SECRET_KEY: _secret,
-    AGENT_PUBLIC_KEY: _rawPub,
     ALLOWED_X402_ORIGINS,
     AGENT_SECRET_KEY_ARN,
     OTLP_ENDPOINT,
@@ -466,7 +564,6 @@ function parseConfigAndDerive(): AgentConfig {
   // Derive the keypair once at startup. agentKeypair returns this cached instance
   // on every call, avoiding repeated Ed25519 derivation.
   const _keypair = Keypair.fromSecret(_secret);
-  const _secretRef = _secret;
 
   const cfg: AgentConfig = {
     ...rest,
@@ -487,12 +584,6 @@ function parseConfigAndDerive(): AgentConfig {
     agentKeypair: () => _keypair,
   };
 
-  // Allow GC of the secret string now that the keypair is materialised.
-  // (JS strings are immutable, but this signals intent.)
-  (() => {
-    const _ = _secretRef;
-  })();
-
   // Startup banner — only safe fields
   process.stdout.write(
     `✅ [Config] Environment validated\n` +
@@ -508,19 +599,24 @@ function parseConfigAndDerive(): AgentConfig {
 }
 
 function loadConfigSync(): AgentConfig {
+  assertSecretConfigCompatibility();
   if (process.env.AGENT_SECRET_KEY_ARN) {
     throw new Error('Cannot load configuration synchronously when AGENT_SECRET_KEY_ARN is set.');
   }
   return parseConfigAndDerive();
 }
 
-export async function loadConfig(): Promise<AgentConfig> {
+function assertSecretConfigCompatibility(): void {
   if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
     process.stderr.write(
       '❌ [Config] Cannot specify both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN.\n'
     );
     process.exit(1);
   }
+}
+
+export async function loadConfig(): Promise<AgentConfig> {
+  assertSecretConfigCompatibility();
 
   if (process.env.AGENT_SECRET_KEY_ARN) {
     try {
@@ -576,17 +672,35 @@ if (process.env.AGENT_SECRET_KEY && process.env.AGENT_SECRET_KEY_ARN) {
   }
 }
 
-export const configPromise = (async () => {
-  if (_config) return _config;
-  if (_configError) throw _configError;
-  try {
-    _config = await loadConfig();
-    return _config;
-  } catch (err: any) {
-    _configError = err;
-    throw err;
+function ensureConfigPromise(): Promise<AgentConfig> {
+  if (_config) return Promise.resolve(_config);
+  if (_configError) return Promise.reject(_configError);
+  if (!__configPromise) {
+    __configPromise = (async () => {
+      try {
+        _config = await loadConfig();
+        return _config;
+      } catch (err: any) {
+        _configError = err;
+        throw err;
+      }
+    })();
   }
-})();
+  return __configPromise;
+}
+
+let __configPromise: Promise<AgentConfig> | null = null;
+
+export const configPromise = {
+  then: <TResult1 = AgentConfig, TResult2 = never>(
+    onfulfilled?: ((value: AgentConfig) => TResult1 | PromiseLike<TResult1>) | null,
+    onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null
+  ) => ensureConfigPromise().then(onfulfilled, onrejected),
+  catch: <TResult = never>(
+    onrejected?: ((reason: unknown) => TResult | PromiseLike<TResult>) | null
+  ) => ensureConfigPromise().catch(onrejected),
+  finally: (onfinally?: (() => void) | null) => ensureConfigPromise().finally(onfinally),
+} as PromiseLike<AgentConfig>;
 
 export const config = new Proxy({} as AgentConfig, {
   get(target, prop, receiver) {
@@ -594,7 +708,20 @@ export const config = new Proxy({} as AgentConfig, {
       throw _configError;
     }
     if (!_config) {
-      throw new Error('Configuration has not been initialized yet. Await configPromise first.');
+      const hasAnyEnvConfig = Object.keys(process.env).some((key) =>
+        ['HORIZON_URL', 'SOROBAN_RPC_URL', 'AGENT_SECRET_KEY', 'X402_ASSET_ISSUER'].includes(key)
+      );
+
+      if (!hasAnyEnvConfig) {
+        return Reflect.get(FALLBACK_CONFIG, prop, receiver);
+      }
+
+      try {
+        _config = loadConfigSync();
+      } catch (err: any) {
+        _configError = err;
+        throw err;
+      }
     }
     return Reflect.get(_config, prop, receiver);
   },
@@ -605,9 +732,19 @@ export const config = new Proxy({} as AgentConfig, {
  * Any single operation/payment attempting to exceed this value will be blocked
  * by the spending limit assertion before submission.
  */
-export const MAINNET_SPENDING_CAP = 10000;
-
 // ─── Compile-time encapsulation guard ────────────────────────────────────────
+// AgentConfig intentionally omits AGENT_SECRET_KEY so it is never accessible
+// on the config object. The line below causes a deliberate TS2551 compile error
+// (suppressed by @ts-expect-error) to prove the property does not exist on the type.
+// @ts-expect-error — TS2551: Property 'AGENT_SECRET_KEY' does not exist on 'AgentConfig'
+declare const _configTypeGuard: AgentConfig["AGENT_SECRET_KEY"];
+// AgentConfig intentionally omits AGENT_SECRET_KEY.
+// The TypeScript error below proves AGENT_SECRET_KEY is NOT on the AgentConfig
+// type. The false && guard ensures this line is dead code at runtime — the
+// typeof check prevents a ReferenceError since _configTypeGuard is declaration-
+// only and has no runtime binding after TypeScript erasure.
+// @ts-expect-error — AGENT_SECRET_KEY must NOT be accessible on AgentConfig
+if (false) { void (undefined as any as AgentConfig).AGENT_SECRET_KEY; }
 // AgentConfig intentionally omits AGENT_SECRET_KEY via Omit<RawEnv, "AGENT_SECRET_KEY">.
 // The TypeScript assertion below is intentional — it proves AGENT_SECRET_KEY is NOT
 // on the AgentConfig type without emitting any runtime value access.

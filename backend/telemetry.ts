@@ -19,7 +19,8 @@ import { createLogger } from './utils/logger';
 
 const log = createLogger('telemetry');
 
-let tracer: Tracer = trace.getTracer('stellar-agent-kit');
+const tracer: Tracer = trace.getTracer("stellar-agent-kit");
+const tracer: Tracer = trace.getTracer('stellar-agent-kit');
 let sdk: NodeSDK | null = null;
 
 /**

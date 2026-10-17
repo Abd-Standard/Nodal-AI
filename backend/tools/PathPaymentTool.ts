@@ -6,15 +6,14 @@
  */
 
 import {
-  Keypair,
   TransactionBuilder,
   Operation,
   Asset,
   BASE_FEE,
-  Memo,
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { logger } from '../logger';
 import {
   horizonServer,
@@ -24,8 +23,9 @@ import {
 } from '../rpc_client';
 import { ValidationError } from '../errors';
 import { createLogger } from '../utils/logger';
-import { SubmitResultSchema } from './StellarPaymentTool';
+import { SubmitResultSchema, buildMemo } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
 const log = createLogger('path-payment');
 
@@ -37,7 +37,7 @@ const AssetSchema = z.object({
 });
 
 export const PathPaymentInputSchema = z.object({
-  destination: z.string().length(56, 'Invalid Stellar public key'),
+  destination: stellarPublicKeySchema('destination'),
   sendAsset: AssetSchema,
   sendAmount: z
     .string()
@@ -66,89 +66,25 @@ function toAsset(a: { code: string; issuer?: string | undefined }): Asset {
   return new Asset(a.code, a.issuer);
 }
 
-/**
- * Build a Stellar Memo object based on memoType and value.
- *
- * @param memoType - Type of memo: "text", "id", "hash", or "return"
- * @param memoValue - Memo value (string for text/return/hash, number for id)
- * @returns Memo instance or null if memoValue is undefined
- */
-function buildMemo(memoType: string, memoValue: string | number | undefined): Memo | null {
-  if (memoValue === undefined) {
-    return null;
-  }
-
-  switch (memoType) {
-    case 'id': {
-      if (typeof memoValue !== 'number') {
-        throw new Error('Memo ID must be a number');
-      }
-      // Convert to unsigned 64-bit integer
-      const id = BigInt(memoValue);
-      if (id < 0n || id > 18446744073709551615n) {
-        throw new Error('Memo ID must be a 64-bit unsigned integer (0 to 2^64-1)');
-      }
-      return Memo.id(id.toString());
-    }
-    case 'hash': {
-      if (typeof memoValue !== 'string') {
-        throw new Error('Memo hash must be a string');
-      }
-      // Remove 0x prefix if present and validate length
-      const hashHex = memoValue.replace(/^0x/, '');
-      if (hashHex.length !== 64) {
-        throw new Error('Memo hash must be a 32-byte hex string (64 hex characters)');
-      }
-      if (!/^[0-9a-fA-F]{64}$/.test(hashHex)) {
-        throw new Error('Memo hash must contain only valid hex characters');
-      }
-      return Memo.hash(hashHex);
-    }
-    case 'return': {
-      if (typeof memoValue !== 'string') {
-        throw new Error('Memo return must be a string');
-      }
-      // Remove 0x prefix if present and validate length
-      const returnHex = memoValue.replace(/^0x/, '');
-      if (returnHex.length !== 64) {
-        throw new Error('Memo return must be a 32-byte hex string (64 hex characters)');
-      }
-      if (!/^[0-9a-fA-F]{64}$/.test(returnHex)) {
-        throw new Error('Memo return must contain only valid hex characters');
-      }
-      return Memo.return(returnHex);
-    }
-    case 'text':
-    default:
-      if (typeof memoValue !== 'string') {
-        throw new Error('Memo text must be a string');
-      }
-      if (Buffer.byteLength(memoValue, 'utf8') > 28) {
-        throw new Error('Memo text must be at most 28 bytes');
-      }
-      return Memo.text(memoValue);
-  }
-}
-
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class PathPaymentTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   get publicKey(): string {
-    return this.keypair.publicKey();
+    return this.signer.publicKey();
   }
 
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = PathPaymentInputSchema.parse(rawInput);
 
-    if (!input.allowSelfPayment && input.destination === this.keypair.publicKey()) {
+    if (!input.allowSelfPayment && input.destination === this.signer.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 
@@ -172,7 +108,7 @@ export class PathPaymentTool {
       }
     }
 
-    let sourceAccount = await loadAccount(this.keypair.publicKey());
+    let sourceAccount = await loadAccount(this.signer.publicKey());
 
     const buildTx = () => {
       const builder = new TransactionBuilder(sourceAccount, {
@@ -200,7 +136,7 @@ export class PathPaymentTool {
     };
 
     logger.info('Executing path payment', {
-      source: this.keypair.publicKey(),
+      source: this.signer.publicKey(),
       destination: input.destination,
       sendAmount: input.sendAmount,
       sendAsset: input.sendAsset.code,
@@ -209,7 +145,7 @@ export class PathPaymentTool {
     });
 
     let tx = buildTx();
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
 
     try {
       const result = SubmitResultSchema.parse(await submitTransaction(tx));
@@ -217,13 +153,13 @@ export class PathPaymentTool {
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('tx_bad_seq')) {
         logger.warn('tx_bad_seq detected, reloading account and retrying once', {
-          source: this.keypair.publicKey(),
+          source: this.signer.publicKey(),
         });
         // Bypass the account cache: the whole point of this retry is that the
         // sequence we used was wrong, so a cached record must not be reused.
-        sourceAccount = await loadAccount(this.keypair.publicKey(), { forceRefresh: true });
+        sourceAccount = await loadAccount(this.signer.publicKey(), { forceRefresh: true });
         tx = buildTx();
-        tx.sign(this.keypair);
+        this.signer.signTransaction(tx);
         const result = SubmitResultSchema.parse(await submitTransaction(tx));
         return { txHash: result.hash, ledger: result.ledger };
       }

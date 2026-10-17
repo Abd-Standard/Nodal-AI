@@ -3,12 +3,14 @@
  * Read, write, and delete Stellar account data entries via MANAGE_DATA.
  */
 
-import { Keypair, TransactionBuilder, Operation, BASE_FEE, StrKey } from '@stellar/stellar-sdk';
+import { TransactionBuilder, Operation, BASE_FEE } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
 import { SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
 export const DataEntryInputSchema = z.discriminatedUnion('action', [
   z.object({
@@ -23,11 +25,7 @@ export const DataEntryInputSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('get'),
     name: z.string().min(1).max(64, 'Data name must be <= 64 bytes'),
-    accountId: z
-      .string()
-      .length(56, 'Invalid Stellar public key')
-      .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid Stellar public key')
-      .optional(),
+    accountId: stellarPublicKeySchema('accountId').optional(),
   }),
 ]);
 
@@ -53,16 +51,16 @@ export interface DataEntryMutationResult {
 export type DataEntryResult = DataEntryGetResult | DataEntryMutationResult;
 
 export class DataEntryTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   async get(name: string, accountId?: string): Promise<DataEntryGetResult> {
-    const targetAccount = accountId ?? this.keypair.publicKey();
+    const targetAccount = accountId ?? this.signer.publicKey();
     const account = await loadAccount(targetAccount);
     const rawBase64 = (account.data_attr as Record<string, string> | undefined)?.[name];
 
@@ -97,7 +95,7 @@ export class DataEntryTool {
       return this.get(input.name, input.accountId);
     }
 
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
     const opValue = input.action === 'delete' ? null : input.value;
 
     const tx = new TransactionBuilder(account, {
@@ -113,7 +111,7 @@ export class DataEntryTool {
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
     const result = SubmitResultSchema.parse(await submitTransaction(tx));
     return {
       txHash: result.hash,

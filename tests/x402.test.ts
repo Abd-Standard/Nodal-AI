@@ -10,6 +10,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { hash, Keypair } from '@stellar/stellar-sdk';
 import { createHash } from 'crypto';
 import { X402PaymentTool } from '../backend/tools/X402PaymentTool';
+import { KeypairSigner } from '../backend/signer';
 import { StellarPaymentTool } from '../backend/tools/StellarPaymentTool';
 import { config } from '../backend/config';
 import { TransactionFailureError, ErrorType } from '../backend/errors';
@@ -18,6 +19,9 @@ import { horizonServer } from '../backend/rpc_client';
 // ─── Mock rpc_client so horizonServer.ledgers() is interceptable ──────────────
 
 vi.mock('../backend/rpc_client', () => ({
+  // Pass-through so verification lookups exercise the mocked Horizon calls
+  // directly, matching the shared withRetry wiring in X402PaymentTool.
+  withRetry: (fn: () => Promise<unknown>) => fn(),
   horizonServer: {
     ledgers: vi.fn().mockReturnValue({
       ledger: vi.fn().mockReturnValue({
@@ -96,7 +100,7 @@ describe('X402PaymentTool', () => {
       execute: vi.fn().mockResolvedValue({ txHash: 'x402_mock_tx_hash', ledger: 99 }),
     };
     vi.mocked(StellarPaymentTool).mockImplementation(() => mockPaymentTool);
-    tool = new X402PaymentTool(TEST_SECRET);
+    tool = new X402PaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
   });
 
   // ── Schema validation ───────────────────────────────────────────────────────
@@ -277,6 +281,90 @@ describe('X402PaymentTool', () => {
 
     afterEach(() => {
       (config as any).ALLOWED_X402_ORIGINS = undefined;
+    });
+  });
+
+  // ── Asset / issuer / price guards (#742) ────────────────────────────────────
+
+  describe('Asset, issuer and max-price validation', () => {
+    const FAKE_ISSUER = Keypair.random().publicKey();
+    const EURC_ISSUER = Keypair.random().publicKey();
+
+    afterEach(() => {
+      (config as any).X402_ALLOWED_ASSETS = undefined;
+      (config as any).X402_MAX_PRICE = undefined;
+    });
+
+    it('rejects a fake-USDC challenge whose issuer differs from the configured one', async () => {
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, assetIssuer: FAKE_ISSUER })
+      ).rejects.toThrow(`x402: assetIssuer ${FAKE_ISSUER} is not a trusted issuer for USDC`);
+      expect(mockPaymentTool.execute).not.toHaveBeenCalled();
+    });
+
+    it('accepts USDC from the configured issuer', async () => {
+      const proof = await tool.respond(VALID_CHALLENGE);
+      expect(proof.txHash).toBe('x402_mock_tx_hash');
+    });
+
+    it('accepts an unknown asset when no allow-list is configured', async () => {
+      const proof = await tool.respond({
+        ...VALID_CHALLENGE,
+        assetCode: 'EURC',
+        assetIssuer: EURC_ISSUER,
+      });
+      expect(proof.txHash).toBe('x402_mock_tx_hash');
+    });
+
+    it('rejects an asset that is not in X402_ALLOWED_ASSETS', async () => {
+      (config as any).X402_ALLOWED_ASSETS = `XLM, USDC:${VALID_ISSUER}`;
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, assetCode: 'EURC', assetIssuer: EURC_ISSUER })
+      ).rejects.toThrow(`x402: asset EURC:${EURC_ISSUER} is not in X402_ALLOWED_ASSETS`);
+      expect(mockPaymentTool.execute).not.toHaveBeenCalled();
+    });
+
+    it('accepts assets listed in X402_ALLOWED_ASSETS', async () => {
+      (config as any).X402_ALLOWED_ASSETS = `XLM,EURC:${EURC_ISSUER}`;
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, assetCode: 'EURC', assetIssuer: EURC_ISSUER })
+      ).resolves.toMatchObject({ txHash: 'x402_mock_tx_hash' });
+      await expect(
+        tool.respond({
+          ...VALID_CHALLENGE,
+          nonce: '6ba7b810-9dad-41d1-80b4-00c04fd430c8',
+          assetCode: 'XLM',
+          assetIssuer: '',
+        })
+      ).resolves.toMatchObject({ txHash: 'x402_mock_tx_hash' });
+    });
+
+    it('rejects XLM when X402_ALLOWED_ASSETS does not list it', async () => {
+      (config as any).X402_ALLOWED_ASSETS = `USDC:${VALID_ISSUER}`;
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, assetCode: 'XLM', assetIssuer: '' })
+      ).rejects.toThrow('x402: asset XLM is not in X402_ALLOWED_ASSETS');
+    });
+
+    it('rejects a spoofed issuer for a code made known by X402_ALLOWED_ASSETS', async () => {
+      (config as any).X402_ALLOWED_ASSETS = `EURC:${EURC_ISSUER}`;
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, assetCode: 'EURC', assetIssuer: FAKE_ISSUER })
+      ).rejects.toThrow(`x402: assetIssuer ${FAKE_ISSUER} is not a trusted issuer for EURC`);
+    });
+
+    it('rejects a challenge priced above X402_MAX_PRICE with a clear error', async () => {
+      (config as any).X402_MAX_PRICE = '1';
+      await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow(
+        'x402: challenge amount 1.5000000 exceeds X402_MAX_PRICE of 1'
+      );
+      expect(mockPaymentTool.execute).not.toHaveBeenCalled();
+    });
+
+    it('accepts a challenge priced exactly at X402_MAX_PRICE', async () => {
+      (config as any).X402_MAX_PRICE = '1.5';
+      const proof = await tool.respond(VALID_CHALLENGE);
+      expect(proof.txHash).toBe('x402_mock_tx_hash');
     });
   });
 

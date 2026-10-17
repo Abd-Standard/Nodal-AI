@@ -9,6 +9,7 @@ import { config } from '../config';
 import { ValidationError } from '../errors';
 import { horizonServer, withRetry } from '../rpc_client';
 import { withBackoffGuard } from '../network';
+import { Signer } from '../signer';
 import { PathPaymentTool } from './PathPaymentTool';
 
 const AssetSchema = z.object({
@@ -57,8 +58,8 @@ function pathAssetsFromRecord(
 export class SwapTool {
   private pathPaymentTool: PathPaymentTool;
 
-  constructor(secretKey?: string) {
-    this.pathPaymentTool = new PathPaymentTool(secretKey);
+  constructor(signer?: Signer) {
+    this.pathPaymentTool = new PathPaymentTool(signer);
   }
 
   get publicKey(): string {

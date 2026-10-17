@@ -29,6 +29,7 @@ dotenv.config();
 
 import { PayFiAgent } from '../../backend/agent';
 import { StellarIdentityTool } from '../../backend/tools/StellarIdentityTool';
+import { KeypairSigner } from '../../backend/signer';
 import { Keypair } from '@stellar/stellar-sdk';
 
 // ---------------------------------------------------------------------------
@@ -146,7 +147,7 @@ console.log(`  TRANSFER_SERVER   : ${transferServer}\n`);
 
 // Step 2 — SEP-0010 authentication
 console.log('Step 2: Authenticating via SEP-0010 web auth ...');
-const identityTool = new StellarIdentityTool(secretKey);
+const identityTool = new StellarIdentityTool(new KeypairSigner(Keypair.fromSecret(secretKey)));
 
 // StellarIdentityTool.execute() expects anchorUrl pointing to the auth base
 // (i.e. the URL to which /auth is appended). We strip the `/auth` path suffix

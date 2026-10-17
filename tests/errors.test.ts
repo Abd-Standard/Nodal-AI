@@ -65,6 +65,23 @@ describe('Structured Error Types', () => {
     expect(error.contractId).toBe(contractId);
   });
 
+  it('preserves a malformed contractId as the contractId', () => {
+    const contractId = 'truncated-contract-id';
+    const error = new ContractError('Contract execution failed', contractId);
+
+    expect(error.contractId).toBe(contractId);
+    expect(error.cause).toBeUndefined();
+  });
+
+  it('preserves a cause passed as the third argument', () => {
+    const contractId = 'truncated-contract-id';
+    const cause = new Error('Simulation failed');
+    const error = new ContractError('Contract execution failed', contractId, cause);
+
+    expect(error.contractId).toBe(contractId);
+    expect(error.cause).toBe(cause);
+  });
+
   it('creates a TransactionFailureError with txHash', () => {
     const txHash = 'abcd1234';
     const error = new TransactionFailureError('Transaction failed', txHash);

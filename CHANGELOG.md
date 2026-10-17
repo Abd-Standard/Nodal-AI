@@ -44,8 +44,8 @@ When releasing a new version:
 ### Link Format (Bottom of File)
 
 ```markdown
-[Unreleased]: https://github.com/your-repo/compare/v[latest]...HEAD
-[X.Y.Z]: https://github.com/your-repo/releases/tag/v[X.Y.Z]
+[Unreleased]: https://github.com/Nodal-stellar/Nodal-AI/compare/v[latest]...HEAD
+[X.Y.Z]: https://github.com/Nodal-stellar/Nodal-AI/releases/tag/v[X.Y.Z]
 ```
 
 ---

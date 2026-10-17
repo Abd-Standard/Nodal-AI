@@ -13,8 +13,19 @@ export enum ErrorType {
   RateLimitError = 'RATE_LIMIT_ERROR',
   UnauthorizedError = 'UNAUTHORIZED_ERROR',
   ContractError = 'CONTRACT_ERROR',
+  /**
+   * A simulation exceeded its resource budget (Issue #569).
+   *
+   * Separate from ContractError because the caller's response differs: a
+   * budget overrun is retryable with a larger budget or a smaller call, while
+   * a contract error usually is not. Sharing one type forced callers to
+   * string-match the message, which is exactly what errorType exists to avoid.
+   */
+  SimulationBudgetExceeded = 'SIMULATION_BUDGET_EXCEEDED',
   TransactionFailure = 'TRANSACTION_FAILURE',
   ConfigError = 'CONFIG_ERROR',
+  /** The operator kill switch is engaged; value-moving tasks are halted. */
+  AgentPaused = 'AGENT_PAUSED',
   UnknownError = 'UNKNOWN_ERROR',
 }
 
@@ -53,11 +64,12 @@ export class ValidationError extends StructuredError {
 }
 
 export class RateLimitError extends StructuredError {
+  readonly retryAfterSeconds: number | undefined;
   readonly retryAfterSeconds?: number | undefined;
 
   constructor(message: string, retryAfterSeconds?: number, cause?: unknown) {
     super(message, ErrorType.RateLimitError, cause);
-    this.retryAfterSeconds = retryAfterSeconds;
+    if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds;
     Object.setPrototypeOf(this, RateLimitError.prototype);
   }
 }
@@ -70,30 +82,23 @@ export class UnauthorizedError extends StructuredError {
 }
 
 export class ContractError extends StructuredError {
+  readonly contractId: string | undefined;
   readonly contractId?: string | undefined;
 
   constructor(message: string, contractId?: string, cause?: unknown) {
-    const isContractId =
-      typeof contractId === 'string' && contractId.length === 56 && contractId.startsWith('C');
-    const actualContractId = isContractId
-      ? contractId
-      : cause !== undefined
-        ? contractId
-        : undefined;
-    const actualCause = cause !== undefined ? cause : isContractId ? undefined : contractId;
-
-    super(message, ErrorType.ContractError, actualCause);
-    this.contractId = actualContractId;
+    super(message, ErrorType.ContractError, cause);
+    if (contractId !== undefined) this.contractId = contractId;
     Object.setPrototypeOf(this, ContractError.prototype);
   }
 }
 
 export class TransactionFailureError extends StructuredError {
+  readonly txHash: string | undefined;
   readonly txHash?: string | undefined;
 
   constructor(message: string, txHash?: string, cause?: unknown) {
     super(message, ErrorType.TransactionFailure, cause);
-    this.txHash = txHash;
+    if (txHash !== undefined) this.txHash = txHash;
     Object.setPrototypeOf(this, TransactionFailureError.prototype);
   }
 }
@@ -107,8 +112,15 @@ export class ConfigError extends StructuredError {
 
 export class SimulationBudgetError extends StructuredError {
   constructor(message: string, cause?: unknown) {
-    super(message, ErrorType.ContractError, cause);
+    super(message, ErrorType.SimulationBudgetExceeded, cause);
     Object.setPrototypeOf(this, SimulationBudgetError.prototype);
+  }
+}
+
+export class AgentPausedError extends StructuredError {
+  constructor(message: string, cause?: unknown) {
+    super(message, ErrorType.AgentPaused, cause);
+    Object.setPrototypeOf(this, AgentPausedError.prototype);
   }
 }
 

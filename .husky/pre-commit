@@ -1,4 +1,9 @@
 #!/usr/bin/env sh
-. "$(dirname "$0")/scan-secrets.sh"
+# Run the secret scanner in a subshell: it calls `exit 0` when nothing is
+# found, which would end this hook early if it were sourced with `.`.
+sh "$(dirname "$0")/scan-secrets.sh" || exit 1
+
 npx lint-staged --config .lintstagedrc.json
-npm run typecheck
+
+# Regression guard (#704): block commits that do not type-check.
+npx tsc --noEmit

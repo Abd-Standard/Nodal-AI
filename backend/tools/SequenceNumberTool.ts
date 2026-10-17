@@ -3,21 +3,19 @@
  * Fetch and bump Stellar account sequence numbers via BUMP_SEQUENCE.
  */
 
-import { Keypair, TransactionBuilder, Operation, BASE_FEE, StrKey } from '@stellar/stellar-sdk';
+import { TransactionBuilder, Operation, BASE_FEE } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
 import { SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
 export const SequenceNumberInputSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('get'),
-    accountId: z
-      .string()
-      .length(56, 'Invalid Stellar public key')
-      .refine((val) => StrKey.isValidEd25519PublicKey(val), 'Invalid Stellar public key')
-      .optional(),
+    accountId: stellarPublicKeySchema('accountId').optional(),
   }),
   z.object({
     action: z.literal('bump'),
@@ -44,16 +42,16 @@ export interface SequenceNumberBumpResult {
 export type SequenceNumberResult = SequenceNumberGetResult | SequenceNumberBumpResult;
 
 export class SequenceNumberTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   async get(accountId?: string): Promise<SequenceNumberGetResult> {
-    const targetAccount = accountId ?? this.keypair.publicKey();
+    const targetAccount = accountId ?? this.signer.publicKey();
     const account = await loadAccount(targetAccount, { forceRefresh: true });
     return {
       accountId: targetAccount,
@@ -62,7 +60,7 @@ export class SequenceNumberTool {
   }
 
   async bump(bumpTo: string): Promise<SequenceNumberBumpResult> {
-    const account = await loadAccount(this.keypair.publicKey(), { forceRefresh: true });
+    const account = await loadAccount(this.signer.publicKey(), { forceRefresh: true });
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -76,7 +74,7 @@ export class SequenceNumberTool {
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
     const result = SubmitResultSchema.parse(await submitTransaction(tx));
 
     return {

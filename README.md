@@ -39,7 +39,7 @@ If you are new to the Stellar-specific terms used throughout the repo, see the [
 
    ```bash
    git clone https://github.com/Nodal-stellar/Nodal-AI.git
-   cd nodal-ai
+   cd Nodal-AI
    cp .env.example .env
    ```
 
@@ -77,7 +77,7 @@ The `contracts/` pillar holds your escrow and payment logic.
 
 We use `Vitest` to ensure the entire flow—from AI reasoning to network settlement—works as expected.
 
-- `npm run test`: Executes the `/tests` suite.
+- `npm run test:ts`: Executes the `/tests` suite (excluding E2E).
 - `npm run test:ui`: Runs the test suite with the interactive Vitest UI.
 
 ---
@@ -149,15 +149,82 @@ To report a vulnerability privately, use [GitHub Security Advisories](https://gi
 
 ### Spending Limit Enforcement
 
-PayFiAgent enforces two layers of spending limits to prevent runaway payments:
+PayFiAgent enforces three layers of spending limits to prevent runaway payments:
 
-- **AGENT_SPENDING_LIMIT**: A configurable per-transaction ceiling (set via environment variable). Before every payment task (`stellar_payment` or `x402_respond`), the `assertWithinSpendingLimit()` function in `backend/agent.ts` checks the requested amount. If it exceeds `AGENT_SPENDING_LIMIT`, the task fails immediately with error: `"Payment amount X exceeds AGENT_SPENDING_LIMIT of Y"`.
-- **Mainnet Spending Cap**: A hardcoded safety ceiling of **10,000** on mainnet. Even if `AGENT_SPENDING_LIMIT` is misconfigured above this, mainnet transactions are blocked if they exceed 10,000, throwing: `"Payment amount X exceeds mainnet spending cap of 10,000"`.
+1. **Per-payment cap** (`AGENT_SPENDING_LIMIT`): A configurable per-task ceiling (set via environment variable). Before every value-moving task the orchestrator calls `reserveSpendingLimit()` in `backend/agent.ts`, which checks the requested amount against `AGENT_SPENDING_LIMIT`. If it exceeds the limit the task fails immediately — the tool is never invoked.
+2. **Mainnet hard cap**: A hardcoded safety ceiling of **10,000** on mainnet. Even if `AGENT_SPENDING_LIMIT` is misconfigured above this value, any single payment above 10,000 is blocked on mainnet.
+3. **Rolling-window cumulative cap**: All committed spends are tracked in a sliding time window (`SPENDING_WINDOW_MS`, default 24 h). If the sum of committed spends within the window would exceed `AGENT_SPENDING_LIMIT`, the reservation is rejected before the tool runs.
 
+#### Reserve / commit / release (issue #729)
+
+Spend is *reserved* before the transaction is submitted and only *committed* after successful network confirmation. If submission fails (network error, `op_underfunded`, `tx_bad_seq`, etc.) the reservation is *released* — the phantom spend never counts against the window. This replaces the old `record-before-submit` pattern where a failed payment would permanently consume quota.
+
+#### Per-task spending field (issue #728)
+
+| Task type | Field counted toward the limit |
+|-----------|-------------------------------|
+| `stellar_payment` | `amount` |
+| `x402_respond` | `amount` |
+| `path_payment` | `sendAmount` (the asset leaving the agent's account) |
+| `multisig_payment` | `amount` (only when enough signatures are present to submit; unsigned-XDR responses are free) |
+| `batch_payment` | Sum of all `payments[i].amount` values |
+| `dex_offer` | `amount` (sell amount; `delete` actions pass `"0"` internally and are free) |
+| `fee_bump` | Not tracked (cost is denominated in stroops, not the payment asset) |
+| `soroban_invoke` / `soroban_query` | Not tracked (no asset transfer) |
+| `account_info` / `balance_check` / `change_trust` | Not tracked (read-only or trustline ops) |
 These limits apply to:
 - Direct `stellar_payment` tasks via `StellarPaymentTool`
 - `x402_respond` tasks that trigger automatic payment via `X402PaymentTool`
 - `soroban_invoke` tasks whose contract calls internally move funds. A contract invocation can trigger Stellar Asset Contract (SAC) transfers (`transfer`, `transfer_from`, `burn`) that are invisible in the request payload, so `SorobanInvokeTool` derives the amount from the mandatory Soroban simulation: it sums the simulated SAC events that debit the agent, rejects the invocation when the total exceeds the limit (error: `"Contract invocation transfers X ... exceeds AGENT_SPENDING_LIMIT of Y"`), and records within-limit spends into the same rolling spending window as payments. Dry-runs (`simulateOnly: true`) are checked but never recorded, since no funds move.
+
+### Webhook Signatures
+
+When `WEBHOOK_URL` and `WEBHOOK_SECRET` are set, every webhook POST carries:
+
+| Header | Value |
+| --- | --- |
+| `X-Nodal-Timestamp` | Unix time (seconds) at which the delivery was signed. |
+| `X-Nodal-Signature` | Hex HMAC-SHA256 of `${timestamp}.${rawBody}` keyed with `WEBHOOK_SECRET`. |
+| `X-Nodal-Delivery-Id` | UUID unique to the delivery and identical across its retries — use it to dedupe. |
+
+Receivers should verify the signature over the **raw** request body, reject timestamps outside a tolerance window (300 s by default), and drop delivery ids they have already processed:
+
+```typescript
+import { verifyWebhookSignature } from "./backend/webhook";
+
+app.post("/nodal-webhook", express.raw({ type: "application/json" }), (req, res) => {
+  const rawBody = req.body.toString("utf8");
+  const ok = verifyWebhookSignature(
+    rawBody,
+    req.header("X-Nodal-Signature") ?? "",
+    process.env.WEBHOOK_SECRET!,
+    { timestamp: req.header("X-Nodal-Timestamp"), toleranceSec: 300 }
+  );
+  if (!ok) return res.status(401).end();
+  if (seenDeliveryIds.has(req.header("X-Nodal-Delivery-Id"))) return res.status(200).end();
+  seenDeliveryIds.add(req.header("X-Nodal-Delivery-Id"));
+  // ... handle JSON.parse(rawBody)
+  res.status(200).end();
+});
+```
+
+Without the helper, compute `HMAC-SHA256(secret, timestamp + "." + rawBody)` and compare it to the header in constant time.
+
+**Backward compatibility (one release):** set `WEBHOOK_LEGACY_SIGNATURE=true` to keep signing the body only (`HMAC(rawBody)`, no timestamp) while receivers migrate. Legacy signatures are verified by calling `verifyWebhookSignature(rawBody, sig, secret)` without a `timestamp`; they offer no replay protection and the flag will be removed in the next release.
+
+### Kill Switch
+
+Operators can freeze fund movement during an incident without stopping the process — health checks and read-only tasks (`account_info`, `balance_check`, `soroban_query`, …) keep working.
+
+- `POST /admin/pause` and `POST /admin/resume` on the health server toggle it. Both require `Authorization: Bearer <WEBHOOK_SECRET>` and return `401` when `WEBHOOK_SECRET` is not configured.
+- `PAUSED=true` starts the agent paused.
+- The paused state is stored in the agent database (`DB_PATH`), so a paused agent stays paused across restarts until resumed.
+- While paused, every task that signs and submits a transaction (`VALUE_MOVING_TASK_TYPES` in `backend/agent.ts`) fails with `errorType: "AGENT_PAUSED"`.
+- Each pause/resume sends a webhook event: `{ "event": "agent.paused" | "agent.resumed", "paused": boolean, "reason"?: string, "timestamp": string }`.
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:3000/admin/pause
+```
 
 ### Mainnet Checklist
 
@@ -169,6 +236,65 @@ Before deploying to **Stellar mainnet**, verify the following:
 - [ ] **Test with `simulateOnly: true` first** — For `soroban_invoke` tasks, set `simulateOnly: true` to dry-run contract logic without broadcasting. This validates gas estimation and state changes in a safe sandbox.
 
 All four checks are enforced at startup via `backend/config.ts` validation and at task dispatch time via `backend/agent.ts` guards.
+
+### Remote Signer Backends
+
+Signing goes through the `Signer` interface in `backend/signers/`. `createSigner()` picks the backend from `SIGNER_BACKEND`:
+
+| `SIGNER_BACKEND` | Signer | Where the key lives |
+|---|---|---|
+| `local` (default) | `LocalSigner` | In process memory, loaded from `AGENT_SECRET_KEY` or `AGENT_SECRET_KEY_ARN`. |
+| `vault` | `VaultTransitSigner` | Inside a HashiCorp Vault transit `ed25519` key. Only the 32-byte transaction hash is sent to Vault; the private key is never exported. |
+
+```typescript
+import { createSigner, signTransaction } from "./backend/signers";
+
+const signer = createSigner();
+await signTransaction(signer, tx); // signs tx.hash() and attaches the signature
+```
+
+`signTransaction()` attaches the signature with `addSignature`, which verifies it against the signer's public key, so a mismatched key fails before submission.
+
+#### HashiCorp Vault transit setup
+
+1. Enable the transit engine and create a non-exportable Ed25519 key:
+
+   ```bash
+   vault secrets enable transit
+   vault write -f transit/keys/nodal-agent type=ed25519 exportable=false
+   ```
+
+2. Create a policy that only allows reading the key's public half and signing with it:
+
+   ```hcl
+   # nodal-signer.hcl
+   path "transit/keys/nodal-agent" {
+     capabilities = ["read"]
+   }
+
+   path "transit/sign/nodal-agent" {
+     capabilities = ["update"]
+   }
+   ```
+
+   ```bash
+   vault policy write nodal-signer nodal-signer.hcl
+   vault token create -policy=nodal-signer -period=24h
+   ```
+
+   The token cannot rotate, export, or delete the key, and cannot use any other transit key.
+
+3. Look up the key's Stellar address and fund it. `await createSigner().publicKey()` returns the G-address derived from the Vault public key.
+
+4. Configure the agent:
+
+   ```bash
+   SIGNER_BACKEND=vault
+   VAULT_ADDR=https://vault.example.com:8200
+   VAULT_TRANSIT_KEY=nodal-agent
+   # VAULT_TRANSIT_MOUNT=transit   # only if the engine is mounted elsewhere
+   VAULT_TOKEN=hvs.xxxxx           # read from the environment, never stored on config
+   ```
 
 ---
 
@@ -288,7 +414,7 @@ End-to-end tests run against the live Stellar testnet (not mocked). They require
 npm run test:e2e
 ```
 
-The E2E suite is excluded from the default `npm run test` to keep CI fast. Run it separately before releases or after SDK upgrades.
+The E2E suite is excluded from the default `npm run test:ts` / `npm run test:all` runs to keep CI fast. Run it separately before releases or after SDK upgrades.
 
 ---
 
@@ -300,7 +426,7 @@ Released under the [MIT License](LICENSE).
 
 _Built for the Stellar ecosystem by [Dami24-hub]._
 
-````
+---
 
 ## API Reference
 
@@ -320,23 +446,22 @@ The primary integration surface for developers. Dispatch tasks to the agent via 
 type TaskType = "stellar_payment" | "soroban_invoke" | "x402_respond" | "path_payment" | "fee_bump" | "account_info"
 ```
 
-All three values are wired into `PayFiAgent.run()` in `backend/agent.ts`. Any unrecognised type throws `"Unknown task type: <value>"` immediately at dispatch time.
+Each value below is wired into `PayFiAgent.run()` in `backend/agent.ts`. Any unrecognised type throws `"Unknown task type: <value>"` immediately at dispatch time.
 
 | Value | Tool | Description |
 |-------|------|-------------|
 | `stellar_payment` | `StellarPaymentTool` | Submit a native XLM or custom Stellar asset payment via Horizon. Enforces the per-transaction `AGENT_SPENDING_LIMIT` and the mainnet spending cap before execution. |
 | `soroban_invoke` | `SorobanInvokeTool` | Invoke any Soroban smart contract function. Always runs a mandatory simulation pass via Soroban RPC before broadcast; set `simulateOnly: true` for a dry-run that skips submission. |
 | `x402_respond` | `X402PaymentTool` | Respond to an [x402](https://github.com/x402-foundation/x402) `402 Payment Required` challenge. Validates the challenge schema, enforces spending limits, delegates to `StellarPaymentTool`, and returns an `X402PaymentProof`. |
+| `path_payment` | `PathPaymentTool` | Cross-asset path payment (strict send) routed through the Stellar DEX. |
+| `fee_bump` | `FeeBumpTool` | Wrap an existing transaction in a fee-bump envelope for a sponsored retry. |
+| `account_info` | `AccountInfoTool` | Fetch the agent's account balances, sequence number, and trustlines from Horizon. |
+| `ledger_info` | `LedgerInfoTool` | Fetch the latest ledger sequence and protocol version from Soroban RPC. Cached for 6 seconds unless `forceRefresh: true`. Read-only. |
+| `network_status` | `NetworkStatusTool` | Check health and latency of the configured Horizon and Soroban RPC endpoints. Read-only. |
+| `offer_book` | `OfferBookTool` | Query the Stellar DEX order book for an asset pair and return bids, asks, and the top-of-book spread. Read-only. |
+| `soroban_storage` | `SorobanStorageTool` | Read a Soroban contract's storage entry (`persistent`, `temporary`, or `instance`) and return the decoded value. Read-only. |
 
 > **Standalone utilities:** `BalanceCheckTool` (`backend/tools/BalanceCheckTool.ts`) and `SorobanQueryTool` (`backend/tools/SorobanQueryTool.ts`) are importable directly and are not dispatched through `PayFiAgent.run()`. Use them outside the agent task loop when you only need a read-only query.
-| Value | Description |
-|-------|-------------|
-| `stellar_payment` | Native XLM or custom asset payment via Horizon |
-| `soroban_invoke` | Smart contract invocation via Soroban RPC with simulation |
-| `x402_respond` | Respond to an x402 payment challenge with spending limit guard |
-| `path_payment` | Cross-asset path payment strict send via the Stellar DEX |
-| `fee_bump` | Wrap an existing transaction in a fee-bump envelope for sponsored retry |
-| `account_info` | Fetch the agent's account balances, sequence number, and trustlines from Horizon |
 
 ### AgentTask
 
@@ -361,6 +486,21 @@ Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `inflation`: `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
 - `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
 - `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
+- `ledger_info`: `{ forceRefresh?: boolean }`
+- `network_status`: no payload fields (pass `{}`)
+- `offer_book`: `{ sellingAsset: string | { code: string; issuer?: string }; buyingAsset: string | { code: string; issuer?: string }; limit?: number }` (string assets are `"XLM"`, `"native"` or `"CODE:ISSUER"`; `limit` is 1–200)
+- `soroban_storage`: `{ contractId: string; keys: unknown[]; durability?: "persistent" | "temporary" | "instance" }` (exactly one key; `durability` defaults to `"persistent"`)
+- `swap`: `{ sellAsset: { code: string; issuer?: string }; buyAsset: { code: string; issuer?: string }; sellAmount: string; maxSlippagePct: number }` (`maxSlippagePct` is 0–100)
+- `account_history`: `{ publicKey?: string; limit?: number; cursor?: string; assetCode?: string }` (`limit` is 1–200, default 10, and counts *matching* payments after non-`payment` operations and the `assetCode` filter are dropped; the tool pages through Horizon to fill it, up to 5 pages per call. The result adds `pagesFetched` and `pageLimitReached` — when `pageLimitReached` is true, fewer than `limit` records does not mean history is exhausted; continue from `nextCursor`)
+- `soroban_deploy`: `{ action: "upload" | "deploy"; wasm?: Buffer | string; wasmBuffer?: Buffer | string }` or `{ action: "instantiate"; wasmHash: string }` — `upload`/`deploy` require WASM bytes (a `Buffer`, file path, hex or base64 string)
+- `liquidity_pool`: `{ action: "deposit"; liquidityPoolId: string; maxAmountA: string; maxAmountB: string; minPrice: string; maxPrice: string }` or `{ action: "withdraw"; liquidityPoolId: string; amount: string; minAmountA: string; minAmountB: string }` or `{ action: "info"; liquidityPoolId: string }`
+- `stellar_toml`: `{ domain: string }` — fetches and parses the domain's SEP-1 `stellar.toml`
+- `data_entry`: `{ action: "set"; name: string; value: string }` or `{ action: "delete"; name: string }` or `{ action: "get"; name: string; accountId?: string }` (`name` and `value` are at most 64 bytes)
+- `sequence_number`: `{ action: "get"; accountId?: string }` or `{ action: "bump"; bumpTo: string | number | bigint }`
+- `sponsored_account`: `{ newAccountPublicKey: string; startingBalance?: string; newAccountSignature?: string; newAccountSecret?: string }` (`startingBalance` defaults to `"0"`; supply `newAccountSecret` or a base64 `newAccountSignature` so the new account co-signs the `endSponsoringFutureReserves` operation, which the network requires)
+- `anchor_quote`: `{ anchorQuoteUrl: string; sellAsset: string; buyAsset: string; sellAmount?: string; buyAmount?: string; context?: "sep6" | "sep31"; jwtToken?: string }` (at least one of `sellAmount` / `buyAmount` is required)
+- `set_options`: `{ homeDomain?: string; masterWeight?: number; lowThreshold?: number; medThreshold?: number; highThreshold?: number; setFlags?: number; clearFlags?: number; confirmLockoutRisk?: boolean; confirmAuthImmutable?: boolean }` (weights and thresholds are 0–255; `homeDomain` is at most 32 characters)
+  > ⚠️ **Irreversible changes are guarded.** `masterWeight: 0` is rejected unless the account's other ed25519 signers can still meet the high threshold (pre-auth and hash-x signers don't count). Otherwise the agent would be permanently locked out of its account. `setFlags` including `AuthImmutableFlag` (`4`) is rejected because it permanently freezes the account's auth flags and blocks merging. Pass `confirmLockoutRisk: true` or `confirmAuthImmutable: true` only when you intend the irreversible outcome.
 
 ### AgentResult
 
@@ -433,7 +573,7 @@ sequenceDiagram
     participant H as Horizon
 
     C->>PA: run({ type: "x402_respond", payload })
-    PA->>PA: assertWithinSpendingLimit(amount)
+    PA->>PA: reserveSpendingLimit(amount) → reservationId
     PA->>X: respond(challenge)
     X->>X: X402ChallengeSchema.parse(challenge)
     Note over X: reject if amount > AGENT_SPENDING_LIMIT<br/>reject if expiresAt has passed
@@ -442,14 +582,15 @@ sequenceDiagram
     H-->>ST: txHash, ledger
     ST-->>X: { txHash, ledger }
     X-->>PA: X402PaymentProof
+    PA->>PA: spendingTracker.commit(reservationId)
     PA-->>C: AgentResult
-````
+```
 
 In practice, the `payload` handed to `run()` is the parsed body of a `402 Payment Required` response from a resource server, conforming to `X402ChallengeSchema` — but the HTTP exchange that obtains and replays that challenge is the caller's responsibility, not `X402PaymentTool`'s.
 
 ### Spending limit guard
 
-Before `PayFiAgent.run()` delegates to `X402PaymentTool`, it calls `assertWithinSpendingLimit()` on the payload's `amount` field. If the requested amount exceeds `config.AGENT_SPENDING_LIMIT`, the task throws immediately and `X402PaymentTool.respond()` is never invoked — the agent will not even attempt to validate or pay a challenge above its configured budget.
+Before `PayFiAgent.run()` delegates to `X402PaymentTool`, it calls `reserveSpendingLimit()` on the payload's `amount` field. This reserves the amount against the rolling-window cumulative limit. If the amount exceeds `config.AGENT_SPENDING_LIMIT` (either individually or cumulatively), the task throws immediately and `X402PaymentTool.respond()` is never invoked. On successful submission the reservation is committed; on failure it is released so the amount is not counted against the window.
 
 ### `X402ChallengeSchema`
 
@@ -466,6 +607,14 @@ Once past the spending check, `X402PaymentTool.respond()` validates the challeng
 | `expiresAt`   | `string` (ISO datetime) | The deadline after which the challenge is no longer valid. Checked against `new Date()` before any payment is attempted. |
 
 If `rawChallenge` doesn't conform to this shape, `X402ChallengeSchema.parse()` throws and no payment is attempted.
+
+### Asset and price guards
+
+After parsing, `respond()` refuses challenges whose terms the operator has not approved:
+
+- **Spoofed issuer** — a challenge for a known asset code (`X402_ASSET_CODE`, plus any code listed in `X402_ALLOWED_ASSETS`) must use one of that code's configured issuers. A `USDC` challenge naming any other issuer fails with `x402: assetIssuer <G…> is not a trusted issuer for USDC`.
+- **Unexpected asset** — when `X402_ALLOWED_ASSETS` is set (comma-separated `XLM` or `CODE:ISSUER` entries), any other asset fails with `x402: asset <asset> is not in X402_ALLOWED_ASSETS`.
+- **Over-max price** — when `X402_MAX_PRICE` is set, a challenge `amount` above it fails with `x402: challenge amount <amount> exceeds X402_MAX_PRICE of <max>`.
 
 ### Nonce → memo derivation
 
@@ -516,3 +665,14 @@ if (result.success) {
 ```
 
 See [`backend/agent.ts`](./backend/agent.ts) for task dispatch and the spending-limit guard, and [`backend/tools/X402PaymentTool.ts`](./backend/tools/X402PaymentTool.ts) for challenge validation and proof construction.
+
+## Handsoff notes
+
+<!-- handsoff-issue-625 -->
+- #625: `bug_report.md`'s "Affected File / Module" checklist only lists 3 of 34 tool files
+
+<!-- handsoff-issue-680 -->
+- #680: README's Mainnet Checklist claims all four items are "enforced," but one is just advice
+
+<!-- handsoff-issue-681 -->
+- #681: CONTRIBUTING.md and ARCHITECTURE.md both say the task-type `switch` lives in `PayFiAgent.run()` — it's actually in the private `executeTask()`

@@ -19,7 +19,12 @@ updates:
           - "patch"
           - "minor"
     ignore:
+      # Blanket-ignore majors for everything EXCEPT @stellar/*, whose major
+      # bumps are the actual fix for the high-severity `toml` advisories
+      # (see #652 / #679).
       - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "@stellar/*"
         update-types: ["version-update:semver-major"]
 
   - package-ecosystem: "cargo"

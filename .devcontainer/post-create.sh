@@ -20,12 +20,12 @@ source "$HOME/.cargo/env"
 echo "==> Adding wasm32-unknown-unknown target..."
 rustup target add wasm32-unknown-unknown
 
-# contracts/escrow pins its own toolchain via rust-toolchain.toml — install it
-# and the same target for it up front so the first `cargo build` in that
-# directory doesn't stall on a cold download.
-if [ -f "contracts/escrow/rust-toolchain.toml" ]; then
-  echo "==> Installing pinned Rust toolchain for contracts/escrow..."
-  (cd contracts/escrow && rustup show >/dev/null && rustup target add wasm32-unknown-unknown)
+# The repo root pins its own toolchain via rust-toolchain.toml — install it
+# and the same target for it up front so the first `cargo build` doesn't
+# stall on a cold download.
+if [ -f "rust-toolchain.toml" ]; then
+  echo "==> Installing pinned Rust toolchain from rust-toolchain.toml..."
+  rustup show >/dev/null && rustup target add wasm32-unknown-unknown
 fi
 
 echo "==> Installing Stellar CLI (stellar-cli)..."

@@ -6,6 +6,7 @@
  * Pass ":memory:" for in-process testing via _setDb().
  */
 
+import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import type { AgentResult } from './agent';
 
@@ -45,6 +46,13 @@ function applySchema(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_spending_records_timestamp
         ON spending_records (timestamp)
     `);
+  // Operator-controlled agent state (e.g. the kill switch), kept across restarts.
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
   // Idempotent migration for databases created before correlationId existed.
   const cols = db.prepare(`PRAGMA table_info(agent_results)`).all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === 'correlationId')) {
@@ -61,6 +69,20 @@ function getDb(): Database.Database {
     applySchema(_db);
   }
   return _db;
+}
+
+/**
+ * Close the live connection and drop the cached handle (#644).
+ *
+ * `getDb()` owns the only `better-sqlite3` handle, so releasing it belongs here
+ * rather than in DatabaseManager. After this call the next access re-opens a
+ * fresh connection via `getDb()`. Safe to call when no connection is open.
+ */
+export function closeDb(): void {
+  if (_db) {
+    _db.close();
+    _db = null;
+  }
 }
 
 /**
@@ -121,6 +143,125 @@ export function getResults(limit = 100, offset = 0): PersistedResult[] {
   });
 }
 
+// ─── Audit log (#744) ─────────────────────────────────────────────────────────
+
+/** `prevHash` of the first row in the chain. */
+export const AUDIT_GENESIS_HASH = '0'.repeat(64);
+
+/** Who/what/why of one signed transaction. */
+export interface AuditEntry {
+  ts: string;
+  correlationId: string | null;
+  taskType: string;
+  txHash: string;
+  envelopeHash: string | null;
+  destination: string | null;
+  asset: string | null;
+  amount: string | null;
+}
+
+export interface AuditRow extends AuditEntry {
+  id: number;
+  prevHash: string;
+  hash: string;
+}
+
+export interface AuditVerification {
+  ok: boolean;
+  /** Number of rows checked. */
+  checked: number;
+  /** id of the first row that fails verification. */
+  brokenAt?: number;
+  reason?: string;
+}
+
+/**
+ * `sha256(prevHash || row)`. The row is serialised as a JSON array in a fixed
+ * column order so the encoding is unambiguous and independent of key order.
+ */
+export function computeAuditHash(prevHash: string, entry: AuditEntry): string {
+  const row = JSON.stringify([
+    entry.ts,
+    entry.correlationId,
+    entry.taskType,
+    entry.txHash,
+    entry.envelopeHash,
+    entry.destination,
+    entry.asset,
+    entry.amount,
+  ]);
+  return createHash('sha256').update(prevHash).update(row).digest('hex');
+}
+
+/**
+ * Append one signed transaction to the audit log, chained to the previous row.
+ * Reading the last hash and inserting run in one transaction so two appends
+ * can never chain off the same predecessor.
+ */
+export function appendAuditEntry(entry: AuditEntry): AuditRow {
+  const db = getDb();
+  const append = db.transaction((e: AuditEntry): AuditRow => {
+    const last = db.prepare(`SELECT hash FROM audit_log ORDER BY id DESC LIMIT 1`).get() as
+      | { hash: string }
+      | undefined;
+    const prevHash = last?.hash ?? AUDIT_GENESIS_HASH;
+    const hash = computeAuditHash(prevHash, e);
+    const info = db
+      .prepare(
+        `INSERT INTO audit_log
+           (ts, correlationId, taskType, txHash, envelopeHash, destination, asset, amount,
+            prevHash, hash)
+         VALUES
+           (@ts, @correlationId, @taskType, @txHash, @envelopeHash, @destination, @asset,
+            @amount, @prevHash, @hash)`
+      )
+      .run({ ...e, prevHash, hash });
+    return { ...e, id: Number(info.lastInsertRowid), prevHash, hash };
+  });
+  return append(entry);
+}
+
+/** Every audit row, oldest first. */
+export function getAuditLog(db: Database.Database = getDb()): AuditRow[] {
+  return db
+    .prepare(
+      `SELECT id, ts, correlationId, taskType, txHash, envelopeHash, destination, asset, amount,
+              prevHash, hash
+       FROM audit_log ORDER BY id ASC`
+    )
+    .all() as AuditRow[];
+}
+
+/**
+ * Walk the chain from the genesis hash and recompute every row's hash.
+ * Detects a modified row (its hash no longer matches its contents) and a
+ * removed or reordered row (the next row's prevHash no longer links up).
+ */
+export function verifyAuditChain(db: Database.Database = getDb()): AuditVerification {
+  const rows = getAuditLog(db);
+  let expectedPrev = AUDIT_GENESIS_HASH;
+  for (const row of rows) {
+    if (row.prevHash !== expectedPrev) {
+      return {
+        ok: false,
+        checked: rows.length,
+        brokenAt: row.id,
+        reason: 'prevHash does not match the previous row — a row was removed or reordered',
+      };
+    }
+    if (computeAuditHash(row.prevHash, row) !== row.hash) {
+      return {
+        ok: false,
+        checked: rows.length,
+        brokenAt: row.id,
+        reason: 'hash does not match row contents — the row was modified',
+      };
+    }
+    expectedPrev = row.hash;
+  }
+  return { ok: true, checked: rows.length };
+}
+
 /** One recorded payment inside the rolling spending window (#372). */
 export interface SpendingRecord {
   amount: number;
@@ -154,8 +295,28 @@ export function clearSpendingRecords(): void {
   getDb().prepare(`DELETE FROM spending_records`).run();
 }
 
+/** Persist a single agent-state value, replacing any previous one. */
+export function saveAgentState(key: string, value: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO agent_state (key, value) VALUES (@key, @value)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+    .run({ key, value });
+}
+
+/** Read a persisted agent-state value, or undefined when it was never set. */
+export function loadAgentState(key: string): string | undefined {
+  const row = getDb().prepare(`SELECT value FROM agent_state WHERE key = ?`).get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value;
+}
+
 /** Replace the underlying DB instance — used in tests to inject an in-memory DB. */
-export function _setDb(db: Database.Database): void {
+export function _setDb(db: Database.Database | null): void {
   _db = db;
-  applySchema(_db);
+  if (_db) {
+    applySchema(_db);
+  }
 }

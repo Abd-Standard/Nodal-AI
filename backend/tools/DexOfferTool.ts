@@ -3,10 +3,11 @@
  * Place, update, or delete a manage-sell offer on the Stellar DEX.
  */
 
-import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE, xdr } from '@stellar/stellar-sdk';
+import { TransactionBuilder, Operation, Asset, BASE_FEE, xdr } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { NotFoundError } from '@stellar/stellar-sdk';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { ValidationError } from '../errors';
 import {
   DEFAULT_IS_RETRYABLE,
@@ -124,16 +125,16 @@ async function verifyOfferExists(offerId: string): Promise<void> {
 // ─── Tool ─────────────────────────────────────────────────────────────────────
 
 export class DexOfferTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   get publicKey(): string {
-    return this.keypair.publicKey();
+    return this.signer.publicKey();
   }
 
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number; offerId: string }> {
@@ -150,7 +151,7 @@ export class DexOfferTool {
       await verifyOfferExists(offerId);
     }
 
-    const sourceAccount = await loadAccount(this.keypair.publicKey());
+    const sourceAccount = await loadAccount(this.signer.publicKey());
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,
@@ -168,7 +169,7 @@ export class DexOfferTool {
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
 
     const submitResult = await submitTransaction(tx);
     const result = SubmitResultSchema.parse(submitResult);

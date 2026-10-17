@@ -9,14 +9,13 @@ import {
   Keypair,
   Transaction,
   TransactionBuilder,
-  Operation,
   Contract,
-  nativeToScVal,
   scValToNative,
   xdr,
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config, MAINNET_SPENDING_CAP } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { logger } from '../logger';
 import {
   loadAccount,
@@ -25,6 +24,7 @@ import {
   sorobanServer,
 } from '../rpc_client';
 import { spendingTracker } from '../spending_tracker';
+import { stellarContractIdSchema } from '../utils/stellarSchemas';
 
 // ─── Constants ─────────────────────────────────────────────────────────────────
 
@@ -145,7 +145,7 @@ export function extractSacTransferTotal(
  */
 export const SorobanInvokeInputSchema = z.object({
   /** 56-character Stellar contract address (strkey C… encoding). */
-  contractId: z.string().length(56, 'Invalid Stellar contract ID'),
+  contractId: stellarContractIdSchema('contractId'),
 
   /** Name of the contract function to invoke (e.g. `"transfer"`, `"mint"`). */
   method: z.string().min(1),
@@ -214,14 +214,14 @@ export function isSorobanSimulationResult(
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class SorobanInvokeTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
+  constructor(signer: Signer = createAgentSigner()) {
     if (SOROBAN_TX_TIMEOUT <= 0 || SOROBAN_TX_TIMEOUT > 300) {
       throw new Error(`SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT}`);
     }
-    this.keypair = Keypair.fromSecret(secretKey);
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
@@ -229,7 +229,7 @@ export class SorobanInvokeTool {
    * Invoke a Soroban smart contract function.
    *
    * Every call **always** runs a mandatory simulation step via
-   * {@link prepareSorobanTx} before any broadcast attempt. The simulation both
+   * `prepareSorobanTxWithEvents` (`backend/rpc_client.ts`) before any broadcast attempt. The simulation both
    * validates the transaction and attaches the required Soroban resource footprint.
    *
    * ### Return shape — driven by `simulateOnly`
@@ -265,26 +265,13 @@ export class SorobanInvokeTool {
   async execute(rawInput: unknown): Promise<SorobanInvokeResult> {
     const input = SorobanInvokeInputSchema.parse(rawInput);
 
-    // 1. Resolve contract
-    // Some contract IDs may not validate as a strkey in the SDK; guard against
-    // synchronous throws from `new Contract(...)` by falling back to a
-    // lightweight shim that exposes `call(method, ...args)` and returns an
-    // operation compatible with `TransactionBuilder.addOperation()`.
-    let contract: any;
-    try {
-      contract = new Contract(input.contractId);
-    } catch (err) {
-      contract = {
-        call: (method: string, ...args: any[]) =>
-          // Fallback to a harmless manageData operation when the SDK rejects
-          // the contract ID format. Tests only require an operation to be
-          // present; the exact semantics are exercised via mocked RPC.
-          Operation.manageData({ name: `invoke:${method}`, value: 'mock' }),
-      };
-    }
+    // 1. Resolve contract — validate the contractId format upfront.
+    // A malformed or mistyped contractId should fail loudly, not silently
+    // return a meaningless result.
+    const contract = new Contract(input.contractId);
 
     // 2. Load source account
-    const sourceAccount = await loadAccount(this.keypair.publicKey());
+    const sourceAccount = await loadAccount(this.signer.publicKey());
 
     // 3. Build invocation transaction
     const tx = new TransactionBuilder(sourceAccount, {
@@ -347,7 +334,7 @@ export class SorobanInvokeTool {
     // verifies the same object that will be submitted. If the transaction is ever
     // rebuilt (e.g., after a fee bump), this alias must be updated accordingly.
     const signedTx = preparedTx;
-    signedTx.sign(this.keypair);
+    this.signer.signTransaction(signedTx);
 
     // Guard: ensure at least one signature was attached. A no-op sign() call
     // (e.g., bad Keypair or future SDK changes) would produce zero signatures,
@@ -387,7 +374,7 @@ export class SorobanInvokeTool {
     events: readonly xdr.DiagnosticEvent[],
     record: boolean
   ): void {
-    const totalRaw = extractSacTransferTotal(events, this.keypair.publicKey());
+    const totalRaw = extractSacTransferTotal(events, this.signer.publicKey());
     if (totalRaw <= 0n) return;
 
     const amountStr = sacRawToDecimal(totalRaw);

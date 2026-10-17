@@ -7,15 +7,13 @@
  */
 
 import {
-  Keypair,
   TransactionBuilder,
-  Operation,
   Contract,
   BASE_FEE,
-  xdr,
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase } from '../rpc_client';
 import { createLogger } from '../utils/logger';
 import { SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
@@ -35,11 +33,11 @@ export interface SorobanQueryResult {
 }
 
 export class SorobanQueryTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
@@ -49,17 +47,10 @@ export class SorobanQueryTool {
   async query(rawInput: unknown): Promise<SorobanQueryResult> {
     const input = SorobanQueryInputSchema.parse(rawInput);
 
-    let contract: any;
-    try {
-      contract = new Contract(input.contractId);
-    } catch {
-      contract = {
-        call: (method: string, ..._args: any[]) =>
-          Operation.manageData({ name: `query:${method}`, value: 'mock' }),
-      };
-    }
+    // Validate contractId format - reject invalid IDs early with a clear error
+    const contract = new Contract(input.contractId);
 
-    const sourceAccount = await loadAccount(this.keypair.publicKey());
+    const sourceAccount = await loadAccount(this.signer.publicKey());
 
     log.info(
       { method: input.method, contractId: input.contractId },

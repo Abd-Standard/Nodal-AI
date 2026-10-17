@@ -25,7 +25,8 @@ const NETWORK_DEFAULTS: Record<string, { horizon: string; soroban: string }> = {
   },
   mainnet: {
     horizon: 'https://horizon.stellar.org',
-    soroban: 'https://mainnet.stellar.validationcloud.io/v1/<API_KEY>',
+    // No public default: mainnet Soroban RPC requires a provider URL/API key.
+    soroban: '',
   },
   futurenet: {
     horizon: 'https://horizon-futurenet.stellar.org',
@@ -88,6 +89,11 @@ function isValidUrl(value: string): string | null {
   }
 }
 
+function isValidRpcUrl(value: string): string | null {
+  if (/<[^>]*>/.test(value)) return 'Replace the <placeholder> with a real value.';
+  return isValidUrl(value);
+}
+
 function isPositiveDecimal(value: string): string | null {
   return /^[1-9]\d*(\.\d{1,7})?$/.test(value)
     ? null
@@ -129,7 +135,16 @@ async function main() {
   const networkDefaults = NETWORK_DEFAULTS[network];
 
   const horizonUrl = await askValidated('Horizon RPC URL', networkDefaults.horizon, isValidUrl);
-  const sorobanRpcUrl = await askValidated('Soroban RPC URL', networkDefaults.soroban, isValidUrl);
+  if (network === 'mainnet') {
+    console.log(
+      'Mainnet Soroban RPC requires a provider URL (often with an API key) — see https://developers.stellar.org/docs/data/apis/rpc/providers'
+    );
+  }
+  const sorobanRpcUrl = await askValidated(
+    'Soroban RPC URL',
+    networkDefaults.soroban || undefined,
+    isValidRpcUrl
+  );
 
   console.log(
     "\nGenerate a keypair at https://laboratory.stellar.org/#account-creator if you don't have one."

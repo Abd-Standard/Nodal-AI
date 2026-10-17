@@ -11,6 +11,18 @@ vi.mock('../backend/rpc_client', () => ({
   sorobanServer: {
     getEvents: vi.fn(),
   },
+  withRetry: vi.fn((fn: () => unknown) => fn()),
+}));
+
+vi.mock('../backend/network', () => ({
+  withBackoffGuard: vi.fn((fn: () => unknown) => fn()),
+}));
+
+vi.mock('../backend/config', () => ({
+  config: {
+    MAX_RETRIES: 3,
+    RETRY_DELAY_MS: 100,
+  },
 }));
 
 const VALID_CONTRACT = 'CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH';

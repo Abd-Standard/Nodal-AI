@@ -41,6 +41,23 @@ Which task type(s) does this feature touch, or does it introduce a new one?
 - [ ] `batch_payment`
 - [ ] `multisig_payment`
 - [ ] `dex_offer`
+- [ ] `change_trust`
+- [ ] `balance_check`
+- [ ] `soroban_query`
+- [ ] `swap`
+- [ ] `account_history`
+- [ ] `soroban_deploy`
+- [ ] `liquidity_pool`
+- [ ] `stellar_toml`
+- [ ] `data_entry`
+- [ ] `sequence_number`
+- [ ] `sponsored_account`
+- [ ] `anchor_quote`
+- [ ] `inflation`
+- [ ] `ledger_info`
+- [ ] `network_status`
+- [ ] `offer_book`
+- [ ] `soroban_storage`
 - [ ] New task type (specify below)
 - [ ] Not task-specific (infrastructure, DX, docs, etc.)
 
