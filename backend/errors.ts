@@ -24,6 +24,8 @@ export enum ErrorType {
   SimulationBudgetExceeded = 'SIMULATION_BUDGET_EXCEEDED',
   TransactionFailure = 'TRANSACTION_FAILURE',
   ConfigError = 'CONFIG_ERROR',
+  /** The operator kill switch is engaged; value-moving tasks are halted. */
+  AgentPaused = 'AGENT_PAUSED',
   UnknownError = 'UNKNOWN_ERROR',
 }
 
@@ -112,6 +114,13 @@ export class SimulationBudgetError extends StructuredError {
   constructor(message: string, cause?: unknown) {
     super(message, ErrorType.SimulationBudgetExceeded, cause);
     Object.setPrototypeOf(this, SimulationBudgetError.prototype);
+  }
+}
+
+export class AgentPausedError extends StructuredError {
+  constructor(message: string, cause?: unknown) {
+    super(message, ErrorType.AgentPaused, cause);
+    Object.setPrototypeOf(this, AgentPausedError.prototype);
   }
 }
 

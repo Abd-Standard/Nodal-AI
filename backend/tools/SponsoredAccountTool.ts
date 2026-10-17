@@ -13,6 +13,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
 import { SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
@@ -35,17 +36,17 @@ export interface SponsoredAccountResult {
 }
 
 export class SponsoredAccountTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   async execute(rawInput: unknown): Promise<SponsoredAccountResult> {
     const input = SponsoredAccountInputSchema.parse(rawInput);
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -71,7 +72,7 @@ export class SponsoredAccountTool {
       .build();
 
     // Agent signs first
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
 
     // Apply co-signature if provided
     if (input.newAccountSecret) {

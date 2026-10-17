@@ -15,9 +15,10 @@
  * wrapper, plus a read-only `get` action backed by a Horizon account lookup.
  */
 
-import { Keypair, TransactionBuilder, Operation, BASE_FEE } from '@stellar/stellar-sdk';
+import { TransactionBuilder, Operation, BASE_FEE } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc_client';
 import { SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
@@ -68,17 +69,17 @@ export interface InflationGetResult {
 export type InflationResult = InflationSetResult | InflationGetResult;
 
 export class InflationTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   /** Read the inflation destination for an account (defaults to the agent's own). */
   async get(accountId?: string): Promise<InflationGetResult> {
-    const targetAccount = accountId ?? this.keypair.publicKey();
+    const targetAccount = accountId ?? this.signer.publicKey();
     const account = await loadAccount(targetAccount);
     const inflationDestination = account.inflation_destination ?? null;
 
@@ -97,7 +98,7 @@ export class InflationTool {
    * effect on-network.
    */
   async set(inflationDestination: string): Promise<InflationSetResult> {
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -111,7 +112,7 @@ export class InflationTool {
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
     const result = SubmitResultSchema.parse(await submitTransaction(tx));
 
     return {

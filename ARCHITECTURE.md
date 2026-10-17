@@ -552,11 +552,12 @@ export type MyNewInput = z.infer<typeof MyNewInputSchema>;
 
 ```typescript
 export class MyNewTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  // Tools receive a Signer (backend/signer.ts), never the secret key.
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
@@ -567,7 +568,7 @@ export class MyNewTool {
     // 2. Pre-flight guards (e.g. self-payment check)
 
     // 3. Load account
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
 
     // 4. Build transaction
     const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: this.networkPassphrase })
@@ -579,7 +580,7 @@ export class MyNewTool {
     // const preparedTx = await prepareSorobanTx(tx);
 
     // 6. Sign
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
 
     // 7. Submit
     const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
@@ -611,7 +612,7 @@ In `backend/agent.ts`:
 
 ```typescript
 // In the constructor:
-this.myNewTool = new MyNewTool(config.agentKeypair().secret());
+this.myNewTool = new MyNewTool(this.signer);
 
 // In the run() switch:
 case "my_new_task":

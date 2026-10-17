@@ -68,8 +68,22 @@ vi.mock('../backend/health', () => ({
   checkDatabase: vi.fn(async () => (databaseOk ? { ok: true } : { ok: false, error: 'database down' })),
 }));
 
+// Mock the kill switch with an in-memory flag so the admin routes can be
+// exercised without a database or webhook.
+let mockPaused = false;
+vi.mock('../backend/kill_switch', () => ({
+  isPaused: vi.fn(() => mockPaused),
+  pauseAgent: vi.fn(() => {
+    mockPaused = true;
+  }),
+  resumeAgent: vi.fn(() => {
+    mockPaused = false;
+  }),
+}));
+
 import type * as http from 'http';
 import { createHealthServer } from '../backend/server';
+import { pauseAgent, resumeAgent } from '../backend/kill_switch';
 import {
   ContractError,
   NetworkTimeoutError,
@@ -301,6 +315,85 @@ describe('backend/server.ts — health check HTTP server', () => {
       // The raw failure message is deliberately not echoed back to the caller.
       expect(body).toHaveProperty('error');
       expect(body.error).not.toContain('db down');
+    });
+  });
+
+  describe('POST /admin/pause and /admin/resume (#743)', () => {
+    beforeEach(() => {
+      mockPaused = false;
+    });
+
+    it('returns 401 and does not pause when WEBHOOK_SECRET is unset', () => {
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(makeReq('POST', '/admin/pause'), res);
+
+      expect(res._statusCode).toBe(401);
+      expect(pauseAgent).not.toHaveBeenCalled();
+      expect(mockPaused).toBe(false);
+    });
+
+    it('returns 401 for a missing or wrong bearer token', () => {
+      process.env.WEBHOOK_SECRET = 'admin-secret';
+      createHealthServer();
+
+      const noAuth = makeRes();
+      capturedHandler!(makeReq('POST', '/admin/pause'), noAuth);
+      const wrongAuth = makeRes();
+      capturedHandler!(
+        makeReq('POST', '/admin/pause', { authorization: 'Bearer nope' }),
+        wrongAuth
+      );
+
+      expect(noAuth._statusCode).toBe(401);
+      expect(wrongAuth._statusCode).toBe(401);
+      expect(pauseAgent).not.toHaveBeenCalled();
+    });
+
+    it('pauses the agent with a valid bearer token', () => {
+      process.env.WEBHOOK_SECRET = 'admin-secret';
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(
+        makeReq('POST', '/admin/pause', { authorization: 'Bearer admin-secret' }),
+        res
+      );
+
+      expect(res._statusCode).toBe(200);
+      expect(JSON.parse(res._body)).toEqual({ paused: true });
+      expect(pauseAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('resumes the agent with a valid bearer token', () => {
+      process.env.WEBHOOK_SECRET = 'admin-secret';
+      mockPaused = true;
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(
+        makeReq('POST', '/admin/resume', { authorization: 'Bearer admin-secret' }),
+        res
+      );
+
+      expect(res._statusCode).toBe(200);
+      expect(JSON.parse(res._body)).toEqual({ paused: false });
+      expect(resumeAgent).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not expose the admin routes over GET', () => {
+      process.env.WEBHOOK_SECRET = 'admin-secret';
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(
+        makeReq('GET', '/admin/pause', { authorization: 'Bearer admin-secret' }),
+        res
+      );
+
+      expect(res._statusCode).toBe(404);
+      expect(pauseAgent).not.toHaveBeenCalled();
     });
   });
 });

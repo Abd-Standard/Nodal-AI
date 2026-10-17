@@ -114,6 +114,37 @@ const EnvSchema = z.object({
       message: 'X402_ASSET_ISSUER is not a valid Ed25519 public key',
     }),
   ALLOWED_X402_ORIGINS: z.string().optional(),
+  // Maximum amount a single x402 challenge may request. Unset = no per-challenge cap.
+  X402_MAX_PRICE: z
+    .string()
+    .regex(
+      /^(?!0+(\.0+)?$)\d+(\.\d{1,7})?$/,
+      "X402_MAX_PRICE must be a positive decimal (e.g. '5' or '0.5000000')"
+    )
+    .optional(),
+  // Comma-separated assets x402 challenges may request: "XLM" or "CODE:ISSUER".
+  // Unset = any asset, but a known code must still use its configured issuer.
+  X402_ALLOWED_ASSETS: z
+    .string()
+    .refine(
+      (val) =>
+        val
+          .split(',')
+          .map((entry) => entry.trim())
+          .every((entry) => {
+            if (entry === 'XLM') return true;
+            const [code, issuer, ...extra] = entry.split(':');
+            return (
+              extra.length === 0 &&
+              !!code &&
+              code.length <= 12 &&
+              !!issuer &&
+              isValidStellarPublicKey(issuer)
+            );
+          }),
+      { message: 'X402_ALLOWED_ASSETS must be a comma-separated list of "XLM" or "CODE:ISSUER"' }
+    )
+    .optional(),
 
   // Spending cap
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
@@ -182,6 +213,17 @@ const EnvSchema = z.object({
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
+  // Kill switch: start with value-moving tasks halted (see backend/kill_switch.ts).
+  PAUSED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
+  // Backward-compat: sign the body only (no timestamp). Deprecated — removed next release.
+  WEBHOOK_LEGACY_SIGNATURE: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -274,13 +316,23 @@ export interface AgentConfig {
    *
    * @example
    * ```typescript
-   * // Safely access the secret key for tool instantiation
-   * const secret = config.agentKeypair().secret();
-   * const tool = new StellarPaymentTool(secret);
+   * // Tools receive a Signer, never the secret key
+   * const tool = new StellarPaymentTool(new KeypairSigner(config.agentKeypair()));
    * ```
    */
   readonly agentKeypair: () => Keypair;
   readonly ALLOWED_X402_ORIGINS?: string;
+  /**
+   * Maximum amount a single x402 challenge may request. Challenges above it are rejected.
+   * Optional — when unset only AGENT_SPENDING_LIMIT applies.
+   */
+  readonly X402_MAX_PRICE?: string | undefined;
+  /**
+   * Comma-separated allow-list of assets an x402 challenge may request, each "XLM" or
+   * "CODE:ISSUER". Optional — when unset any asset is accepted, but a challenge for a
+   * known code (X402_ASSET_CODE) must use its configured issuer.
+   */
+  readonly X402_ALLOWED_ASSETS?: string | undefined;
   readonly AGENT_SECRET_KEY_ARN?: string;
 
   /**
@@ -354,6 +406,16 @@ export interface AgentConfig {
   readonly CONTRACT_EVENT_POLL_MS?: number | undefined;
   readonly WEBHOOK_URL?: string | undefined;
   readonly WEBHOOK_SECRET?: string | undefined;
+  /**
+   * When true, X-Nodal-Signature is HMAC(body) instead of HMAC(`${timestamp}.${body}`).
+   * Backward-compatibility flag for one release. Defaults to false.
+   */
+  readonly WEBHOOK_LEGACY_SIGNATURE: boolean;
+  /**
+   * When true the agent starts paused: value-moving tasks fail with
+   * errorType AGENT_PAUSED until resumed via POST /admin/resume. Defaults to false.
+   */
+  readonly PAUSED: boolean;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────

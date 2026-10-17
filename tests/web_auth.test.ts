@@ -16,6 +16,7 @@ vi.mock('../backend/utils/logger', () => ({
 }));
 
 import { StellarIdentityTool } from '../backend/tools/StellarIdentityTool';
+import { KeypairSigner } from '../backend/signer';
 
 vi.mock('../backend/config', () => {
   const { Keypair } = require('@stellar/stellar-sdk');
@@ -62,7 +63,7 @@ describe('StellarIdentityTool', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.stubGlobal('fetch', vi.fn());
-    tool = new StellarIdentityTool(TEST_SECRET);
+    tool = new StellarIdentityTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     publicKey = Keypair.fromSecret(TEST_SECRET).publicKey();
   });
 

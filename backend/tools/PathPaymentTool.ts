@@ -6,7 +6,6 @@
  */
 
 import {
-  Keypair,
   TransactionBuilder,
   Operation,
   Asset,
@@ -14,6 +13,7 @@ import {
 } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { logger } from '../logger';
 import {
   horizonServer,
@@ -69,22 +69,22 @@ function toAsset(a: { code: string; issuer?: string | undefined }): Asset {
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class PathPaymentTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   get publicKey(): string {
-    return this.keypair.publicKey();
+    return this.signer.publicKey();
   }
 
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = PathPaymentInputSchema.parse(rawInput);
 
-    if (!input.allowSelfPayment && input.destination === this.keypair.publicKey()) {
+    if (!input.allowSelfPayment && input.destination === this.signer.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 
@@ -108,7 +108,7 @@ export class PathPaymentTool {
       }
     }
 
-    let sourceAccount = await loadAccount(this.keypair.publicKey());
+    let sourceAccount = await loadAccount(this.signer.publicKey());
 
     const buildTx = () => {
       const builder = new TransactionBuilder(sourceAccount, {
@@ -136,7 +136,7 @@ export class PathPaymentTool {
     };
 
     logger.info('Executing path payment', {
-      source: this.keypair.publicKey(),
+      source: this.signer.publicKey(),
       destination: input.destination,
       sendAmount: input.sendAmount,
       sendAsset: input.sendAsset.code,
@@ -145,7 +145,7 @@ export class PathPaymentTool {
     });
 
     let tx = buildTx();
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
 
     try {
       const result = SubmitResultSchema.parse(await submitTransaction(tx));
@@ -153,13 +153,13 @@ export class PathPaymentTool {
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('tx_bad_seq')) {
         logger.warn('tx_bad_seq detected, reloading account and retrying once', {
-          source: this.keypair.publicKey(),
+          source: this.signer.publicKey(),
         });
         // Bypass the account cache: the whole point of this retry is that the
         // sequence we used was wrong, so a cached record must not be reused.
-        sourceAccount = await loadAccount(this.keypair.publicKey(), { forceRefresh: true });
+        sourceAccount = await loadAccount(this.signer.publicKey(), { forceRefresh: true });
         tx = buildTx();
-        tx.sign(this.keypair);
+        this.signer.signTransaction(tx);
         const result = SubmitResultSchema.parse(await submitTransaction(tx));
         return { txHash: result.hash, ledger: result.ledger };
       }

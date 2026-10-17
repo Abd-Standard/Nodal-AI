@@ -5,8 +5,13 @@
  * including the secondary mainnet spending cap guard.
  */
 
-import { describe, it, test, expect, vi, beforeEach } from 'vitest';
-import { PayFiAgent, spendingTracker, type TaskType } from '../backend/agent';
+import { describe, it, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  PayFiAgent,
+  spendingTracker,
+  VALUE_MOVING_TASK_TYPES,
+  type TaskType,
+} from '../backend/agent';
 import { StellarPaymentTool } from '../backend/tools/StellarPaymentTool';
 import { BalanceCheckTool } from '../backend/tools/BalanceCheckTool';
 import { PathPaymentTool } from '../backend/tools/PathPaymentTool';
@@ -27,6 +32,7 @@ import { TrustlineTool } from '../backend/tools/TrustlineTool';
 import { MultiSigPaymentTool } from '../backend/tools/MultiSigPaymentTool';
 import { BatchPaymentTool } from '../backend/tools/BatchPaymentTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
+import { isPaused } from '../backend/kill_switch';
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
@@ -156,6 +162,10 @@ vi.mock('../backend/webhook', () => ({
 
 vi.mock('../backend/persistence', () => ({
   saveResult: vi.fn(),
+}));
+
+vi.mock('../backend/kill_switch', () => ({
+  isPaused: vi.fn(() => false),
 }));
 
 // Named so `instanceof rpcClient.StellarRPCError` checks in agent.ts's error
@@ -1493,5 +1503,73 @@ describe('PayFiAgent — unknown task type rejection (#450)', () => {
     await expect(agent.run({ type: 'another_unknown' as any, payload: {} })).resolves.toMatchObject(
       { success: false }
     );
+  });
+});
+
+// ── #743: global kill switch ─────────────────────────────────────────────────
+
+describe('PayFiAgent — kill switch (#743)', () => {
+  let agent: PayFiAgent;
+  const paymentTask = {
+    type: 'stellar_payment' as const,
+    payload: { destination: DEST, amount: '100', assetCode: 'USDC', assetIssuer: ISSUER },
+  };
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }) }) as any
+    );
+    vi.mocked(AccountInfoTool).mockImplementation(
+      () => ({ fetch: vi.fn().mockResolvedValue({ accountId: DEST }) }) as any
+    );
+    agent = new PayFiAgent();
+  });
+
+  afterEach(() => {
+    vi.mocked(isPaused).mockReturnValue(false);
+  });
+
+  it('fails value-moving tasks with errorType AGENT_PAUSED while paused', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
+
+    const result = await agent.run(paymentTask);
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe(ErrorType.AgentPaused);
+    expect(result.error).toMatch(/Agent is paused/);
+    const paymentTool = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    expect(paymentTool.execute).not.toHaveBeenCalled();
+    expect(spendingTracker.total()).toBe(0);
+  });
+
+  it('keeps read-only tasks working while paused', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
+
+    const result = await agent.run({ type: 'account_info', payload: {} });
+
+    expect(result.success).toBe(true);
+    expect(result.data).toEqual({ accountId: DEST });
+  });
+
+  it('runs value-moving tasks again once resumed', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
+    expect((await agent.run(paymentTask)).success).toBe(false);
+
+    vi.mocked(isPaused).mockReturnValue(false);
+    const result = await agent.run(paymentTask);
+
+    expect(result.success).toBe(true);
+    expect(result.errorType).toBeUndefined();
+  });
+
+  it('classifies signing tasks as value-moving and lookups as read-only', () => {
+    for (const type of ['stellar_payment', 'x402_respond', 'soroban_invoke', 'swap'] as const) {
+      expect(VALUE_MOVING_TASK_TYPES.has(type)).toBe(true);
+    }
+    for (const type of ['account_info', 'balance_check', 'soroban_query', 'stellar_toml'] as const) {
+      expect(VALUE_MOVING_TASK_TYPES.has(type)).toBe(false);
+    }
   });
 });
