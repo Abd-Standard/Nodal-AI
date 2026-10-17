@@ -28,6 +28,7 @@ import {
 import {
   AgentPausedError,
   ErrorType,
+  PolicyViolationError,
   StructuredError,
   getErrorType,
   sanitizeCause,
@@ -128,6 +129,44 @@ function assertWithinSpendingLimit(amount: unknown): void {
 }
 
 const log = createLogger('orchestrator');
+
+// ─── Payment destination policy (#735) ───────────────────────────────────────
+
+/**
+ * Every counterparty a task would pay: `destination`, the x402 `payTo`, and
+ * each batch payment's `destination`.
+ */
+function taskDestinations(task: AgentTask): string[] {
+  const p = (task.payload ?? {}) as Record<string, unknown>;
+  const destinations: unknown[] = [p.destination, p.payTo];
+  if (Array.isArray(p.payments)) {
+    for (const pay of p.payments) {
+      destinations.push((pay as Record<string, unknown>)?.destination);
+    }
+  }
+  return destinations.filter((d): d is string => typeof d === 'string' && d.length > 0);
+}
+
+/**
+ * Enforce PAYMENT_DESTINATION_POLICY for a value-moving task. Matching ignores
+ * case so federation names compare the way federation servers resolve them.
+ *
+ * @throws PolicyViolationError if any destination is not permitted.
+ */
+function assertDestinationsAllowed(task: AgentTask): void {
+  const policy = config.PAYMENT_DESTINATION_POLICY;
+  if (policy === 'open') return;
+
+  const listed = new Set(config.PAYMENT_DESTINATIONS.map((d) => d.toLowerCase()));
+  for (const destination of taskDestinations(task)) {
+    const isListed = listed.has(destination.toLowerCase());
+    if (policy === 'allowlist' ? !isListed : isListed) {
+      throw new PolicyViolationError(
+        `Destination ${destination} is not permitted by the ${policy} payment destination policy`
+      );
+    }
+  }
+}
 
 /**
  * The amount a value-moving task would spend, as compared against
@@ -936,6 +975,10 @@ export class PayFiAgent extends EventEmitter {
           throw new AgentPausedError(
             `Agent is paused — ${task.type} is halted until an operator resumes it`
           );
+        }
+
+        if (VALUE_MOVING_TASK_TYPES.has(task.type)) {
+          assertDestinationsAllowed(task);
         }
 
         if (VALUE_MOVING_TASK_TYPES.has(task.type) && !this.approvedTasks.has(task)) {

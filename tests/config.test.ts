@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
+import { mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { Keypair } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 
@@ -500,5 +503,40 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     expect(cfg.ADMIN_API_TOKEN).toBe("admin-token");
     expect(exitSpy).not.toHaveBeenCalled();
     expect(stderrSpy).not.toHaveBeenCalledWith(expect.stringContaining("deprecated"));
+  });
+
+  // ── Payment destination policy (#735) ───────────────────────────────────────
+  it("merges PAYMENT_DESTINATIONS and PAYMENT_DESTINATIONS_FILE", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nodal-dest-"));
+    const file = join(dir, "destinations.txt");
+    writeFileSync(file, `# merchants\nmerchant*example.com\n\n${VALID_ISSUER} # issuer\n`);
+    setMinimalValidEnv();
+    process.env.PAYMENT_DESTINATION_POLICY = "allowlist";
+    process.env.PAYMENT_DESTINATIONS = "shop*example.org";
+    process.env.PAYMENT_DESTINATIONS_FILE = file;
+
+    const { configPromise } = await import("../backend/config");
+    const cfg = await configPromise;
+
+    expect(cfg.PAYMENT_DESTINATION_POLICY).toBe("allowlist");
+    expect(cfg.PAYMENT_DESTINATIONS).toEqual([
+      "shop*example.org",
+      "merchant*example.com",
+      VALID_ISSUER,
+    ]);
+  });
+
+  it("fails when a payment destination is neither a G-address nor a federation name", async () => {
+    setMinimalValidEnv();
+    process.env.PAYMENT_DESTINATION_POLICY = "denylist";
+    process.env.PAYMENT_DESTINATIONS = "not-an-address";
+    delete process.env.PAYMENT_DESTINATIONS_FILE;
+
+    await expect(async () => {
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
+    }).rejects.toThrow(/process\.exit: 1/);
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("not-an-address"));
   });
 });

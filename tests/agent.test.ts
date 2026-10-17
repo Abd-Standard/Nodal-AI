@@ -271,6 +271,8 @@ vi.mock('../backend/config', () => ({
     RETRY_DELAY_MS: 100,
     MAX_CONCURRENT_TASKS: 10, // Set above MAINNET_SPENDING_CAP to exercise the secondary runtime guard
     AGENT_SPENDING_LIMIT: '15000',
+    PAYMENT_DESTINATION_POLICY: 'open',
+    PAYMENT_DESTINATIONS: [],
     agentKeypair: () => ({
       secret: () => 'SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X',
     }),
@@ -1734,5 +1736,110 @@ describe('PayFiAgent — approval threshold (#736)', () => {
 
     expect(await agent.approve('missing')).toBeNull();
     expect(agent.deny('missing')).toBeNull();
+  });
+});
+
+describe('PayFiAgent — payment destination policy (#735)', () => {
+  let agent: PayFiAgent;
+  const OTHER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
+  const payTo = (destination: string) => ({
+    type: 'stellar_payment' as const,
+    payload: { destination, amount: '10', assetCode: 'USDC', assetIssuer: ISSUER },
+  });
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(isPaused).mockReturnValue(false);
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () =>
+        ({
+          execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }),
+        }) as any
+    );
+    agent = new PayFiAgent();
+  });
+
+  afterEach(() => {
+    (config as any).PAYMENT_DESTINATION_POLICY = 'open';
+    (config as any).PAYMENT_DESTINATIONS = [];
+  });
+
+  it('open: permits any destination', async () => {
+    (config as any).PAYMENT_DESTINATIONS = [DEST];
+
+    expect((await agent.run(payTo(OTHER))).success).toBe(true);
+  });
+
+  it('allowlist: permits a listed destination and rejects any other', async () => {
+    (config as any).PAYMENT_DESTINATION_POLICY = 'allowlist';
+    (config as any).PAYMENT_DESTINATIONS = [DEST];
+
+    expect((await agent.run(payTo(DEST))).success).toBe(true);
+
+    const rejected = await agent.run(payTo(OTHER));
+    expect(rejected.success).toBe(false);
+    expect(rejected.errorType).toBe(ErrorType.PolicyViolation);
+    const paymentTool = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    expect(paymentTool.execute).toHaveBeenCalledTimes(1);
+  });
+
+  it('denylist: rejects a listed destination and permits any other', async () => {
+    (config as any).PAYMENT_DESTINATION_POLICY = 'denylist';
+    (config as any).PAYMENT_DESTINATIONS = [DEST];
+
+    const rejected = await agent.run(payTo(DEST));
+    expect(rejected.success).toBe(false);
+    expect(rejected.errorType).toBe(ErrorType.PolicyViolation);
+
+    expect((await agent.run(payTo(OTHER))).success).toBe(true);
+  });
+
+  it('matches federation names case-insensitively', async () => {
+    (config as any).PAYMENT_DESTINATION_POLICY = 'denylist';
+    (config as any).PAYMENT_DESTINATIONS = ['Merchant*Example.com'];
+
+    const rejected = await agent.run(payTo('merchant*example.com'));
+    expect(rejected.errorType).toBe(ErrorType.PolicyViolation);
+  });
+
+  it('enforces the policy on the x402 payTo address', async () => {
+    (config as any).PAYMENT_DESTINATION_POLICY = 'allowlist';
+    (config as any).PAYMENT_DESTINATIONS = [DEST];
+
+    const result = await agent.run({
+      type: 'x402_respond',
+      payload: { payTo: OTHER, amount: '1', nonce: 'n1' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe(ErrorType.PolicyViolation);
+  });
+
+  it('enforces the policy on every payment in a batch', async () => {
+    (config as any).PAYMENT_DESTINATION_POLICY = 'denylist';
+    (config as any).PAYMENT_DESTINATIONS = [OTHER];
+
+    const result = await agent.run({
+      type: 'batch_payment',
+      payload: {
+        payments: [
+          { destination: DEST, amount: '1' },
+          { destination: OTHER, amount: '1' },
+        ],
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.errorType).toBe(ErrorType.PolicyViolation);
+  });
+
+  it('does not apply to read-only tasks', async () => {
+    (config as any).PAYMENT_DESTINATION_POLICY = 'allowlist';
+    (config as any).PAYMENT_DESTINATIONS = [];
+
+    const result = await agent.run({ type: 'account_info', payload: { destination: OTHER } });
+
+    expect(result.errorType).not.toBe(ErrorType.PolicyViolation);
   });
 });

@@ -18,6 +18,7 @@
  */
 
 import { z } from 'zod';
+import { readFileSync } from 'fs';
 import * as dotenv from 'dotenv';
 import { Keypair } from '@stellar/stellar-sdk';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
@@ -174,6 +175,20 @@ const EnvSchema = z.object({
   // How long a pending approval waits for a decision before it expires.
   APPROVAL_TTL_MS: z.coerce.number().int().min(1_000).default(3_600_000),
 
+  // Counterparty policy for value-moving tasks: `allowlist` permits only the
+  // listed destinations, `denylist` blocks them, `open` (default) permits any.
+  PAYMENT_DESTINATION_POLICY: z
+    .enum(['allowlist', 'denylist', 'open'], {
+      errorMap: () => ({
+        message: 'PAYMENT_DESTINATION_POLICY must be one of: allowlist | denylist | open',
+      }),
+    })
+    .default('open'),
+  // Comma-separated G-addresses and/or federation names (name*domain).
+  PAYMENT_DESTINATIONS: z.string().optional(),
+  // File with one G-address or federation name per line; # starts a comment.
+  PAYMENT_DESTINATIONS_FILE: z.string().min(1).optional(),
+
   // Persistence
   DB_PATH: z.string().default('./agent.db'),
 
@@ -318,6 +333,19 @@ export interface AgentConfig {
    * its spending reservation is released. Defaults to 3,600,000 (1 hour).
    */
   readonly APPROVAL_TTL_MS: number;
+
+  /**
+   * Counterparty policy enforced for every value-moving task.
+   * "allowlist" permits only PAYMENT_DESTINATIONS, "denylist" rejects them and
+   * "open" (default) permits any destination.
+   */
+  readonly PAYMENT_DESTINATION_POLICY: 'allowlist' | 'denylist' | 'open';
+
+  /**
+   * G-addresses and federation names the destination policy applies to, merged
+   * from PAYMENT_DESTINATIONS and PAYMENT_DESTINATIONS_FILE.
+   */
+  readonly PAYMENT_DESTINATIONS: readonly string[];
 
   /**
    * The maximum number of retry attempts for transient network/RPC calls.
@@ -605,6 +633,38 @@ function parseConfigAndDerive(): AgentConfig {
     );
   }
 
+  // ── Payment destination policy ─────────────────────────────────────────────
+  const paymentDestinations = (raw.PAYMENT_DESTINATIONS ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (raw.PAYMENT_DESTINATIONS_FILE) {
+    let contents: string;
+    try {
+      contents = readFileSync(raw.PAYMENT_DESTINATIONS_FILE, 'utf8');
+    } catch {
+      process.stderr.write(
+        `❌ [Config] Could not read PAYMENT_DESTINATIONS_FILE (${raw.PAYMENT_DESTINATIONS_FILE}).\n`
+      );
+      process.exit(1);
+    }
+    for (const line of contents.split(/\r?\n/)) {
+      const entry = line.replace(/#.*/, '').trim();
+      if (entry) paymentDestinations.push(entry);
+    }
+  }
+  const invalidDestinations = paymentDestinations.filter(
+    (entry) => !isValidStellarPublicKey(entry) && !/^[^*\s]+\*[^*\s]+\.[^*\s]+$/.test(entry)
+  );
+  if (invalidDestinations.length > 0) {
+    process.stderr.write(
+      `❌ [Config] Payment destinations must be G-addresses or federation names (name*domain):\n` +
+        invalidDestinations.map((entry) => `  • ${entry}`).join('\n') +
+        `\n`
+    );
+    process.exit(1);
+  }
+
   // ── Build the config object — secret key stays in closure only ────────────
   const {
     AGENT_SECRET_KEY: _secret,
@@ -629,6 +689,7 @@ function parseConfigAndDerive(): AgentConfig {
     MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
     X402_NONCE_TTL_MS: raw.X402_NONCE_TTL_MS,
     MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
+    PAYMENT_DESTINATIONS: paymentDestinations,
     ...(ALLOWED_X402_ORIGINS ? { ALLOWED_X402_ORIGINS } : {}),
     ...(AGENT_SECRET_KEY_ARN ? { AGENT_SECRET_KEY_ARN } : {}),
     ...(OTLP_ENDPOINT ? { OTLP_ENDPOINT } : {}),
