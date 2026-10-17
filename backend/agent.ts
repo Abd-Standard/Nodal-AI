@@ -12,10 +12,11 @@
 
 // Updated imports
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
 import { rpc } from '@stellar/stellar-sdk';
 import { config, MAINNET_SPENDING_CAP } from './config';
 import { logger } from './logger';
-import { saveResult } from './persistence';
+import { saveResult, appendAuditEntry, type AuditEntry } from './persistence';
 import { StructuredError, getErrorType, sanitizeCause } from './errors';
 import { StellarPaymentTool } from './tools/StellarPaymentTool';
 import { SorobanInvokeTool } from './tools/SorobanInvokeTool';
@@ -249,6 +250,46 @@ function sanitizePayload(payload: unknown): unknown {
     sanitized[key] = sanitizePayload(rawValue);
   }
   return sanitized;
+}
+
+// ─── Audit log ────────────────────────────────────────────────────────────────
+
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Build the audit-log entry for a task that produced a signed transaction, or
+ * `null` when the result carries no `txHash` (read-only tasks, simulations,
+ * multisig envelopes still awaiting signatures). Friendbot transactions are
+ * signed by the Friendbot service, not the agent, so they are not recorded.
+ */
+function buildAuditEntry(
+  task: AgentTask,
+  data: unknown,
+  correlationId: string,
+  ts: string
+): AuditEntry | null {
+  if (task.type === 'friendbot' || data === null || typeof data !== 'object') return null;
+  const d = data as Record<string, unknown>;
+  const txHash = optionalString(d.txHash);
+  if (!txHash) return null;
+
+  const p = (task.payload ?? {}) as Record<string, unknown>;
+  const envelopeXdr = optionalString(d.envelopeXdr ?? d.envelope_xdr);
+  const assetCode = optionalString(p.assetCode);
+  const assetIssuer = optionalString(p.assetIssuer);
+
+  return {
+    ts,
+    correlationId,
+    taskType: task.type,
+    txHash,
+    envelopeHash: envelopeXdr ? createHash('sha256').update(envelopeXdr).digest('hex') : null,
+    destination: optionalString(p.destination ?? p.payTo),
+    asset: assetCode ? (assetIssuer ? `${assetCode}:${assetIssuer}` : assetCode) : null,
+    amount: optionalString(p.amount),
+  };
 }
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
@@ -804,7 +845,25 @@ export class PayFiAgent extends EventEmitter {
         const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
         this.emit('task:complete', result);
 
-        saveResult({ ...result, timestamp: new Date().toISOString() });
+        const timestamp = new Date().toISOString();
+        saveResult({ ...result, timestamp });
+
+        // The transaction is already on-chain at this point, so an audit-log
+        // failure is logged loudly rather than reported as a task failure that
+        // could prompt the caller to resubmit the payment.
+        try {
+          const auditEntry = buildAuditEntry(task, data, correlationId, timestamp);
+          if (auditEntry) appendAuditEntry(auditEntry);
+        } catch (auditErr) {
+          taskLog.error(
+            {
+              taskType: task.type,
+              error: redactSecretString(describeError(auditErr)),
+            },
+            'Failed to append audit log entry'
+          );
+        }
+
         void dispatchWebhook(result);
 
         return result;

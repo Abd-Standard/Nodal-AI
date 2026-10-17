@@ -31,6 +31,7 @@ import { NetworkStatusTool } from '../backend/tools/NetworkStatusTool';
 import { OfferBookTool } from '../backend/tools/OfferBookTool';
 import { SorobanStorageTool } from '../backend/tools/SorobanStorageTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
+import { appendAuditEntry } from '../backend/persistence';
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
@@ -184,6 +185,7 @@ vi.mock('../backend/webhook', () => ({
 
 vi.mock('../backend/persistence', () => ({
   saveResult: vi.fn(),
+  appendAuditEntry: vi.fn(),
 }));
 
 // Named so `instanceof rpcClient.StellarRPCError` checks in agent.ts's error
@@ -1612,5 +1614,79 @@ describe('PayFiAgent — read-only query task types', () => {
     expect(result.success).toBe(false);
     expect(result.taskType).toBe('offer_book');
     expect(result.error).toContain('orderbook unavailable');
+  });
+});
+
+describe('PayFiAgent — audit log (#744)', () => {
+  let agent: PayFiAgent;
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: 'audit_hash', ledger: 1 }) }) as any
+    );
+    vi.mocked(LedgerInfoTool).mockImplementation(
+      () =>
+        ({ execute: vi.fn().mockResolvedValue({ sequence: 123, protocolVersion: 21 }) }) as any
+    );
+    agent = new PayFiAgent();
+  });
+
+  it('appends exactly one audit row for a signed transaction', async () => {
+    const result = await agent.run({
+      type: 'stellar_payment',
+      payload: { destination: DEST, amount: '10', assetCode: 'USDC', assetIssuer: ISSUER },
+      correlationId: 'audit-corr',
+    });
+
+    expect(result.success).toBe(true);
+    expect(appendAuditEntry).toHaveBeenCalledTimes(1);
+    expect(appendAuditEntry).toHaveBeenCalledWith({
+      ts: expect.any(String),
+      correlationId: 'audit-corr',
+      taskType: 'stellar_payment',
+      txHash: 'audit_hash',
+      envelopeHash: null,
+      destination: DEST,
+      asset: `USDC:${ISSUER}`,
+      amount: '10',
+    });
+  });
+
+  it('does not append an audit row for a read-only task', async () => {
+    const result = await agent.run({ type: 'ledger_info', payload: {} });
+
+    expect(result.success).toBe(true);
+    expect(appendAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('does not append an audit row when the task fails', async () => {
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockRejectedValue(new Error('tx_failed')) }) as any
+    );
+    agent = new PayFiAgent();
+
+    const result = await agent.run({
+      type: 'stellar_payment',
+      payload: { destination: DEST, amount: '10' },
+    });
+
+    expect(result.success).toBe(false);
+    expect(appendAuditEntry).not.toHaveBeenCalled();
+  });
+
+  it('still reports success when the audit append throws', async () => {
+    vi.mocked(appendAuditEntry).mockImplementationOnce(() => {
+      throw new Error('disk full');
+    });
+
+    const result = await agent.run({
+      type: 'stellar_payment',
+      payload: { destination: DEST, amount: '10' },
+    });
+
+    expect(result.success).toBe(true);
+    expect(appendAuditEntry).toHaveBeenCalledTimes(1);
   });
 });

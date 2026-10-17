@@ -5,6 +5,7 @@
   "private": true,
   "scripts": {
     "setup": "npx ts-node scripts/setup.ts",
+    "audit:verify": "npx ts-node scripts/audit_verify.ts",
     "build": "tsc",
     "pretest": "tsc --noEmit",
     "typecheck": "tsc --noEmit",
