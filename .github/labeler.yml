@@ -1,0 +1,51 @@
+# .github/labeler.yml
+#
+# Path-to-label mappings for the actions/labeler@v5 action.
+# See .github/workflows/labeller.yml for the workflow that reads this file.
+#
+# Format (v5 syntax):
+#   label-name:
+#     - changed-files:
+#         - any-glob-to-any-file:
+#             - 'glob/pattern/**'
+#
+# Labels must already exist in the repository for them to be applied.
+# Create missing labels at: Settings → Labels.
+
+tooling:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "backend/tools/**"
+
+backend:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "backend/**"
+          - "!backend/tools/**"
+
+smart-contracts:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "contracts/**"
+
+testing:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "tests/**"
+
+ci-cd:
+  - changed-files:
+      - any-glob-to-any-file:
+          - ".github/**"
+
+documentation:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "docs/**"
+          - "*.md"
+          - "**/*.md"
+
+dx:
+  - changed-files:
+      - any-glob-to-any-file:
+          - "scripts/**"

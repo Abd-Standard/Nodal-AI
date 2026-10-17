@@ -4,7 +4,8 @@
 # Stages:
 #   1. rust-builder   — compiles Soroban contract → .wasm
 #   2. node-builder   — installs deps + compiles TypeScript → dist/
-#   3. production     — slim Node runtime with compiled artefacts only
+#   3. prod-deps      — installs production-only node_modules on Alpine/musl
+#   4. production     — node:20-alpine runtime with compiled artefacts only
 # =============================================================================
 
 # ─── Stage 1: Soroban / Rust contract build ───────────────────────────────────
@@ -39,12 +40,20 @@ COPY contracts/escrow/src ./contracts/escrow/src
 RUN cargo build \
         --manifest-path contracts/escrow/Cargo.toml \
         --target wasm32-unknown-unknown \
-        --release && \
-    # Optional: shrink WASM with wasm-opt (installed via binaryen above)
-    wasm-opt -Oz \
-        contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm \
-        -o contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm \
-    || echo "wasm-opt not available, skipping optimisation"
+        --release
+
+# Optional: shrink WASM with wasm-opt (installed via binaryen above).
+# Write to a temp file and only replace the original once wasm-opt succeeds, so
+# a failed/interrupted run can never leave a truncated .wasm behind.
+RUN WASM=contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm && \
+    if ! command -v wasm-opt >/dev/null 2>&1; then \
+        echo "wasm-opt not installed, skipping optimisation"; \
+    elif wasm-opt -Oz "$WASM" -o "$WASM.opt"; then \
+        mv "$WASM.opt" "$WASM"; \
+    else \
+        rm -f "$WASM.opt"; \
+        echo "wasm-opt failed, keeping unoptimised $WASM"; \
+    fi
 
 # ─── Stage 2: Node.js / TypeScript build ──────────────────────────────────────
 FROM node:20-slim AS node-builder
@@ -63,27 +72,42 @@ COPY backend/ ./backend/
 
 RUN npm run build
 
-# ─── Stage 3: Production image ────────────────────────────────────────────────
-FROM node:20-slim AS production
+# ─── Stage 3: Production dependencies (Alpine / musl) ─────────────────────────
+# Installed on the same musl base as the final image so native modules
+# (e.g. better-sqlite3) resolve/link correctly; kept out of the final stage
+# so no compiler toolchain ships in the production image.
+FROM node:20-alpine AS prod-deps
+
+WORKDIR /build
+
+# Toolchain for compiling better-sqlite3 (no musl prebuilt binary is published)
+RUN apk add --no-cache python3 make g++
+
+COPY package.json package-lock.json* ./
+# --ignore-scripts skips better-sqlite3's install script, which builds its
+# native binding; rebuild just that package so the addon exists at runtime.
+RUN npm ci --omit=dev --ignore-scripts && \
+    npm rebuild better-sqlite3 && \
+    npm cache clean --force
+
+# ─── Stage 4: Production image ────────────────────────────────────────────────
+FROM node:20-alpine AS production
 
 LABEL org.opencontainers.image.title="Nodal AI Agent"
 LABEL org.opencontainers.image.description="Stellar PayFi Agent Kit"
 
-# Non-root user for security
-RUN addgroup --system agent && adduser --system --ingroup agent agent
+# Non-root user for security (Alpine/busybox adduser syntax)
+RUN addgroup -S agent && adduser -S -G agent agent
 
 WORKDIR /app
 
-# ── Runtime deps only ─────────────────────────────────────────────────────────
-COPY package.json package-lock.json* ./
-RUN npm ci --omit=dev --ignore-scripts && \
-    npm cache clean --force
+# ── Runtime deps only — pre-built in prod-deps, nothing compiled here ────────
+COPY --from=prod-deps /build/node_modules ./node_modules
 
 # ── Compiled TypeScript ───────────────────────────────────────────────────────
 COPY --from=node-builder /build/dist ./dist
 
 # ── Compiled WASM contract ────────────────────────────────────────────────────
-RUN mkdir -p contracts/escrow
 COPY --from=rust-builder \
     /build/contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm \
     ./contracts/escrow/stellar_payfi_escrow.wasm
@@ -97,9 +121,14 @@ USER agent
 # Expose default port (override via env)
 EXPOSE 3000
 
-# Health check — verify configuration and startup logic compiles/resolves
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD node -e "require('./dist/backend/config')" || exit 1
+# Health check — probe the running process's GET /health endpoint (served by
+# backend/server.ts). Deliberately does NOT require('./dist/backend/config'):
+# that would re-run full config validation (and a Secrets Manager fetch when
+# AGENT_SECRET_KEY_ARN is set) on every tick. A container whose config is
+# invalid never starts the health server, so this probe still fails for it.
+# Node's http module is used because the Alpine base image ships without curl.
+HEALTHCHECK --interval=30s --timeout=10s --start-period=20s --retries=3 \
+    CMD node -e "require('http').get('http://127.0.0.1:'+(process.env.HEALTH_PORT||3000)+'/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1)).setTimeout(8000,function(){this.destroy()})"
 
-# Entry point
-CMD ["node", "dist/backend/agent.js"]
+# Entry point — index.js loads config, then starts the agent and health server
+CMD ["node", "dist/backend/index.js"]

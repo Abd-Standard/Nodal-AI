@@ -4,30 +4,33 @@
  * Health-check HTTP server for container orchestration (ECS, Kubernetes, etc.).
  *
  * Endpoints:
- *   GET /health  → 200 { status: "ok", network: string, publicKey: string }
- *   GET /status  → 200 { results: PersistedResult[] }   (last 10 AgentResult records)
+ *   GET /health  → 200 { status: "ok", components: { horizon, soroban, database } }
+ *                  503 { status: "degraded", components: { ... } } when a dependency is down
+ *   GET /status  → 200 { results: PersistedResult[] }   (paginated via ?limit=&offset=,
+ *                  default last 10; Bearer auth when WEBHOOK_SECRET is set)
  *
  * Uses only the Node.js built-in `http` module — no additional dependencies.
  * Port is read from config.HEALTH_PORT (env var HEALTH_PORT, default 3000).
  */
 
-import * as http from "http";
-import { config } from "./config";
-import { getResults } from "./persistence";
-import { horizonServer, sorobanServer } from "./rpc_client";
-import { db } from "./db/client";
-import { handleError } from "./middleware/error_handler";
-import { createLogger } from "./utils/logger";
+import * as http from 'http';
+import { config } from './config';
+import { getResults } from './persistence';
+import { horizonServer, sorobanServer } from './rpc_client';
+import { db } from './db/client';
+import { handleError } from './middleware/error_handler';
+import { createLogger } from './utils/logger';
+import { spendingTracker } from './agent';
 
-const log = createLogger("health-server");
+const log = createLogger('health-server');
 
 // ─── Health types & component probes ─────────────────────────────────────────
 
 /** Reachability of a single dependency. */
-export type ComponentStatus = "up" | "down";
+export type ComponentStatus = 'up' | 'down';
 
 export interface HealthResponse {
-  status: "ok" | "degraded";
+  status: 'ok' | 'degraded';
   components: {
     horizon: ComponentStatus;
     soroban: ComponentStatus;
@@ -48,7 +51,7 @@ const PROBE_TIMEOUT_MS = 3_000;
 async function withTimeout<T>(work: Promise<T>): Promise<T> {
   let timer: NodeJS.Timeout;
   const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error("probe timed out")), PROBE_TIMEOUT_MS);
+    timer = setTimeout(() => reject(new Error('probe timed out')), PROBE_TIMEOUT_MS);
   });
   try {
     return await Promise.race([work, timeout]);
@@ -61,10 +64,10 @@ async function withTimeout<T>(work: Promise<T>): Promise<T> {
 export async function checkHorizon(): Promise<ComponentStatus> {
   try {
     await withTimeout(horizonServer.fetchBaseFee());
-    return "up";
+    return 'up';
   } catch (err) {
-    log.warn({ msg: "Horizon health probe failed", err: String(err) });
-    return "down";
+    log.warn({ msg: 'Horizon health probe failed', err: String(err) });
+    return 'down';
   }
 }
 
@@ -79,40 +82,41 @@ export async function checkHorizon(): Promise<ComponentStatus> {
 export async function checkSoroban(): Promise<ComponentStatus> {
   try {
     await withTimeout(sorobanServer.getNetwork());
-    return "up";
+    return 'up';
   } catch (err) {
-    log.warn({ msg: "Soroban RPC health probe failed", err: String(err) });
-    return "down";
+    log.warn({ msg: 'Soroban RPC health probe failed', err: String(err) });
+    return 'down';
   }
 }
 
 export async function checkDatabase(): Promise<ComponentStatus> {
   try {
-    return (await withTimeout(db.healthCheck())) ? "up" : "down";
+    return (await withTimeout(db.healthCheck())) ? 'up' : 'down';
   } catch (err) {
-    log.warn({ msg: "Database health probe failed", err: String(err) });
-    return "down";
+    log.warn({ msg: 'Database health probe failed', err: String(err) });
+    return 'down';
   }
 }
 
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
-const WEBHOOK_SECRET = process.env.WEBHOOK_SECRET;
-
 /**
  * Returns true if the request passes Bearer-token authentication.
- * When WEBHOOK_SECRET is unset, all requests are allowed.
+ * When WEBHOOK_SECRET is unset, all requests are allowed. The secret is read
+ * per request so a rotated value takes effect without re-importing the module.
  */
 function isAuthenticated(req: http.IncomingMessage): boolean {
-  if (!WEBHOOK_SECRET) return true;
-  const auth = req.headers["authorization"];
+  const secret = process.env.WEBHOOK_SECRET;
+  if (!secret) return true;
+  const auth = req.headers['authorization'];
   if (!auth) return false;
-  const [scheme, token] = auth.split(" ");
-  return scheme?.toLowerCase() === "bearer" && token === WEBHOOK_SECRET;
+  const [scheme, token] = auth.split(' ');
+  return scheme?.toLowerCase() === 'bearer' && token === secret;
 }
 
-const HEALTH_PATH = "/health";
-const STATUS_PATH = "/status";
+const HEALTH_PATH = '/health';
+const STATUS_PATH = '/status';
+const SPENDING_PATH = '/spending';
 
 /**
  * Creates and returns the health-check HTTP server.
@@ -122,48 +126,57 @@ const STATUS_PATH = "/status";
 export function createHealthServer(): http.Server {
   const server = http.createServer((req, res) => {
     // ── GET /health ────────────────────────────────────────────────────────
-    if (req.method === "GET" && req.url === HEALTH_PATH) {
+    if (req.method === 'GET' && req.url === HEALTH_PATH) {
+      // Delegate to the real implementation: it probes Horizon, Soroban and
+      // the database concurrently and reports 503 / "degraded" when any
+      // dependency is down. The previous inline branch hardcoded
+      // `status: "ok"` and never checked anything.
+      void handleHealth(req, res);
+      return;
+    }
+
+    // ── GET /status ────────────────────────────────────────────────────────
+    // Delegates to handleResults(), which enforces Bearer-token auth when
+    // WEBHOOK_SECRET is set and honours `limit`/`offset` query parameters.
+    // The previous inline branch served persisted results with no auth guard
+    // and a hardcoded `getResults(10)`.
+    if (req.method === 'GET' && req.url?.split('?')[0] === STATUS_PATH) {
+      const parsedUrl = new URL(
+        req.url ?? STATUS_PATH,
+        `http://${req.headers.host ?? 'localhost'}`
+      );
+      void handleResults(req, res, parsedUrl);
+      return;
+    }
+
+    // ── GET /spending ──────────────────────────────────────────────────────
+    if (req.method === 'GET' && req.url === SPENDING_PATH) {
+      if (!isAuthenticated(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const total = spendingTracker.total();
+      const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
       const body = JSON.stringify({
-        status: "ok",
-        network: config.STELLAR_NETWORK,
-        publicKey: config.AGENT_PUBLIC_KEY,
+        total,
+        limit,
+        windowMs: config.SPENDING_WINDOW_MS,
+        percentUsed: (total / limit) * 100,
       });
 
       res.writeHead(200, {
-        "Content-Type": "application/json",
-        "Content-Length": Buffer.byteLength(body),
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
       });
       res.end(body);
       return;
     }
 
-    // ── GET /status ────────────────────────────────────────────────────────
-    if (req.method === "GET" && req.url === STATUS_PATH) {
-      try {
-        const results = getResults(10);
-        const body = JSON.stringify({ results });
-
-        res.writeHead(200, {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-        });
-        res.end(body);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        const body = JSON.stringify({ error: message });
-
-        res.writeHead(500, {
-          "Content-Type": "application/json",
-          "Content-Length": Buffer.byteLength(body),
-        });
-        res.end(body);
-      }
-      return;
-    }
-
     // ── 404 for everything else ────────────────────────────────────────────
-    res.writeHead(404, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Not Found" }));
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not Found' }));
   });
 
   return server;
@@ -180,8 +193,8 @@ export function startHealthServer(): http.Server {
   server.listen(port, () => {
     process.stdout.write(`✅ [HealthServer] Listening on port ${port}\n`);
     process.stdout.write(
-      `   GET /health → { status, network, publicKey }\n` +
-      `   GET /status → { results: AgentResult[] }\n`
+      `   GET /health → { status, components }\n` +
+        `   GET /status → { results: AgentResult[] }\n`
     );
   });
 
@@ -190,10 +203,7 @@ export function startHealthServer(): http.Server {
 
 // ─── Route handlers ───────────────────────────────────────────────────────────
 
-async function handleHealth(
-  _req: http.IncomingMessage,
-  res: http.ServerResponse
-): Promise<void> {
+async function handleHealth(_req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
   try {
     // Probed concurrently: run serially and a slow Horizon delays the Soroban
     // answer, so the endpoint's latency becomes the sum of every dependency.
@@ -203,65 +213,87 @@ async function handleHealth(
       checkDatabase(),
     ]);
 
-    const allUp = horizon === "up" && soroban === "up" && database === "up";
+    const allUp = horizon === 'up' && soroban === 'up' && database === 'up';
     const statusCode = allUp ? 200 : 503;
     const body: HealthResponse = {
-      status: allUp ? "ok" : "degraded",
+      status: allUp ? 'ok' : 'degraded',
       components: { horizon, soroban, database },
     };
 
     const payload = JSON.stringify(body);
     res.writeHead(statusCode, {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(payload),
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(payload),
     });
     res.end(payload);
   } catch (err) {
     const errorResponse = handleError(err);
-    log.error({ msg: "Unhandled request error", status: errorResponse.status, type: errorResponse.type });
-    const payload = JSON.stringify(errorResponse);
-    res.writeHead(errorResponse.status, {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(payload),
+    log.error({
+      msg: 'Unhandled request error',
+      status: errorResponse.status,
+      type: errorResponse.type,
     });
-    res.end(payload);
+    const body = JSON.stringify(errorResponse);
+    res.writeHead(errorResponse.status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      ...errorResponse.headers,
+    });
+    res.end(body);
   }
 }
 
-async function handleResults(
-  req: http.IncomingMessage,
-  res: http.ServerResponse,
-  parsedUrl: URL
-): Promise<void> {
-  // Auth guard — skipped when WEBHOOK_SECRET is not configured
+const DEFAULT_RESULTS_LIMIT = 10;
+const MAX_RESULTS_LIMIT = 100;
+
+/** Parses a non-negative integer query parameter, falling back when absent or invalid. */
+function parseNonNegativeInt(value: string | null, fallback: number): number {
+  if (value === null) return fallback;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+/**
+ * GET /status — paginated persisted AgentResult records, newest first.
+ * Requires a matching Bearer token when WEBHOOK_SECRET is set.
+ * Query parameters: `limit` (default 10, max 100) and `offset` (default 0).
+ */
+function handleResults(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
   if (!isAuthenticated(req)) {
-    res.writeHead(401, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ error: "Unauthorized" }));
+    res.writeHead(401, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Unauthorized' }));
     return;
   }
 
   try {
-    const limitParam = parsedUrl.searchParams.get("limit");
-    const offsetParam = parsedUrl.searchParams.get("offset");
+    const limit = Math.min(
+      parseNonNegativeInt(url.searchParams.get('limit'), DEFAULT_RESULTS_LIMIT),
+      MAX_RESULTS_LIMIT
+    );
+    const offset = parseNonNegativeInt(url.searchParams.get('offset'), 0);
+    const body = JSON.stringify({ results: getResults(limit, offset) });
 
-    const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 100)) : 100;
-    const offset = offsetParam ? Math.max(0, parseInt(offsetParam, 10) || 0) : 0;
-
-    const results = getResults(limit, offset);
-    const payload = JSON.stringify(results);
     res.writeHead(200, {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(payload),
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
     });
-    res.end(payload);
+    res.end(body);
   } catch (err) {
+    // Route through the shared handler so a StructuredError gets the status
+    // code that describes it instead of a blanket 500 - and so an internal
+    // fault's message is not echoed to the caller.
     const errorResponse = handleError(err);
-    log.error({ msg: "Results endpoint error", status: errorResponse.status, type: errorResponse.type });
-    const payload = JSON.stringify(errorResponse);
-    res.writeHead(errorResponse.status, {
-      "Content-Type": "application/json",
-      "Content-Length": Buffer.byteLength(payload),
+    log.error({
+      msg: 'Failed to read persisted results',
+      status: errorResponse.status,
+      type: errorResponse.type,
     });
-    res.end(payload);
+    const body = JSON.stringify({ error: 'Failed to read results', ...errorResponse });
+    res.writeHead(errorResponse.status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      ...errorResponse.headers,
+    });
+    res.end(body);
   }
 }

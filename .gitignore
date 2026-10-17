@@ -1,16 +1,26 @@
 # Dependencies
 node_modules/
 
+# Package archives
+*.tgz
+
 # Build output
 dist/
 
 # Test coverage & snapshots
 coverage/
-tests/__snapshots__/
+# tests/__snapshots__/*.snap files ARE committed (vitest's toMatchSnapshot()
+# refuses to write a new snapshot when CI=true, so an untracked .snap file
+# doesn't just get silently regenerated in CI — it fails the test outright).
 
 # Rust / Cargo
 **/target/
-**/Cargo.lock
+# Cargo.lock IS committed for contracts/escrow (see below) — this repo pins
+# an old toolchain (rust-toolchain.toml: 1.78.0) for Soroban compatibility,
+# and an unpinned lockfile lets CI silently re-resolve to a transitive dep
+# release that requires a newer edition/MSRV than 1.78 supports on any given
+# day (e.g. zeroize/base64ct requiring edition2024) — breaking cargo
+# test/clippy/tarpaulin/build with no code change on this repo's side.
 
 # Soroban test snapshots
 contracts/escrow/test_snapshots/
@@ -51,3 +61,6 @@ yarn-error.log*
 # Temporary files
 tmp/
 temp/
+
+# Generated API docs (TypeDoc)
+docs/api/

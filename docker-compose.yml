@@ -4,11 +4,16 @@
 # Services:
 #   stellar-quickstart  — local Stellar network (Horizon + Soroban RPC)
 #   agent               — Nodal AI backend (connects to quickstart)
+#   test-runner         — full-stack integration tests (profile: test)
+#   test-runner-only    — tests against quickstart only, no agent (profile: test-only)
 #
 # Usage:
 #   docker compose up --build          # start everything
 #   docker compose up stellar-quickstart  # local network only
 #   docker compose run --rm agent npm run test:ts  # run TS tests in container
+#   docker compose --profile test up --build         # full stack + tests (needs agent healthy)
+#   docker compose --profile test-only up --build --abort-on-container-exit --exit-code-from test-runner-only
+#     # tests only against stellar-quickstart, skips booting the agent HTTP server
 # =============================================================================
 
 version: "3.9"
@@ -64,10 +69,11 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"require('./dist/backend/config')\" || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health | grep -q '\"status\":\"ok\"' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
@@ -93,17 +99,49 @@ services:
     depends_on:
       stellar-quickstart:
         condition: service_healthy
+      agent:
+        condition: service_healthy
     environment:
       STELLAR_NETWORK:    local
       HORIZON_URL:        http://stellar-quickstart:8000
       SOROBAN_RPC_URL:    http://stellar-quickstart:8001
-      AGENT_SECRET_KEY:   ${AGENT_SECRET_KEY:-SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73}
+      AGENT_SECRET_KEY:   ${AGENT_SECRET_KEY:-process.env.AGENT_SECRET_KEY}
       X402_ASSET_CODE:    USDC
       X402_ASSET_ISSUER:  ${X402_ASSET_ISSUER:-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN}
       AGENT_SPENDING_LIMIT: "100"
       MAX_RETRIES:        "3"
       RETRY_DELAY_MS:     "100"
     command: npm run test:ts
+    restart: "no"
+    networks:
+      - nodal-net
+
+  # ── Test-only runner (no agent HTTP server) ─────────────────────────────────
+  # Starts just stellar-quickstart + this container — skips building/booting the
+  # full agent service for faster local runs and CI.
+  test-runner-only:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node-builder      # has devDeps + source
+    container_name: nodal-test-runner-only
+    profiles:
+      - test-only              # only starts with: docker compose --profile test-only up
+    depends_on:
+      stellar-quickstart:
+        condition: service_healthy
+    environment:
+      STELLAR_NETWORK:    local
+      HORIZON_URL:        http://stellar-quickstart:8000
+      SOROBAN_RPC_URL:    http://stellar-quickstart:8001
+      AGENT_SECRET_KEY:   ${AGENT_SECRET_KEY:-process.env.AGENT_SECRET_KEY}
+      X402_ASSET_CODE:    USDC
+      X402_ASSET_ISSUER:  ${X402_ASSET_ISSUER:-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN}
+      AGENT_SPENDING_LIMIT: "100"
+      MAX_RETRIES:        "3"
+      RETRY_DELAY_MS:     "100"
+    command: npm run test:ts
+    restart: "no"
     networks:
       - nodal-net
 

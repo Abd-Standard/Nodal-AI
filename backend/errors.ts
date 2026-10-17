@@ -7,15 +7,24 @@
  */
 
 export enum ErrorType {
-  InsufficientFunds = "INSUFFICIENT_FUNDS",
-  NetworkTimeout = "NETWORK_TIMEOUT",
-  ValidationError = "VALIDATION_ERROR",
-  RateLimitError = "RATE_LIMIT_ERROR",
-  UnauthorizedError = "UNAUTHORIZED_ERROR",
-  ContractError = "CONTRACT_ERROR",
-  TransactionFailure = "TRANSACTION_FAILURE",
-  ConfigError = "CONFIG_ERROR",
-  UnknownError = "UNKNOWN_ERROR",
+  InsufficientFunds = 'INSUFFICIENT_FUNDS',
+  NetworkTimeout = 'NETWORK_TIMEOUT',
+  ValidationError = 'VALIDATION_ERROR',
+  RateLimitError = 'RATE_LIMIT_ERROR',
+  UnauthorizedError = 'UNAUTHORIZED_ERROR',
+  ContractError = 'CONTRACT_ERROR',
+  /**
+   * A simulation exceeded its resource budget (Issue #569).
+   *
+   * Separate from ContractError because the caller's response differs: a
+   * budget overrun is retryable with a larger budget or a smaller call, while
+   * a contract error usually is not. Sharing one type forced callers to
+   * string-match the message, which is exactly what errorType exists to avoid.
+   */
+  SimulationBudgetExceeded = 'SIMULATION_BUDGET_EXCEEDED',
+  TransactionFailure = 'TRANSACTION_FAILURE',
+  ConfigError = 'CONFIG_ERROR',
+  UnknownError = 'UNKNOWN_ERROR',
 }
 
 export class StructuredError extends Error {
@@ -53,7 +62,8 @@ export class ValidationError extends StructuredError {
 }
 
 export class RateLimitError extends StructuredError {
-  readonly retryAfterSeconds?: number;
+  readonly retryAfterSeconds: number | undefined;
+  readonly retryAfterSeconds?: number | undefined;
 
   constructor(message: string, retryAfterSeconds?: number, cause?: unknown) {
     super(message, ErrorType.RateLimitError, cause);
@@ -70,7 +80,8 @@ export class UnauthorizedError extends StructuredError {
 }
 
 export class ContractError extends StructuredError {
-  readonly contractId?: string;
+  readonly contractId: string | undefined;
+  readonly contractId?: string | undefined;
 
   constructor(message: string, contractId?: string, cause?: unknown) {
     super(message, ErrorType.ContractError, cause);
@@ -80,7 +91,8 @@ export class ContractError extends StructuredError {
 }
 
 export class TransactionFailureError extends StructuredError {
-  readonly txHash?: string;
+  readonly txHash: string | undefined;
+  readonly txHash?: string | undefined;
 
   constructor(message: string, txHash?: string, cause?: unknown) {
     super(message, ErrorType.TransactionFailure, cause);
@@ -96,6 +108,13 @@ export class ConfigError extends StructuredError {
   }
 }
 
+export class SimulationBudgetError extends StructuredError {
+  constructor(message: string, cause?: unknown) {
+    super(message, ErrorType.SimulationBudgetExceeded, cause);
+    Object.setPrototypeOf(this, SimulationBudgetError.prototype);
+  }
+}
+
 function getErrorType(error: unknown): ErrorType {
   if (error instanceof StructuredError) {
     return error.errorType;
@@ -104,3 +123,25 @@ function getErrorType(error: unknown): ErrorType {
 }
 
 export { getErrorType };
+
+const SENSITIVE_CAUSE_KEYS = new Set(['secretKey', 'privateKey', 'seed', '_secretKey']);
+
+/**
+ * Recursively strips keys that may carry Stellar signing material (secretKey,
+ * privateKey, seed, _secretKey) from an error cause before it is attached to
+ * a thrown error, so it can't be exfiltrated via JSON-serialised logs/webhooks.
+ */
+export function sanitizeCause(cause: unknown): unknown {
+  if (Array.isArray(cause)) {
+    return cause.map(sanitizeCause);
+  }
+  if (cause !== null && typeof cause === 'object') {
+    const sanitized: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(cause)) {
+      if (SENSITIVE_CAUSE_KEYS.has(key)) continue;
+      sanitized[key] = sanitizeCause(value);
+    }
+    return sanitized;
+  }
+  return cause;
+}

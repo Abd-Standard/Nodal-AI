@@ -12,6 +12,22 @@
  *   - Only the arbiter can call `release`
  *   - Only the depositor can call `refund`, and only after expiry
  *   - State transitions are enforced (no double-release / double-refund)
+ *
+ * Formal verification annotations:
+ *   The `//@ requires` / `//@ ensures` comment blocks above each public
+ *   function are machine-readable specifications for formal verification
+ *   tooling. Vocabulary used by the annotations:
+ *   - `requires`        — preconditions; a violation panics with the error
+ *                         documented in the function's `# Panics` section.
+ *   - `ensures`         — postconditions that hold when the function returns.
+ *   - `old(x)`          — the value of `x` in the pre-call state.
+ *   - `stored_<field>`  — value read from instance storage under the matching
+ *                         `DataKey` (e.g. `stored_amount` == `DataKey::Amount`).
+ *   - `ledger_timestamp`— `env.ledger().timestamp()` at call time.
+ *   - `has(Key)`        — the instance-storage key exists.
+ *   - `result`          — the function's return value.
+ *   Contract-level `//@ invariant` lines above the impl must hold on every
+ *   entry into and exit from the contract.
  */
 
 #![cfg_attr(not(test), no_std)]
@@ -21,6 +37,18 @@ use soroban_sdk::{
     contract, contracterror, contractimpl, contracttype, panic_with_error,
     token::Client as TokenClient, Address, Env, Symbol,
 };
+
+// ─── Security constants ───────────────────────────────────────────────────────
+
+/// Minimum delay (in seconds) that must elapse between proposing an arbiter
+/// rotation and accepting it (24 hours).
+///
+/// This is the security-critical floor for `accept_arbiter_rotation`: it is a
+/// hard-coded constant, never caller-supplied or read from storage, so no
+/// party — depositor or otherwise — can shorten the hostile-takeover window
+/// below this value. Keep any future configurability above this constant and
+/// reject proposals requesting less than `MIN_ROTATION_DELAY`.
+pub const MIN_ROTATION_DELAY: u64 = 86_400; // 24 hours in seconds
 
 // ─── Storage keys ─────────────────────────────────────────────────────────────
 
@@ -33,6 +61,9 @@ pub enum DataKey {
     Amount,
     Expiry,
     Released,
+    InitializedAt,
+    PendingArbiter,
+    PendingArbiterTime,
 }
 
 // ─── Escrow State ─────────────────────────────────────────────────────────────
@@ -46,6 +77,7 @@ pub struct EscrowState {
     pub amount: i128,
     pub expiry: u64,
     pub released: bool,
+    pub initialized_at: u64,
 }
 
 // ─── Contract Errors ──────────────────────────────────────────────────────────
@@ -72,12 +104,22 @@ pub enum EscrowError {
     NotInitialized = 8,
     /// depositor, recipient, and arbiter must all be distinct addresses.
     InvalidParties = 9,
+    /// The arbiter rotation time-lock has not yet expired.
+    RotationLocked = 10,
+    /// No pending arbiter rotation proposal.
+    NoPendingRotation = 11,
 }
 
 // ─── Contract ─────────────────────────────────────────────────────────────────
 
 #[contract]
 pub struct EscrowContract;
+
+// ─── Contract invariants (formal verification) ───────────────────────────────
+//@ invariant stored_amount >= 0
+//@ invariant stored_amount == 0 ==> stored_released == true
+//@ invariant stored_released ==> contract_token_balance == 0
+//@ invariant !stored_released ==> contract_token_balance == stored_amount
 
 #[contractimpl]
 impl EscrowContract {
@@ -88,7 +130,11 @@ impl EscrowContract {
     /// * `depositor` - Party locking the funds.
     /// * `recipient` - Party who receives funds on release.
     /// * `arbiter`   - Trusted party who authorises release.
-    /// * `token`     - SAC token contract address.
+    /// * `token`     - SAC token contract address. **Only Stellar Asset Contract (SAC) tokens
+    ///                 conforming to the Stellar token interface are supported.** Non-SAC tokens
+    ///                 with incompatible interfaces will cause a panic. Verify the token address
+    ///                 is a SAC before calling initialize() by checking the token's contract code
+    ///                 or attempting to read its decimals().
     /// * `amount`    - Token amount (stroop-equivalent units).
     /// * `expiry`    - Unix timestamp after which depositor may refund.
     ///
@@ -100,6 +146,20 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None.
+    //@ requires !has(Depositor)
+    //@ requires depositor != arbiter && depositor != recipient && arbiter != recipient
+    //@ requires amount > 0 && amount <= i128::MAX / 2
+    //@ requires expiry > ledger_timestamp
+    //@ ensures has(Depositor) && has(Recipient) && has(Arbiter) && has(Token) && has(Amount) && has(Expiry) && has(Released)
+    //@ ensures stored_depositor == depositor
+    //@ ensures stored_recipient == recipient
+    //@ ensures stored_arbiter == arbiter
+    //@ ensures stored_token == token
+    //@ ensures stored_amount == amount
+    //@ ensures stored_expiry == expiry
+    //@ ensures stored_released == false
+    //@ ensures depositor_token_balance == old(depositor_token_balance) - amount
+    //@ ensures contract_token_balance == old(contract_token_balance) + amount
     pub fn initialize(
         env: Env,
         depositor: Address,
@@ -148,6 +208,7 @@ impl EscrowContract {
         );
 
         // Persist state
+        let now = env.ledger().timestamp();
         env.storage()
             .instance()
             .set(&DataKey::Depositor, &depositor);
@@ -159,6 +220,7 @@ impl EscrowContract {
         env.storage().instance().set(&DataKey::Amount, &amount);
         env.storage().instance().set(&DataKey::Expiry, &expiry);
         env.storage().instance().set(&DataKey::Released, &false);
+        env.storage().instance().set(&DataKey::InitializedAt, &now);
 
         env.events().publish(
             (
@@ -181,6 +243,13 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None.
+    //@ requires has(Depositor)
+    //@ requires arbiter == stored_arbiter
+    //@ requires !stored_released
+    //@ ensures stored_released == true
+    //@ ensures stored_amount == old(stored_amount)
+    //@ ensures recipient_token_balance == old(recipient_token_balance) + old(stored_amount)
+    //@ ensures contract_token_balance == old(contract_token_balance) - old(stored_amount)
     pub fn release(env: Env, arbiter: Address) {
         // Read stored arbiter first, then authenticate against it (fixes TOCTOU).
         let stored_arbiter: Address = env
@@ -223,10 +292,7 @@ impl EscrowContract {
         );
 
         env.events().publish(
-            (
-                Symbol::new(&env, "escrow"),
-                Symbol::new(&env, "released"),
-            ),
+            (Symbol::new(&env, "escrow"), Symbol::new(&env, "released")),
             (recipient, amount),
         );
     }
@@ -244,6 +310,13 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None.
+    //@ requires has(Depositor)
+    //@ requires depositor == stored_depositor
+    //@ requires !stored_released
+    //@ requires ledger_timestamp >= stored_expiry
+    //@ ensures stored_released == true
+    //@ ensures depositor_token_balance == old(depositor_token_balance) + old(stored_amount)
+    //@ ensures contract_token_balance == old(contract_token_balance) - old(stored_amount)
     pub fn refund(env: Env, depositor: Address) {
         // Read stored depositor first, then authenticate against it (fixes TOCTOU).
         let stored_depositor: Address = env
@@ -303,6 +376,8 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// Returns `EscrowState` with all stored fields.
+    //@ requires has(Depositor)
+    //@ ensures result == EscrowState { depositor: stored_depositor, recipient: stored_recipient, arbiter: stored_arbiter, token: stored_token, amount: stored_amount, expiry: stored_expiry, released: stored_released }
     pub fn get_state(env: Env) -> EscrowState {
         if !env.storage().instance().has(&DataKey::Depositor) {
             panic_with_error!(&env, EscrowError::NotInitialized);
@@ -343,6 +418,11 @@ impl EscrowContract {
                 .instance()
                 .get(&DataKey::Released)
                 .unwrap_or(false),
+            initialized_at: env
+                .storage()
+                .instance()
+                .get(&DataKey::InitializedAt)
+                .expect("escrow: state corrupted"),
         }
     }
 
@@ -364,6 +444,14 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None. Emits a `"partial_released"` event (or `"released"` on final settlement).
+    //@ requires has(Depositor)
+    //@ requires arbiter == stored_arbiter
+    //@ requires !stored_released
+    //@ requires release_amount > 0 && release_amount <= stored_amount
+    //@ ensures stored_amount == old(stored_amount) - release_amount
+    //@ ensures stored_released == (stored_amount == 0)
+    //@ ensures recipient_token_balance == old(recipient_token_balance) + release_amount
+    //@ ensures contract_token_balance == old(contract_token_balance) - release_amount
     pub fn release_partial(env: Env, arbiter: Address, release_amount: i128) {
         // Read stored arbiter and authenticate (consistent TOCTOU fix from release())
         let stored_arbiter: Address = env
@@ -403,9 +491,7 @@ impl EscrowContract {
         let remaining = stored_amount - release_amount;
 
         // Update stored amount to reflect partial release
-        env.storage()
-            .instance()
-            .set(&DataKey::Amount, &remaining);
+        env.storage().instance().set(&DataKey::Amount, &remaining);
 
         // Transfer the partial amount to the recipient
         TokenClient::new(&env, &token).transfer(
@@ -417,8 +503,10 @@ impl EscrowContract {
         if remaining == 0 {
             // All funds distributed — seal the escrow
             env.storage().instance().set(&DataKey::Released, &true);
-            env.events()
-                .publish((Symbol::new(&env, "released"),), (recipient.clone(), release_amount));
+            env.events().publish(
+                (Symbol::new(&env, "released"),),
+                (recipient.clone(), release_amount),
+            );
         } else {
             env.events().publish(
                 (Symbol::new(&env, "partial_released"),),
@@ -441,6 +529,13 @@ impl EscrowContract {
     ///
     /// # Return Value
     /// None.
+    //@ requires has(Depositor)
+    //@ requires depositor == stored_depositor
+    //@ requires arbiter == stored_arbiter
+    //@ requires !stored_released
+    //@ ensures stored_released == true
+    //@ ensures depositor_token_balance == old(depositor_token_balance) + old(stored_amount)
+    //@ ensures contract_token_balance == old(contract_token_balance) - old(stored_amount)
     pub fn cancel(env: Env, depositor: Address, arbiter: Address) {
         let stored_depositor: Address = env
             .storage()
@@ -486,11 +581,110 @@ impl EscrowContract {
         );
 
         env.events().publish(
-            (
-                Symbol::new(&env, "escrow"),
-                Symbol::new(&env, "cancelled"),
-            ),
+            (Symbol::new(&env, "escrow"), Symbol::new(&env, "cancelled")),
             (stored_depositor, amount),
+        );
+    }
+
+    /// Propose a new arbiter. Only callable by the stored depositor.
+    ///
+    /// Initiates a time-locked arbiter rotation to prevent instant hostile takeover.
+    /// The proposal is locked for at least `MIN_ROTATION_DELAY` (24 hours) seconds;
+    /// only after that floor elapses can `accept_arbiter_rotation` finalize the change.
+    /// This minimum is enforced by the contract, not chosen by the caller, so no
+    /// proposal can solicit a near-instant rotation.
+    ///
+    /// # Arguments
+    /// * `env`        - The execution environment.
+    /// * `depositor`  - Must match the depositor recorded at initialisation.
+    /// * `new_arbiter` - The proposed new arbiter address.
+    ///
+    /// # Panics
+    /// * `NotDepositor` - If the caller is not the stored depositor.
+    /// * `NotInitialized` - If the escrow has not been initialized.
+    ///
+    /// # Return Value
+    /// None.
+    pub fn propose_new_arbiter(env: Env, depositor: Address, new_arbiter: Address) {
+        let stored_depositor: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Depositor)
+            .expect("escrow: state corrupted");
+        stored_depositor.require_auth();
+        if depositor != stored_depositor {
+            panic_with_error!(&env, EscrowError::NotDepositor);
+        }
+
+        let now = env.ledger().timestamp();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingArbiter, &new_arbiter);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingArbiterTime, &now);
+
+        env.events().publish(
+            (Symbol::new(&env, "arbiter_rotation_proposed"),),
+            (depositor, new_arbiter, now),
+        );
+    }
+
+    /// Accept the pending arbiter rotation after the minimum time-lock.
+    ///
+    /// Finalizes the arbiter change if at least `MIN_ROTATION_DELAY` (24 hours)
+    /// have passed since `propose_new_arbiter` was called. Can be called by anyone
+    /// once the time-lock has expired.
+    ///
+    /// # Arguments
+    /// * `env` - The execution environment.
+    ///
+    /// # Panics
+    /// * `NoPendingRotation` - If no arbiter rotation has been proposed.
+    /// * `RotationLocked` - If the 24-hour time-lock has not yet elapsed.
+    ///
+    /// # Return Value
+    /// None.
+    pub fn accept_arbiter_rotation(env: Env) {
+        if !env.storage().instance().has(&DataKey::PendingArbiter) {
+            panic_with_error!(&env, EscrowError::NoPendingRotation);
+        }
+
+        let pending_time: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingArbiterTime)
+            .expect("escrow: state corrupted");
+        let now = env.ledger().timestamp();
+
+        // The minimum rotation delay is a fixed constant, so no caller-controlled
+        // duration can ever shorten it. Use checked addition so an overflow cannot
+        // wrap around and accidentally unlock the rotation early.
+        let lock_expires = pending_time
+            .checked_add(MIN_ROTATION_DELAY)
+            .expect("escrow: rotation deadline overflow");
+
+        if now < lock_expires {
+            panic_with_error!(&env, EscrowError::RotationLocked);
+        }
+
+        let new_arbiter: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingArbiter)
+            .expect("escrow: state corrupted");
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Arbiter, &new_arbiter);
+        env.storage().instance().remove(&DataKey::PendingArbiter);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingArbiterTime);
+
+        env.events().publish(
+            (Symbol::new(&env, "arbiter_rotation_accepted"),),
+            (new_arbiter, now),
         );
     }
 

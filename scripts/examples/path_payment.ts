@@ -14,27 +14,27 @@
  *   AGENT_SECRET_KEY, HORIZON_URL, SOROBAN_RPC_URL, X402_ASSET_ISSUER
  */
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { PayFiAgent } from "../../backend/agent";
+import { PayFiAgent } from '../../backend/agent';
 
 const agent = new PayFiAgent();
 
 const result = await agent.run({
-  type: "path_payment",
+  type: 'path_payment',
   payload: {
-    destination: "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5",
+    destination: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
     sendAsset: {
-      code: "XLM",
+      code: 'XLM',
     },
-    sendAmount: "1.0000000",
+    sendAmount: '1.0000000',
     destAsset: {
-      code: "USDC",
-      issuer: "GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTQSXUSMIQSTBE2EURIDVXL6B",
+      code: 'USDC',
+      issuer: 'GBUQWP3BOUZX34ULNQG23RQ6F4YUSXHTQSXUSMIQSTBE2EURIDVXL6B',
     },
-    destMinAmount: "0.0000001",
-    memo: "cross-asset payment example",
+    destMinAmount: '0.0000001',
+    memo: 'cross-asset payment example',
   },
 });
 

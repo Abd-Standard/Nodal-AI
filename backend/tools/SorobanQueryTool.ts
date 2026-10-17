@@ -6,50 +6,72 @@
  * This is the safe default for AI-agent read operations.
  */
 
-import { SorobanInvokeTool, SorobanInvokeInputSchema } from "./SorobanInvokeTool";
-import { z } from "zod";
-import { config } from "../config";
-import { logger } from "../logger";
+import {
+  Keypair,
+  TransactionBuilder,
+  Contract,
+  BASE_FEE,
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase } from '../rpc_client';
+import { createLogger } from '../utils/logger';
+import { SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 
-// ─── Input schema ─────────────────────────────────────────────────────────────
+const log = createLogger('soroban-query');
 
 /**
- * Reuses SorobanInvokeInputSchema but omits simulateOnly since it's always true.
+ * Reuses the Soroban invoke input schema but omits `simulateOnly` because this
+ * tool is always read-only.
  */
 export const SorobanQueryInputSchema = SorobanInvokeInputSchema.omit({ simulateOnly: true });
 
 export type SorobanQueryInput = z.infer<typeof SorobanQueryInputSchema>;
 
-// ─── Output shape ─────────────────────────────────────────────────────────────
-
 export interface SorobanQueryResult {
   simulationResult: unknown;
 }
 
-// ─── Tool implementation ──────────────────────────────────────────────────────
-
 export class SorobanQueryTool {
-  private invokeTool: SorobanInvokeTool;
+  private keypair: Keypair;
+  private networkPassphrase: string;
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.invokeTool = new SorobanInvokeTool(secretKey);
+    this.keypair = Keypair.fromSecret(secretKey);
+    this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   /**
-   * Query a Soroban contract read-only.
-   * Runs simulation via prepareSorobanTx. Never broadcasts.
-   * @returns { simulationResult: unknown }
+   * Simulate a Soroban contract call without broadcasting a transaction.
    */
   async query(rawInput: unknown): Promise<SorobanQueryResult> {
     const input = SorobanQueryInputSchema.parse(rawInput);
-    logger.info("Querying Soroban contract (read-only)", {
-      method: input.method,
-      contractId: input.contractId,
-    });
-    const result = await this.invokeTool.execute({ ...input, simulateOnly: true });
-    if ("simulationResult" in result) {
-      return { simulationResult: result.simulationResult };
-    }
-    throw new Error("SorobanQueryTool expected simulation result but got txHash");
+
+    // Validate contractId format - reject invalid IDs early with a clear error
+    const contract = new Contract(input.contractId);
+
+    const sourceAccount = await loadAccount(this.keypair.publicKey());
+
+    log.info(
+      { method: input.method, contractId: input.contractId },
+      'Building Soroban query transaction'
+    );
+
+    const tx = new TransactionBuilder(sourceAccount, {
+      fee: BASE_FEE,
+      networkPassphrase: this.networkPassphrase,
+    })
+      .addOperation(contract.call(input.method, ...input.args))
+      .setTimeout(SOROBAN_TX_TIMEOUT)
+      .build();
+
+    const simulationResult = await prepareSorobanTx(tx);
+
+    log.info(
+      { method: input.method, contractId: input.contractId },
+      'Soroban query simulation complete'
+    );
+
+    return { simulationResult };
   }
 }

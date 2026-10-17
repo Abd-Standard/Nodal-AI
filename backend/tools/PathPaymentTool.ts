@@ -11,16 +11,23 @@ import {
   Operation,
   Asset,
   BASE_FEE,
-  Memo,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { logger } from "../logger";
-import { loadAccount, resolveNetworkPassphrase, submitTransaction } from "../rpc_client";
-import { createLogger } from "../utils/logger";
-import { SubmitResultSchema } from "./StellarPaymentTool";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { logger } from '../logger';
+import {
+  horizonServer,
+  loadAccount,
+  resolveNetworkPassphrase,
+  submitTransaction,
+} from '../rpc_client';
+import { ValidationError } from '../errors';
+import { createLogger } from '../utils/logger';
+import { SubmitResultSchema, buildMemo } from './StellarPaymentTool';
+import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
-const log = createLogger("path-payment");
+const log = createLogger('path-payment');
 
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
@@ -30,22 +37,21 @@ const AssetSchema = z.object({
 });
 
 export const PathPaymentInputSchema = z.object({
-  destination: z.string().length(56, "Invalid Stellar public key"),
+  destination: stellarPublicKeySchema('destination'),
   sendAsset: AssetSchema,
   sendAmount: z
     .string()
-    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "sendAmount must be a valid Stellar decimal")
-    .refine((v) => parseFloat(v) > 0, "sendAmount must be greater than zero"),
+    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, 'sendAmount must be a valid Stellar decimal')
+    .refine((v) => parseFloat(v) > 0, 'sendAmount must be greater than zero'),
   destAsset: AssetSchema,
   destMinAmount: z
     .string()
-    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, "destMinAmount must be a valid Stellar decimal")
-    .refine((v) => parseFloat(v) > 0, "destMinAmount must be greater than zero"),
+    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, 'destMinAmount must be a valid Stellar decimal')
+    .refine((v) => parseFloat(v) > 0, 'destMinAmount must be greater than zero'),
   path: z.array(AssetSchema).optional().default([]),
-  memo: z
-    .string()
-    .refine((v) => Buffer.byteLength(v, "utf8") <= 28, "Memo must be at most 28 bytes")
-    .optional(),
+  allowSelfPayment: z.boolean().optional().default(false),
+  memoType: z.enum(['text', 'id', 'hash', 'return']).optional().default('text'),
+  memo: z.union([z.string(), z.number()]).optional(),
 });
 
 export type PathPaymentInput = z.infer<typeof PathPaymentInputSchema>;
@@ -53,7 +59,7 @@ export type PathPaymentInput = z.infer<typeof PathPaymentInputSchema>;
 // ─── Helper ───────────────────────────────────────────────────────────────────
 
 function toAsset(a: { code: string; issuer?: string | undefined }): Asset {
-  if (a.code === "XLM") return Asset.native();
+  if (a.code === 'XLM') return Asset.native();
   if (!a.issuer) {
     throw new Error(`Asset issuer is required for non-native asset ${a.code}`);
   }
@@ -78,13 +84,29 @@ export class PathPaymentTool {
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = PathPaymentInputSchema.parse(rawInput);
 
-    if (input.destination === this.keypair.publicKey()) {
+    if (!input.allowSelfPayment && input.destination === this.keypair.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 
     const sendAsset = toAsset(input.sendAsset);
     const destAsset = toAsset(input.destAsset);
-    const pathAssets = input.path.map(toAsset);
+    let pathAssets = input.path.map(toAsset);
+
+    if (pathAssets.length === 0 && typeof (horizonServer as any)?.strictSendPaths === 'function') {
+      const paths = await horizonServer
+        .strictSendPaths(sendAsset, input.sendAmount, [destAsset])
+        .call();
+      if (!paths || !paths.records || paths.records.length === 0) {
+        throw new ValidationError('No path found between assets');
+      }
+      const bestRecord = paths.records[0];
+      if (bestRecord && Array.isArray(bestRecord.path)) {
+        pathAssets = bestRecord.path.map((p: any) => {
+          if (p.asset_type === 'native' || p.code === 'XLM') return Asset.native();
+          return new Asset(p.asset_code || p.code, p.asset_issuer || p.issuer);
+        });
+      }
+    }
 
     let sourceAccount = await loadAccount(this.keypair.publicKey());
 
@@ -103,14 +125,17 @@ export class PathPaymentTool {
         })
       );
 
-      if (input.memo) {
-        builder.addMemo(Memo.text(input.memo));
+      if (input.memo !== undefined) {
+        const memo = buildMemo(input.memoType, input.memo);
+        if (memo) {
+          builder.addMemo(memo);
+        }
       }
 
-      return builder.setTimeout(30).build();
+      return builder.setTimeout(SOROBAN_TX_TIMEOUT).build();
     };
 
-    logger.info("Executing path payment", {
+    logger.info('Executing path payment', {
       source: this.keypair.publicKey(),
       destination: input.destination,
       sendAmount: input.sendAmount,
@@ -126,11 +151,13 @@ export class PathPaymentTool {
       const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
-      if (err instanceof Error && err.message.includes("tx_bad_seq")) {
-        logger.warn("tx_bad_seq detected, reloading account and retrying once", {
+      if (err instanceof Error && err.message.includes('tx_bad_seq')) {
+        logger.warn('tx_bad_seq detected, reloading account and retrying once', {
           source: this.keypair.publicKey(),
         });
-        sourceAccount = await loadAccount(this.keypair.publicKey());
+        // Bypass the account cache: the whole point of this retry is that the
+        // sequence we used was wrong, so a cached record must not be reused.
+        sourceAccount = await loadAccount(this.keypair.publicKey(), { forceRefresh: true });
         tx = buildTx();
         tx.sign(this.keypair);
         const result = SubmitResultSchema.parse(await submitTransaction(tx));

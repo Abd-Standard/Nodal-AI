@@ -1,14 +1,17 @@
-# Custom detector for Stellar S-keys (56-char base32 secrets starting with "S")
-custom_regexes:
-  StellarSecretKey:
-    reason: "Stellar S-keys are 56-char base32 secrets starting with S"
-    pattern:
-      - "S[A-Z2-7]{55}"
+# Custom detector for Stellar S-keys (56-char base32 secrets starting with "S").
+#
+# Schema note: trufflehog's --config expects the `detectors` list format
+# below (each entry: name, keywords, regex). The previous version of this
+# file used `custom_regexes` + a top-level `allowlist` key — neither is a
+# real field in trufflehog's config schema (protobuf-backed, unmarshaled
+# strictly), so `--config .trufflehog.yml` failed outright with
+# `unknown field "allowlist"` before a single file was scanned. There is no
+# config-level allowlist mechanism; known-fake keys in test fixtures are
+# instead kept out of scope via --exclude-paths (see
+# .trufflehog-exclude-paths.txt), which is what the CI workflow passes.
+detectors:
+  - name: StellarSecretKey
     keywords:
       - "S"
-
-# Allowlisted known test keys
-allowlist:
-  - description: "Test S-key used in unit tests (source: tests/soroban_invoke.test.ts, tests/agent.test.ts)"
     regex:
-      pattern: "SBPTNBEQQVQD5NIPZTCXHKM5ZVONK2ENLP5DTZJBGSUPOPWQSIFWZKX"
+      key: "S[A-Z2-7]{55}"

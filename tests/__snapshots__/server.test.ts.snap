@@ -1,0 +1,9 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`backend/server.ts — health check HTTP server > GET /health > health response matches expected shape 1`] = `
+{
+  "network": "testnet",
+  "publicKey": "GTEST1234567890123456789012345678901234567890123456",
+  "status": "ok",
+}
+`;

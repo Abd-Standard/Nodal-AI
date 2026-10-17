@@ -5,10 +5,10 @@
  * a close() method called during graceful shutdown.
  */
 
-import { createLogger } from "../utils/logger";
-import { probeDb } from "../persistence";
+import { createLogger } from '../utils/logger';
+import { probeDb, closeDb } from '../persistence';
 
-const log = createLogger("database");
+const log = createLogger('database');
 
 export class DatabaseManager {
   private static instance: DatabaseManager | null = null;
@@ -42,15 +42,16 @@ export class DatabaseManager {
       probeDb();
       return true;
     } catch (err) {
-      log.error({ msg: "Database health probe failed", err: String(err) });
+      log.error({ msg: 'Database health probe failed', err: String(err) });
       return false;
     }
   }
 
   /** Flush pending writes and release the connection. */
   async close(): Promise<void> {
+    closeDb();
     this._isOpen = false;
-    log.info({ msg: "Database connection closed" });
+    log.info({ msg: 'Database connection closed' });
   }
 }
 

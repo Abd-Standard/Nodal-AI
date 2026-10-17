@@ -14,6 +14,20 @@ module.exports = {
 
   overrides: [
     {
+      // Enforce structured logger usage across all backend source files.
+      // console.* calls are forbidden here; use createLogger() from
+      // backend/utils/logger.ts instead.
+      files: ["backend/**/*.ts"],
+      excludedFiles: [
+        // backend/logger.ts is the logger implementation itself — it must be
+        // allowed to call console.log/console.error as the output transport.
+        "backend/logger.ts",
+      ],
+      rules: {
+        "no-console": "error",
+      },
+    },
+    {
       files: [
         "backend/agent.ts",
         "backend/tools/**/*.ts",

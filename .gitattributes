@@ -1,0 +1,22 @@
+# Shell scripts must use LF line endings so they run correctly on all platforms.
+*.sh text eol=lf
+.husky/* text eol=lf
+# Force LF line endings for shell scripts and Husky git hooks regardless of
+# the checking-out platform or a contributor's core.autocrlf setting.
+#
+# Without this, a Windows checkout with the (very common) default
+# core.autocrlf=true silently converts these to CRLF on disk. The commit
+# itself stays clean (autocrlf normalizes back to LF on add/commit), but
+# every local hook run in between breaks: `sh` sources a CRLF script by
+# treating the trailing \r as part of the last unquoted token on the line,
+# so e.g. `.husky/pre-commit`'s `. "$(dirname "$0")/scan-secrets.sh"`
+# resolves to a path with a literal trailing \r baked in and fails with
+# "cannot open .husky/scan-secrets.sh: No such file" — the file is right
+# there, just not under that exact byte sequence.
+*.sh text eol=lf
+.husky/* text eol=lf
+
+# Everything else: let git decide text vs. binary, but normalize whatever
+# it calls text to LF in the repository (working-tree behavior still
+# follows each contributor's own core.autocrlf).
+* text=auto eol=lf
