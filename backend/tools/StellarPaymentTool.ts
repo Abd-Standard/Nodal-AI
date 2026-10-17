@@ -7,7 +7,6 @@
  */
 
 import {
-  Keypair,
   Horizon,
   TransactionBuilder,
   Operation,
@@ -17,6 +16,7 @@ import {
   } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
 import { logger } from '../logger';
 import { loadAccount, resolveNetworkPassphrase, submitTransaction } from '../rpc_client';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
@@ -150,21 +150,21 @@ export function buildMemo(memoType: string, memoValue: string | number | undefin
 // ─── Tool implementation ──────────────────────────────────────────────────────
 
 export class StellarPaymentTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
   /**
    * Create a new StellarPaymentTool instance.
    *
-   * @param secretKey - Stellar secret key (S...) for signing transactions
+   * @param signer - Signs transactions; defaults to the agent signer
    */
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
   get publicKey(): string {
-    return this.keypair.publicKey();
+    return this.signer.publicKey();
   }
 
   /**
@@ -189,7 +189,7 @@ export class StellarPaymentTool {
     const input = PaymentInputSchema.parse(rawInput);
 
     // Self-payment guard
-    if (input.destination === this.keypair.publicKey()) {
+    if (input.destination === this.signer.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 
@@ -201,7 +201,7 @@ export class StellarPaymentTool {
       input.assetCode === 'XLM' ? Asset.native() : new Asset(input.assetCode, input.assetIssuer);
 
     // 3. Load source account (latest sequence number)
-    let sourceAccount = await loadAccount(this.keypair.publicKey());
+    let sourceAccount = await loadAccount(this.signer.publicKey());
 
     // 4. Build transaction
     const buildTx = () => {
@@ -232,14 +232,14 @@ export class StellarPaymentTool {
     //    (Horizon doesn't expose simulation like Soroban, so we validate
     //     the transaction envelope locally before submission)
     logger.info('Validating payment envelope', {
-      source: this.keypair.publicKey(),
+      source: this.signer.publicKey(),
       destination: input.destination,
       amount: input.amount,
       assetCode: input.assetCode,
     });
 
     // 6. Sign
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
 
     // 7. Submit (with auto-retry on tx_bad_seq)
     try {
@@ -248,13 +248,13 @@ export class StellarPaymentTool {
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('tx_bad_seq')) {
         logger.warn('tx_bad_seq detected, reloading account and retrying once', {
-          source: this.keypair.publicKey(),
+          source: this.signer.publicKey(),
         });
         // Bypass the account cache: the whole point of this retry is that the
         // sequence we used was wrong, so a cached record must not be reused.
-        sourceAccount = await loadAccount(this.keypair.publicKey(), { forceRefresh: true });
+        sourceAccount = await loadAccount(this.signer.publicKey(), { forceRefresh: true });
         tx = buildTx();
-        tx.sign(this.keypair);
+        this.signer.signTransaction(tx);
         const result = SubmitResultSchema.parse(await submitTransaction(tx));
         return { txHash: result.hash, ledger: result.ledger };
       }

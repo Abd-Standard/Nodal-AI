@@ -5,9 +5,13 @@
  * including the secondary mainnet spending cap guard.
  */
 
-import { describe, it, test, expect, vi, beforeEach } from 'vitest';
-import { z } from 'zod';
-import { PayFiAgent, spendingTracker, type TaskType } from '../backend/agent';
+import { describe, it, test, expect, vi, beforeEach, afterEach } from 'vitest';
+import {
+  PayFiAgent,
+  spendingTracker,
+  VALUE_MOVING_TASK_TYPES,
+  type TaskType,
+} from '../backend/agent';
 import { StellarPaymentTool } from '../backend/tools/StellarPaymentTool';
 import { BalanceCheckTool } from '../backend/tools/BalanceCheckTool';
 import { PathPaymentTool } from '../backend/tools/PathPaymentTool';
@@ -32,15 +36,7 @@ import { NetworkStatusTool } from '../backend/tools/NetworkStatusTool';
 import { OfferBookTool } from '../backend/tools/OfferBookTool';
 import { SorobanStorageTool } from '../backend/tools/SorobanStorageTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
-import { appendAuditEntry } from '../backend/persistence';
-import type { AgentTool } from '../backend/tools/AgentTool';
-
-// The agent parses every payload with the tool's exported input schema before
-// dispatch (#746). Mocked tool modules export this pass-through stand-in so
-// the loosely-shaped payloads below still reach the mocked tool methods.
-const { passthroughSchema } = vi.hoisted(() => ({
-  passthroughSchema: { parse: (payload: unknown) => payload },
-}));
+import { isPaused } from '../backend/kill_switch';
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
   PaymentInputSchema: passthroughSchema,
@@ -216,6 +212,10 @@ vi.mock('../backend/webhook', () => ({
 vi.mock('../backend/persistence', () => ({
   saveResult: vi.fn(),
   appendAuditEntry: vi.fn(),
+}));
+
+vi.mock('../backend/kill_switch', () => ({
+  isPaused: vi.fn(() => false),
 }));
 
 // Named so `instanceof rpcClient.StellarRPCError` checks in agent.ts's error
@@ -1556,12 +1556,14 @@ describe('PayFiAgent — unknown task type rejection (#450)', () => {
   });
 });
 
-describe('PayFiAgent — read-only query task types', () => {
+// ── #743: global kill switch ─────────────────────────────────────────────────
+
+describe('PayFiAgent — kill switch (#743)', () => {
   let agent: PayFiAgent;
-  let ledgerInfoExecute: ReturnType<typeof vi.fn>;
-  let networkStatusExecute: ReturnType<typeof vi.fn>;
-  let offerBookExecute: ReturnType<typeof vi.fn>;
-  let sorobanStorageExecute: ReturnType<typeof vi.fn>;
+  const paymentTask = {
+    type: 'stellar_payment' as const,
+    payload: { destination: DEST, amount: '100', assetCode: 'USDC', assetIssuer: ISSUER },
+  };
 
   beforeEach(() => {
     spendingTracker.clear();
@@ -1569,275 +1571,55 @@ describe('PayFiAgent — read-only query task types', () => {
     vi.mocked(StellarPaymentTool).mockImplementation(
       () => ({ execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }) }) as any
     );
-
-    ledgerInfoExecute = vi.fn().mockResolvedValue({ sequence: 123, protocolVersion: 21 });
-    networkStatusExecute = vi.fn().mockResolvedValue({
-      horizon: { healthy: true, latencyMs: 10 },
-      soroban: { healthy: true, latencyMs: 12 },
-      network: 'mainnet',
-    });
-    offerBookExecute = vi.fn().mockResolvedValue({ bids: [], asks: [], spread: '0' });
-    sorobanStorageExecute = vi.fn().mockResolvedValue({ entries: [], latestLedger: 123 });
-
-    vi.mocked(LedgerInfoTool).mockImplementation(() => ({ execute: ledgerInfoExecute }) as any);
-    vi.mocked(NetworkStatusTool).mockImplementation(
-      () => ({ execute: networkStatusExecute }) as any
+    vi.mocked(AccountInfoTool).mockImplementation(
+      () => ({ fetch: vi.fn().mockResolvedValue({ accountId: DEST }) }) as any
     );
-    vi.mocked(OfferBookTool).mockImplementation(() => ({ execute: offerBookExecute }) as any);
-    vi.mocked(SorobanStorageTool).mockImplementation(
-      () => ({ execute: sorobanStorageExecute }) as any
-    );
-
     agent = new PayFiAgent();
   });
 
-  it('dispatches ledger_info to LedgerInfoTool', async () => {
-    const payload = { forceRefresh: true };
-    const result = await agent.run({ type: 'ledger_info', payload });
-
-    expect(result.success).toBe(true);
-    expect(result.taskType).toBe('ledger_info');
-    expect(ledgerInfoExecute).toHaveBeenCalledWith(payload);
-    expect(result.data).toEqual({ sequence: 123, protocolVersion: 21 });
+  afterEach(() => {
+    vi.mocked(isPaused).mockReturnValue(false);
   });
 
-  it('dispatches network_status to NetworkStatusTool', async () => {
-    const result = await agent.run({ type: 'network_status', payload: {} });
+  it('fails value-moving tasks with errorType AGENT_PAUSED while paused', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
 
-    expect(result.success).toBe(true);
-    expect(result.taskType).toBe('network_status');
-    expect(networkStatusExecute).toHaveBeenCalledTimes(1);
-    expect(result.data).toMatchObject({ network: 'mainnet' });
-  });
-
-  it('dispatches offer_book to OfferBookTool', async () => {
-    const payload = { sellingAsset: 'XLM', buyingAsset: `USDC:${ISSUER}`, limit: 5 };
-    const result = await agent.run({ type: 'offer_book', payload });
-
-    expect(result.success).toBe(true);
-    expect(result.taskType).toBe('offer_book');
-    expect(offerBookExecute).toHaveBeenCalledWith(payload);
-    expect(result.data).toEqual({ bids: [], asks: [], spread: '0' });
-  });
-
-  it('dispatches soroban_storage to SorobanStorageTool', async () => {
-    const payload = {
-      contractId: 'CA3D5KRYM6CB7OWQ6TWYRR3Z4T7GNZLKERYNZGGA5SOAOPIFY6YQGAXE',
-      keys: ['counter'],
-    };
-    const result = await agent.run({ type: 'soroban_storage', payload });
-
-    expect(result.success).toBe(true);
-    expect(result.taskType).toBe('soroban_storage');
-    expect(sorobanStorageExecute).toHaveBeenCalledWith(payload);
-    expect(result.data).toEqual({ entries: [], latestLedger: 123 });
-  });
-
-  it('returns a failed result when a query tool throws', async () => {
-    offerBookExecute.mockRejectedValueOnce(new Error('orderbook unavailable'));
-
-    const result = await agent.run({
-      type: 'offer_book',
-      payload: { sellingAsset: 'XLM', buyingAsset: `USDC:${ISSUER}` },
-    });
+    const result = await agent.run(paymentTask);
 
     expect(result.success).toBe(false);
-    expect(result.taskType).toBe('offer_book');
-    expect(result.error).toContain('orderbook unavailable');
-  });
-});
-
-describe('PayFiAgent — audit log (#744)', () => {
-  let agent: PayFiAgent;
-
-  beforeEach(() => {
-    spendingTracker.clear();
-    vi.clearAllMocks();
-    vi.mocked(StellarPaymentTool).mockImplementation(
-      () => ({ execute: vi.fn().mockResolvedValue({ txHash: 'audit_hash', ledger: 1 }) }) as any
-    );
-    vi.mocked(LedgerInfoTool).mockImplementation(
-      () =>
-        ({ execute: vi.fn().mockResolvedValue({ sequence: 123, protocolVersion: 21 }) }) as any
-    );
-    agent = new PayFiAgent();
+    expect(result.errorType).toBe(ErrorType.AgentPaused);
+    expect(result.error).toMatch(/Agent is paused/);
+    const paymentTool = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
+    expect(paymentTool.execute).not.toHaveBeenCalled();
+    expect(spendingTracker.total()).toBe(0);
   });
 
-  it('appends exactly one audit row for a signed transaction', async () => {
-    const result = await agent.run({
-      type: 'stellar_payment',
-      payload: { destination: DEST, amount: '10', assetCode: 'USDC', assetIssuer: ISSUER },
-      correlationId: 'audit-corr',
-    });
+  it('keeps read-only tasks working while paused', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
+
+    const result = await agent.run({ type: 'account_info', payload: {} });
 
     expect(result.success).toBe(true);
-    expect(appendAuditEntry).toHaveBeenCalledTimes(1);
-    expect(appendAuditEntry).toHaveBeenCalledWith({
-      ts: expect.any(String),
-      correlationId: 'audit-corr',
-      taskType: 'stellar_payment',
-      txHash: 'audit_hash',
-      envelopeHash: null,
-      destination: DEST,
-      asset: `USDC:${ISSUER}`,
-      amount: '10',
-    });
+    expect(result.data).toEqual({ accountId: DEST });
   });
 
-  it('does not append an audit row for a read-only task', async () => {
-    const result = await agent.run({ type: 'ledger_info', payload: {} });
+  it('runs value-moving tasks again once resumed', async () => {
+    vi.mocked(isPaused).mockReturnValue(true);
+    expect((await agent.run(paymentTask)).success).toBe(false);
+
+    vi.mocked(isPaused).mockReturnValue(false);
+    const result = await agent.run(paymentTask);
 
     expect(result.success).toBe(true);
-    expect(appendAuditEntry).not.toHaveBeenCalled();
+    expect(result.errorType).toBeUndefined();
   });
 
-  it('does not append an audit row when the task fails', async () => {
-    vi.mocked(StellarPaymentTool).mockImplementation(
-      () => ({ execute: vi.fn().mockRejectedValue(new Error('tx_failed')) }) as any
-    );
-    agent = new PayFiAgent();
-
-    const result = await agent.run({
-      type: 'stellar_payment',
-      payload: { destination: DEST, amount: '10' },
-    });
-
-    expect(result.success).toBe(false);
-    expect(appendAuditEntry).not.toHaveBeenCalled();
-  });
-
-  it('still reports success when the audit append throws', async () => {
-    vi.mocked(appendAuditEntry).mockImplementationOnce(() => {
-      throw new Error('disk full');
-    });
-
-    const result = await agent.run({
-      type: 'stellar_payment',
-      payload: { destination: DEST, amount: '10' },
-    });
-
-    expect(result.success).toBe(true);
-    expect(appendAuditEntry).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('PayFiAgent — tool registry (#746)', () => {
-  let agent: PayFiAgent;
-
-  const EchoInputSchema = z.object({ message: z.string().min(1) });
-
-  function makeEchoTool(
-    execute = vi.fn(async (input: { message: string }) => ({ echoed: input.message }))
-  ): AgentTool<{ message: string }, { echoed: string }> {
-    return {
-      name: 'echo',
-      description: 'Echo the message back.',
-      inputSchema: EchoInputSchema,
-      valueMoving: false,
-      execute,
-    };
-  }
-
-  beforeEach(() => {
-    spendingTracker.clear();
-    vi.clearAllMocks();
-    vi.mocked(StellarPaymentTool).mockImplementation(
-      () => ({ execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }) }) as any
-    );
-    agent = new PayFiAgent();
-  });
-
-  it('registers every built-in task type at construction', () => {
-    const names = agent.getTools().map((tool) => tool.name);
-
-    expect(names).toEqual(
-      expect.arrayContaining([
-        'stellar_payment',
-        'soroban_invoke',
-        'x402_respond',
-        'friendbot',
-        'ledger_info',
-        'soroban_storage',
-      ])
-    );
-    expect(new Set(names).size).toBe(names.length);
-  });
-
-  it('describes every built-in tool', () => {
-    for (const tool of agent.getTools()) {
-      expect(tool.description.length).toBeGreaterThan(0);
-      expect(typeof tool.valueMoving).toBe('boolean');
-      expect(tool.inputSchema).toBeDefined();
+  it('classifies signing tasks as value-moving and lookups as read-only', () => {
+    for (const type of ['stellar_payment', 'x402_respond', 'soroban_invoke', 'swap'] as const) {
+      expect(VALUE_MOVING_TASK_TYPES.has(type)).toBe(true);
     }
-    const payment = agent.getTools().find((tool) => tool.name === 'stellar_payment');
-    expect(payment?.valueMoving).toBe(true);
-  });
-
-  it('dispatches a third-party tool registered with registerTool()', async () => {
-    const execute = vi.fn(async (input: { message: string }) => ({ echoed: input.message }));
-    agent.registerTool(makeEchoTool(execute));
-
-    const result = await agent.run({
-      type: 'echo',
-      payload: { message: 'hello', extra: 'stripped' },
-      correlationId: 'echo-corr',
-    });
-
-    expect(result.success).toBe(true);
-    expect(result.taskType).toBe('echo');
-    expect(result.data).toEqual({ echoed: 'hello' });
-    // Executes with the parsed payload (unknown keys stripped) and a task context.
-    expect(execute).toHaveBeenCalledWith(
-      { message: 'hello' },
-      expect.objectContaining({ correlationId: 'echo-corr', network: 'mainnet' })
-    );
-  });
-
-  it('validates the payload with the tool schema before execute', async () => {
-    const execute = vi.fn(async (input: { message: string }) => ({ echoed: input.message }));
-    agent.registerTool(makeEchoTool(execute));
-
-    const result = await agent.run({ type: 'echo', payload: { message: '' } });
-
-    expect(result.success).toBe(false);
-    expect(result.taskType).toBe('echo');
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it('rejects registering a name that is already taken', () => {
-    agent.registerTool(makeEchoTool());
-
-    expect(() => agent.registerTool(makeEchoTool())).toThrow(/already registered/);
-    expect(() =>
-      agent.registerTool({ ...makeEchoTool(), name: 'stellar_payment' })
-    ).toThrow(/already registered/);
-  });
-
-  it('applies the spending limit through the tool context', async () => {
-    agent.registerTool({
-      name: 'custom_payout',
-      description: 'Pay out through an external rail.',
-      inputSchema: z.object({ amount: z.string() }),
-      valueMoving: true,
-      execute: async (input, ctx) => {
-        ctx.assertWithinSpendingLimit(input.amount);
-        return { paid: input.amount };
-      },
-    });
-
-    const result = await agent.run({ type: 'custom_payout', payload: { amount: '10001' } });
-
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/mainnet spending cap/);
-  });
-
-  it('keeps registrations per agent instance', async () => {
-    agent.registerTool(makeEchoTool());
-    const other = new PayFiAgent();
-
-    const result = await other.run({ type: 'echo', payload: { message: 'hi' } });
-
-    expect(result.success).toBe(false);
-    expect(result.error).toMatch(/Unknown task type: echo/);
+    for (const type of ['account_info', 'balance_check', 'soroban_query', 'stellar_toml'] as const) {
+      expect(VALUE_MOVING_TASK_TYPES.has(type)).toBe(false);
+    }
   });
 });

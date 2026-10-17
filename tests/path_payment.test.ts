@@ -7,6 +7,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
 import { PathPaymentTool } from '../backend/tools/PathPaymentTool';
+import { KeypairSigner } from '../backend/signer';
 import * as rpcClient from '../backend/rpc_client';
 import { ValidationError } from '../backend/errors';
 import { PayFiAgent } from '../backend/agent';
@@ -85,7 +86,7 @@ describe('PathPaymentTool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new PathPaymentTool(TEST_SECRET);
+    tool = new PathPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: 'path_tx_hash',

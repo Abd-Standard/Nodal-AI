@@ -6,6 +6,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { TransactionBuilder, Operation, Keypair } from '@stellar/stellar-sdk';
 import { SetOptionsTool } from '../backend/tools/SetOptionsTool';
+import { KeypairSigner } from '../backend/signer';
 import * as rpcClient from '../backend/rpc_client';
 
 vi.mock('../backend/rpc_client', () => ({
@@ -60,7 +61,7 @@ describe('SetOptionsTool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new SetOptionsTool(TEST_SECRET);
+    tool = new SetOptionsTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount() as any);
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: 'set_opts_hash',

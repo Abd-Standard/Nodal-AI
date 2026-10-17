@@ -24,6 +24,8 @@ export enum ErrorType {
   SimulationBudgetExceeded = 'SIMULATION_BUDGET_EXCEEDED',
   TransactionFailure = 'TRANSACTION_FAILURE',
   ConfigError = 'CONFIG_ERROR',
+  /** The operator kill switch is engaged; value-moving tasks are halted. */
+  AgentPaused = 'AGENT_PAUSED',
   UnknownError = 'UNKNOWN_ERROR',
 }
 
@@ -67,7 +69,7 @@ export class RateLimitError extends StructuredError {
 
   constructor(message: string, retryAfterSeconds?: number, cause?: unknown) {
     super(message, ErrorType.RateLimitError, cause);
-    this.retryAfterSeconds = retryAfterSeconds;
+    if (retryAfterSeconds !== undefined) this.retryAfterSeconds = retryAfterSeconds;
     Object.setPrototypeOf(this, RateLimitError.prototype);
   }
 }
@@ -85,7 +87,7 @@ export class ContractError extends StructuredError {
 
   constructor(message: string, contractId?: string, cause?: unknown) {
     super(message, ErrorType.ContractError, cause);
-    this.contractId = contractId;
+    if (contractId !== undefined) this.contractId = contractId;
     Object.setPrototypeOf(this, ContractError.prototype);
   }
 }
@@ -96,7 +98,7 @@ export class TransactionFailureError extends StructuredError {
 
   constructor(message: string, txHash?: string, cause?: unknown) {
     super(message, ErrorType.TransactionFailure, cause);
-    this.txHash = txHash;
+    if (txHash !== undefined) this.txHash = txHash;
     Object.setPrototypeOf(this, TransactionFailureError.prototype);
   }
 }
@@ -112,6 +114,13 @@ export class SimulationBudgetError extends StructuredError {
   constructor(message: string, cause?: unknown) {
     super(message, ErrorType.SimulationBudgetExceeded, cause);
     Object.setPrototypeOf(this, SimulationBudgetError.prototype);
+  }
+}
+
+export class AgentPausedError extends StructuredError {
+  constructor(message: string, cause?: unknown) {
+    super(message, ErrorType.AgentPaused, cause);
+    Object.setPrototypeOf(this, AgentPausedError.prototype);
   }
 }
 

@@ -149,15 +149,82 @@ To report a vulnerability privately, use [GitHub Security Advisories](https://gi
 
 ### Spending Limit Enforcement
 
-PayFiAgent enforces two layers of spending limits to prevent runaway payments:
+PayFiAgent enforces three layers of spending limits to prevent runaway payments:
 
-- **AGENT_SPENDING_LIMIT**: A configurable per-transaction ceiling (set via environment variable). Before every payment task (`stellar_payment` or `x402_respond`), the `assertWithinSpendingLimit()` function in `backend/agent.ts` checks the requested amount. If it exceeds `AGENT_SPENDING_LIMIT`, the task fails immediately with error: `"Payment amount X exceeds AGENT_SPENDING_LIMIT of Y"`.
-- **Mainnet Spending Cap**: A hardcoded safety ceiling of **10,000** on mainnet. Even if `AGENT_SPENDING_LIMIT` is misconfigured above this, mainnet transactions are blocked if they exceed 10,000, throwing: `"Payment amount X exceeds mainnet spending cap of 10,000"`.
+1. **Per-payment cap** (`AGENT_SPENDING_LIMIT`): A configurable per-task ceiling (set via environment variable). Before every value-moving task the orchestrator calls `reserveSpendingLimit()` in `backend/agent.ts`, which checks the requested amount against `AGENT_SPENDING_LIMIT`. If it exceeds the limit the task fails immediately — the tool is never invoked.
+2. **Mainnet hard cap**: A hardcoded safety ceiling of **10,000** on mainnet. Even if `AGENT_SPENDING_LIMIT` is misconfigured above this value, any single payment above 10,000 is blocked on mainnet.
+3. **Rolling-window cumulative cap**: All committed spends are tracked in a sliding time window (`SPENDING_WINDOW_MS`, default 24 h). If the sum of committed spends within the window would exceed `AGENT_SPENDING_LIMIT`, the reservation is rejected before the tool runs.
 
+#### Reserve / commit / release (issue #729)
+
+Spend is *reserved* before the transaction is submitted and only *committed* after successful network confirmation. If submission fails (network error, `op_underfunded`, `tx_bad_seq`, etc.) the reservation is *released* — the phantom spend never counts against the window. This replaces the old `record-before-submit` pattern where a failed payment would permanently consume quota.
+
+#### Per-task spending field (issue #728)
+
+| Task type | Field counted toward the limit |
+|-----------|-------------------------------|
+| `stellar_payment` | `amount` |
+| `x402_respond` | `amount` |
+| `path_payment` | `sendAmount` (the asset leaving the agent's account) |
+| `multisig_payment` | `amount` (only when enough signatures are present to submit; unsigned-XDR responses are free) |
+| `batch_payment` | Sum of all `payments[i].amount` values |
+| `dex_offer` | `amount` (sell amount; `delete` actions pass `"0"` internally and are free) |
+| `fee_bump` | Not tracked (cost is denominated in stroops, not the payment asset) |
+| `soroban_invoke` / `soroban_query` | Not tracked (no asset transfer) |
+| `account_info` / `balance_check` / `change_trust` | Not tracked (read-only or trustline ops) |
 These limits apply to:
 - Direct `stellar_payment` tasks via `StellarPaymentTool`
 - `x402_respond` tasks that trigger automatic payment via `X402PaymentTool`
 - `soroban_invoke` tasks whose contract calls internally move funds. A contract invocation can trigger Stellar Asset Contract (SAC) transfers (`transfer`, `transfer_from`, `burn`) that are invisible in the request payload, so `SorobanInvokeTool` derives the amount from the mandatory Soroban simulation: it sums the simulated SAC events that debit the agent, rejects the invocation when the total exceeds the limit (error: `"Contract invocation transfers X ... exceeds AGENT_SPENDING_LIMIT of Y"`), and records within-limit spends into the same rolling spending window as payments. Dry-runs (`simulateOnly: true`) are checked but never recorded, since no funds move.
+
+### Webhook Signatures
+
+When `WEBHOOK_URL` and `WEBHOOK_SECRET` are set, every webhook POST carries:
+
+| Header | Value |
+| --- | --- |
+| `X-Nodal-Timestamp` | Unix time (seconds) at which the delivery was signed. |
+| `X-Nodal-Signature` | Hex HMAC-SHA256 of `${timestamp}.${rawBody}` keyed with `WEBHOOK_SECRET`. |
+| `X-Nodal-Delivery-Id` | UUID unique to the delivery and identical across its retries — use it to dedupe. |
+
+Receivers should verify the signature over the **raw** request body, reject timestamps outside a tolerance window (300 s by default), and drop delivery ids they have already processed:
+
+```typescript
+import { verifyWebhookSignature } from "./backend/webhook";
+
+app.post("/nodal-webhook", express.raw({ type: "application/json" }), (req, res) => {
+  const rawBody = req.body.toString("utf8");
+  const ok = verifyWebhookSignature(
+    rawBody,
+    req.header("X-Nodal-Signature") ?? "",
+    process.env.WEBHOOK_SECRET!,
+    { timestamp: req.header("X-Nodal-Timestamp"), toleranceSec: 300 }
+  );
+  if (!ok) return res.status(401).end();
+  if (seenDeliveryIds.has(req.header("X-Nodal-Delivery-Id"))) return res.status(200).end();
+  seenDeliveryIds.add(req.header("X-Nodal-Delivery-Id"));
+  // ... handle JSON.parse(rawBody)
+  res.status(200).end();
+});
+```
+
+Without the helper, compute `HMAC-SHA256(secret, timestamp + "." + rawBody)` and compare it to the header in constant time.
+
+**Backward compatibility (one release):** set `WEBHOOK_LEGACY_SIGNATURE=true` to keep signing the body only (`HMAC(rawBody)`, no timestamp) while receivers migrate. Legacy signatures are verified by calling `verifyWebhookSignature(rawBody, sig, secret)` without a `timestamp`; they offer no replay protection and the flag will be removed in the next release.
+
+### Kill Switch
+
+Operators can freeze fund movement during an incident without stopping the process — health checks and read-only tasks (`account_info`, `balance_check`, `soroban_query`, …) keep working.
+
+- `POST /admin/pause` and `POST /admin/resume` on the health server toggle it. Both require `Authorization: Bearer <WEBHOOK_SECRET>` and return `401` when `WEBHOOK_SECRET` is not configured.
+- `PAUSED=true` starts the agent paused.
+- The paused state is stored in the agent database (`DB_PATH`), so a paused agent stays paused across restarts until resumed.
+- While paused, every task that signs and submits a transaction (`VALUE_MOVING_TASK_TYPES` in `backend/agent.ts`) fails with `errorType: "AGENT_PAUSED"`.
+- Each pause/resume sends a webhook event: `{ "event": "agent.paused" | "agent.resumed", "paused": boolean, "reason"?: string, "timestamp": string }`.
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:3000/admin/pause
+```
 
 ### Mainnet Checklist
 
@@ -506,7 +573,7 @@ sequenceDiagram
     participant H as Horizon
 
     C->>PA: run({ type: "x402_respond", payload })
-    PA->>PA: assertWithinSpendingLimit(amount)
+    PA->>PA: reserveSpendingLimit(amount) → reservationId
     PA->>X: respond(challenge)
     X->>X: X402ChallengeSchema.parse(challenge)
     Note over X: reject if amount > AGENT_SPENDING_LIMIT<br/>reject if expiresAt has passed
@@ -515,6 +582,7 @@ sequenceDiagram
     H-->>ST: txHash, ledger
     ST-->>X: { txHash, ledger }
     X-->>PA: X402PaymentProof
+    PA->>PA: spendingTracker.commit(reservationId)
     PA-->>C: AgentResult
 ```
 
@@ -522,7 +590,7 @@ In practice, the `payload` handed to `run()` is the parsed body of a `402 Paymen
 
 ### Spending limit guard
 
-Before `PayFiAgent.run()` delegates to `X402PaymentTool`, it calls `assertWithinSpendingLimit()` on the payload's `amount` field. If the requested amount exceeds `config.AGENT_SPENDING_LIMIT`, the task throws immediately and `X402PaymentTool.respond()` is never invoked — the agent will not even attempt to validate or pay a challenge above its configured budget.
+Before `PayFiAgent.run()` delegates to `X402PaymentTool`, it calls `reserveSpendingLimit()` on the payload's `amount` field. This reserves the amount against the rolling-window cumulative limit. If the amount exceeds `config.AGENT_SPENDING_LIMIT` (either individually or cumulatively), the task throws immediately and `X402PaymentTool.respond()` is never invoked. On successful submission the reservation is committed; on failure it is released so the amount is not counted against the window.
 
 ### `X402ChallengeSchema`
 
@@ -539,6 +607,14 @@ Once past the spending check, `X402PaymentTool.respond()` validates the challeng
 | `expiresAt`   | `string` (ISO datetime) | The deadline after which the challenge is no longer valid. Checked against `new Date()` before any payment is attempted. |
 
 If `rawChallenge` doesn't conform to this shape, `X402ChallengeSchema.parse()` throws and no payment is attempted.
+
+### Asset and price guards
+
+After parsing, `respond()` refuses challenges whose terms the operator has not approved:
+
+- **Spoofed issuer** — a challenge for a known asset code (`X402_ASSET_CODE`, plus any code listed in `X402_ALLOWED_ASSETS`) must use one of that code's configured issuers. A `USDC` challenge naming any other issuer fails with `x402: assetIssuer <G…> is not a trusted issuer for USDC`.
+- **Unexpected asset** — when `X402_ALLOWED_ASSETS` is set (comma-separated `XLM` or `CODE:ISSUER` entries), any other asset fails with `x402: asset <asset> is not in X402_ALLOWED_ASSETS`.
+- **Over-max price** — when `X402_MAX_PRICE` is set, a challenge `amount` above it fails with `x402: challenge amount <amount> exceeds X402_MAX_PRICE of <max>`.
 
 ### Nonce → memo derivation
 

@@ -14,6 +14,7 @@ import {
   Networks,
 } from '@stellar/stellar-sdk';
 import { FeeBumpTool } from '../backend/tools/FeeBumpTool';
+import { KeypairSigner } from '../backend/signer';
 import { ValidationError } from '../backend/errors';
 import * as rpcClient from '../backend/rpc_client';
 
@@ -92,7 +93,7 @@ describe('FeeBumpTool', () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new FeeBumpTool(AGENT_SECRET);
+    tool = new FeeBumpTool(new KeypairSigner(Keypair.fromSecret(AGENT_SECRET)));
     validInnerXdr = buildInnerTxXdr();
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: 'fee_bump_tx_hash',

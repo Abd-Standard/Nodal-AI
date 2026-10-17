@@ -560,11 +560,12 @@ export type MyNewInput = z.infer<typeof MyNewInputSchema>;
 
 ```typescript
 export class MyNewTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  // Tools receive a Signer (backend/signer.ts), never the secret key.
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
@@ -575,7 +576,7 @@ export class MyNewTool {
     // 2. Pre-flight guards (e.g. self-payment check)
 
     // 3. Load account
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
 
     // 4. Build transaction
     const tx = new TransactionBuilder(account, { fee: BASE_FEE, networkPassphrase: this.networkPassphrase })
@@ -587,7 +588,7 @@ export class MyNewTool {
     // const preparedTx = await prepareSorobanTx(tx);
 
     // 6. Sign
-    tx.sign(this.keypair);
+    this.signer.signTransaction(tx);
 
     // 7. Submit
     const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
@@ -618,7 +619,8 @@ export type BuiltinTaskType =
 In `backend/tools/builtin.ts`, instantiate the tool and add one entry to the array returned by `createBuiltinTools()`. No other file needs to change — the agent validates the payload with `inputSchema` and calls `execute` with the parsed input:
 
 ```typescript
-const myNewTool = new MyNewTool(config.agentKeypair().secret());
+// In the constructor:
+this.myNewTool = new MyNewTool(this.signer);
 
 return [
   // ...

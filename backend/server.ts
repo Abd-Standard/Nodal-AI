@@ -8,6 +8,9 @@
  *                  503 { status: "degraded", components: { ... } } when a dependency is down
  *   GET /status  → 200 { results: PersistedResult[] }   (paginated via ?limit=&offset=,
  *                  default last 10; Bearer auth when WEBHOOK_SECRET is set)
+ *   POST /admin/pause  → 200 { paused: true }   halt value-moving tasks (kill switch)
+ *   POST /admin/resume → 200 { paused: false }  resume them
+ *                  Both always require Bearer auth with WEBHOOK_SECRET; 401 when it is unset.
  *
  * Uses only the Node.js built-in `http` module — no additional dependencies.
  * Port is read from config.HEALTH_PORT (env var HEALTH_PORT, default 3000).
@@ -21,6 +24,7 @@ import { db } from './db/client';
 import { handleError } from './middleware/error_handler';
 import { createLogger } from './utils/logger';
 import { spendingTracker } from './agent';
+import { isPaused, pauseAgent, resumeAgent } from './kill_switch';
 
 const log = createLogger('health-server');
 
@@ -117,6 +121,16 @@ function isAuthenticated(req: http.IncomingMessage): boolean {
 const HEALTH_PATH = '/health';
 const STATUS_PATH = '/status';
 const SPENDING_PATH = '/spending';
+const ADMIN_PAUSE_PATH = '/admin/pause';
+const ADMIN_RESUME_PATH = '/admin/resume';
+
+/**
+ * Admin routes can freeze or unfreeze fund movement, so unlike the read-only
+ * routes they are never open: a WEBHOOK_SECRET must be configured and presented.
+ */
+function isAdminAuthenticated(req: http.IncomingMessage): boolean {
+  return !!process.env.WEBHOOK_SECRET && isAuthenticated(req);
+}
 
 /**
  * Creates and returns the health-check HTTP server.
@@ -166,6 +180,29 @@ export function createHealthServer(): http.Server {
         percentUsed: (total / limit) * 100,
       });
 
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(body);
+      return;
+    }
+
+    // ── POST /admin/pause, POST /admin/resume ──────────────────────────────
+    if (req.method === 'POST' && (req.url === ADMIN_PAUSE_PATH || req.url === ADMIN_RESUME_PATH)) {
+      if (!isAdminAuthenticated(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      if (req.url === ADMIN_PAUSE_PATH) {
+        pauseAgent('admin API');
+      } else {
+        resumeAgent('admin API');
+      }
+
+      const body = JSON.stringify({ paused: isPaused() });
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
