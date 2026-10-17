@@ -50,11 +50,13 @@ Examples:
 ## Pull Request Checklist
 
 Before submitting your PR, make sure:
-- ✅ All tests pass (`npm run test` and `cargo test --manifest-path contracts/escrow/Cargo.toml`)
-- ✅ TypeScript compiles cleanly (`tsc --noEmit`)
+- ✅ All tests pass (`npm run test:all` and `cargo test --manifest-path contracts/escrow/Cargo.toml`)
+- ✅ TypeScript compiles cleanly (`npm run build` and `tsc --noEmit`)
 - ✅ Linting passes (`npm run lint`)
+- ✅ No npm or Cargo vulnerabilities introduced (`npm run audit`)
 - ✅ No secrets or private keys are in the diff
 - ✅ You've referenced the issue number in your PR description
+- ✅ Your branch is up to date with `main` (required by branch protection)
 
 ---
 
@@ -104,15 +106,19 @@ The most common contribution to this repo is adding a new tool to the agent (e.g
 
 ## Automated Checks
 
-All pull requests are automatically validated by GitHub Actions. The CI workflow (`.github/workflows/ci.yml`) runs:
+All pull requests are automatically validated by GitHub Actions. The CI workflow (`.github/workflows/ci.yml`) runs the following jobs, **all of which are required status checks** on `main` (see Branch Protection Rules above):
 
-- **Build**: Compiles TypeScript with `npm run build`
-- **Lint**: Enforces code style with `npm run lint`
-- **Test**: Runs integration tests with `npm run test`
-- **Test Rust**: Validates Soroban contracts with `cargo test`
-- **Audit**: Checks for vulnerabilities in npm and Cargo dependencies
+| Job | Command | Requirement |
+|-----|---------|-------------|
+| **Build** | `npm run build` | TypeScript must compile with zero errors |
+| **Lint** | `npm run lint` | ESLint must report zero errors |
+| **Test** | `npm run test:all` | All TypeScript and Rust tests must pass |
+| **Test Rust** | `cargo test` | Soroban contract tests must pass |
+| **Lint Rust** | `cargo clippy` + `cargo fmt --check` | No Clippy warnings or formatting issues |
+| **Audit npm** | `npm run audit` | No high or critical npm vulnerabilities |
+| **Audit Rust** | `cargo audit` | No Cargo dependency advisories |
 
-All jobs **must pass** before your PR can be merged.
+All jobs **must pass** before your PR can be merged. A PR with a failing `build` job (e.g. TypeScript type errors) cannot be merged regardless of approvals.
 
 ---
 
@@ -139,27 +145,44 @@ git push --no-verify
 
 ## Branch Protection Rules
 
-Repository maintainers should enable the following branch protection rules on `main`:
+> **Maintainer task (issue #727):** The rules below **must** be active on `main` before any further PRs are merged. Recent merges (#712–#714) landed while `tsc --noEmit` was failing because branch protection was not enforced. The rules prevent this from happening again.
 
-1. **Require status checks to pass before merging**:
-   - ✅ Build (TypeScript)
-   - ✅ Lint
-   - ✅ Test (TypeScript)
-   - ✅ Test Rust Contracts
-   - ✅ Audit
+Repository maintainers must enable the following branch protection rules on `main`:
 
-2. **Dismiss stale pull request approvals when new commits are pushed**
+### Required status checks
 
-3. **Require a pull request review before merging** (recommended: 1 approval minimum)
+All of the following CI jobs **must** be added as required status checks and must pass before a PR can be merged:
 
-**To configure**:
+| CI job | Command | What it checks |
+|--------|---------|----------------|
+| `build` | `npm run build` | TypeScript compiles without errors (`tsc`) |
+| `lint` | `npm run lint` | ESLint passes for `backend/**/*.ts` and `tests/**/*.ts` |
+| `test` | `npm run test:all` | Full TypeScript + Rust test suites |
+| `test-rust` | `cargo test` | Soroban contract unit tests |
+| `lint-rust` | `cargo clippy` + `cargo fmt --check` | Rust code quality |
+| `audit-npm` | `npm run audit` | No high/critical npm vulnerabilities |
+| `audit-rust` | `cargo audit` | No Cargo dependency advisories |
+
+### Additional required rules
+
+- **Require branches to be up to date before merging** — a PR must include all commits on `main` before the merge button is enabled. This prevents a PR that passes CI on a stale base from landing while main has moved to a broken state.
+- **Require a pull request before merging** — direct pushes to `main` are blocked; all changes must go through a PR.
+- **Dismiss stale pull request approvals when new commits are pushed** — an approval on an old revision cannot satisfy the review requirement.
+- **Require at least 1 approving review** (recommended).
+
+### How to configure
+
 1. Go to **Settings** → **Branches** → **Branch protection rules**
-2. Create a rule for `main`
-3. Check:
-   - "Require a pull request before merging"
-   - "Require status checks to pass before merging"
-   - "Require branches to be up to date before merging"
-4. Add the CI job names to the status checks list
+2. Click **Add rule**, set branch name pattern to `main`
+3. Enable:
+   - ☑ **Require a pull request before merging**
+   - ☑ **Require status checks to pass before merging**
+     - ☑ **Require branches to be up to date before merging**
+     - Search for and add each job name: `build`, `lint`, `test`, `test-rust`, `lint-rust`, `audit-npm`, `audit-rust`
+   - ☑ **Dismiss stale pull request approvals when new commits are pushed**
+4. Click **Save changes**
+
+> **Note:** Status check names must exactly match the `jobs.<id>` keys in `.github/workflows/ci.yml`. If you rename a job, update the branch protection rule accordingly.
 
 ---
 
