@@ -31,23 +31,30 @@ import { AccountInfoTool } from '../backend/tools/AccountInfoTool';
 import { TrustlineTool } from '../backend/tools/TrustlineTool';
 import { MultiSigPaymentTool } from '../backend/tools/MultiSigPaymentTool';
 import { BatchPaymentTool } from '../backend/tools/BatchPaymentTool';
+import { LedgerInfoTool } from '../backend/tools/LedgerInfoTool';
+import { NetworkStatusTool } from '../backend/tools/NetworkStatusTool';
+import { OfferBookTool } from '../backend/tools/OfferBookTool';
+import { SorobanStorageTool } from '../backend/tools/SorobanStorageTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
 import { isPaused } from '../backend/kill_switch';
 import { emitTaskEvent } from '../backend/events';
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
+  PaymentInputSchema: passthroughSchema,
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/SorobanInvokeTool', () => ({
+  SorobanInvokeInputSchema: passthroughSchema,
   SorobanInvokeTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/X402PaymentTool', () => ({
+  X402ChallengeSchema: passthroughSchema,
   X402PaymentTool: vi.fn().mockImplementation(() => ({
     respond: vi.fn(),
   })),
@@ -60,6 +67,7 @@ vi.mock('../backend/tools/AccountInfoTool', () => ({
 }));
 
 vi.mock('../backend/tools/TrustlineTool', () => ({
+  TrustlineInputSchema: passthroughSchema,
   TrustlineTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
     checkTrustline: vi.fn(),
@@ -67,24 +75,28 @@ vi.mock('../backend/tools/TrustlineTool', () => ({
 }));
 
 vi.mock('../backend/tools/MultiSigPaymentTool', () => ({
+  MultiSigInputSchema: passthroughSchema,
   MultiSigPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/BatchPaymentTool', () => ({
+  BatchPaymentInputSchema: passthroughSchema,
   BatchPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/SorobanQueryTool', () => ({
+  SorobanQueryInputSchema: passthroughSchema,
   SorobanQueryTool: vi.fn().mockImplementation(() => ({
     query: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/BalanceCheckTool', () => ({
+  BalanceCheckInputSchema: passthroughSchema,
   BalanceCheckTool: vi.fn().mockImplementation(() => ({
     getBalance: vi.fn().mockResolvedValue({
       publicKey: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
@@ -94,62 +106,99 @@ vi.mock('../backend/tools/BalanceCheckTool', () => ({
 }));
 
 vi.mock('../backend/tools/PathPaymentTool', () => ({
+  PathPaymentInputSchema: passthroughSchema,
   PathPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'path_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/FeeBumpTool', () => ({
+  FeeBumpInputSchema: passthroughSchema,
   FeeBumpTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'fee_bump_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/DexOfferTool', () => ({
+  DexOfferInputSchema: passthroughSchema,
   DexOfferTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'dex_mock_hash', ledger: 1, offerId: '0' }),
   })),
 }));
 
 vi.mock('../backend/tools/LiquidityPoolTool', () => ({
+  LiquidityPoolInputSchema: passthroughSchema,
   LiquidityPoolTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ poolId: 'pool_mock_id' }),
   })),
 }));
 
 vi.mock('../backend/tools/StellarTomlTool', () => ({
+  StellarTomlInputSchema: passthroughSchema,
   StellarTomlTool: vi.fn().mockImplementation(() => ({
     fetchToml: vi.fn().mockResolvedValue({ VERSION: '2.0.0' }),
   })),
 }));
 
 vi.mock('../backend/tools/DataEntryTool', () => ({
+  DataEntryInputSchema: passthroughSchema,
   DataEntryTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'data_entry_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/SequenceNumberTool', () => ({
+  SequenceNumberInputSchema: passthroughSchema,
   SequenceNumberTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ sequence: '12345678' }),
   })),
 }));
 
 vi.mock('../backend/tools/SponsoredAccountTool', () => ({
+  SponsoredAccountInputSchema: passthroughSchema,
   SponsoredAccountTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'sponsored_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/AnchorQuoteTool', () => ({
+  AnchorQuoteInputSchema: passthroughSchema,
   AnchorQuoteTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ quoteId: 'quote_mock_id', price: '1.0' }),
   })),
 }));
 
 vi.mock('../backend/tools/InflationTool', () => ({
+  InflationInputSchema: passthroughSchema,
   InflationTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'inflation_mock_hash', ledger: 1 }),
+  })),
+}));
+
+vi.mock('../backend/tools/LedgerInfoTool', () => ({
+  LedgerInfoInputSchema: passthroughSchema,
+  LedgerInfoTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/NetworkStatusTool', () => ({
+  NetworkStatusTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/OfferBookTool', () => ({
+  OfferBookInputSchema: passthroughSchema,
+  OfferBookTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
+  })),
+}));
+
+vi.mock('../backend/tools/SorobanStorageTool', () => ({
+  SorobanStorageInputSchema: passthroughSchema,
+  SorobanStorageTool: vi.fn().mockImplementation(() => ({
+    execute: vi.fn(),
   })),
 }));
 
@@ -163,6 +212,7 @@ vi.mock('../backend/webhook', () => ({
 
 vi.mock('../backend/persistence', () => ({
   saveResult: vi.fn(),
+  appendAuditEntry: vi.fn(),
 }));
 
 vi.mock('../backend/kill_switch', () => ({

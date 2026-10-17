@@ -12,6 +12,7 @@
 
 // Updated imports
 import { EventEmitter } from 'events';
+import { createHash } from 'crypto';
 import { rpc } from '@stellar/stellar-sdk';
 import { config, MAINNET_SPENDING_CAP } from './config';
 import { logger } from './logger';
@@ -118,7 +119,8 @@ const log = createLogger('orchestrator');
 
 // ─── Task types ───────────────────────────────────────────────────────────────
 
-export type TaskType =
+/** Task types handled by the tools PayFiAgent registers at construction. */
+export type BuiltinTaskType =
   | 'stellar_payment'
   | 'soroban_invoke'
   | 'soroban_query'
@@ -144,7 +146,19 @@ export type TaskType =
   | 'set_options'
   | 'soroban_event_query'
   | 'stellar_identity_auth'
-  | 'friendbot';
+  | 'friendbot'
+  | 'ledger_info'
+  | 'network_status'
+  | 'offer_book'
+  | 'soroban_storage';
+
+/**
+ * Any task type `run()` accepts: a built-in one, or the name of a tool added
+ * with {@link PayFiAgent.registerTool}. Intersecting `string` with an empty
+ * record keeps editor completion for the built-in names while allowing
+ * third-party ones.
+ */
+export type TaskType = BuiltinTaskType | (string & Record<never, never>);
 
 export interface AgentTask {
   type: TaskType;
@@ -291,6 +305,46 @@ function sanitizePayload(payload: unknown): unknown {
     sanitized[key] = sanitizePayload(rawValue);
   }
   return sanitized;
+}
+
+// ─── Audit log ────────────────────────────────────────────────────────────────
+
+function optionalString(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Build the audit-log entry for a task that produced a signed transaction, or
+ * `null` when the result carries no `txHash` (read-only tasks, simulations,
+ * multisig envelopes still awaiting signatures). Friendbot transactions are
+ * signed by the Friendbot service, not the agent, so they are not recorded.
+ */
+function buildAuditEntry(
+  task: AgentTask,
+  data: unknown,
+  correlationId: string,
+  ts: string
+): AuditEntry | null {
+  if (task.type === 'friendbot' || data === null || typeof data !== 'object') return null;
+  const d = data as Record<string, unknown>;
+  const txHash = optionalString(d.txHash);
+  if (!txHash) return null;
+
+  const p = (task.payload ?? {}) as Record<string, unknown>;
+  const envelopeXdr = optionalString(d.envelopeXdr ?? d.envelope_xdr);
+  const assetCode = optionalString(p.assetCode);
+  const assetIssuer = optionalString(p.assetIssuer);
+
+  return {
+    ts,
+    correlationId,
+    taskType: task.type,
+    txHash,
+    envelopeHash: envelopeXdr ? createHash('sha256').update(envelopeXdr).digest('hex') : null,
+    destination: optionalString(p.destination ?? p.payTo),
+    asset: assetCode ? (assetIssuer ? `${assetCode}:${assetIssuer}` : assetCode) : null,
+    amount: optionalString(p.amount),
+  };
 }
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
@@ -558,6 +612,29 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
   use(middleware: TaskMiddleware): void {
     this.middlewares.push(middleware);
     logger.info('Middleware registered', { totalMiddlewares: this.middlewares.length });
+  }
+
+  /**
+   * Register a tool so `run({ type: tool.name, payload })` dispatches to it.
+   *
+   * The payload is parsed with `tool.inputSchema` before `tool.execute` is
+   * called, so the tool receives validated input. Names must be unique —
+   * registering a name that is already taken throws rather than silently
+   * replacing a built-in tool.
+   *
+   * @param tool - The tool to register.
+   */
+  registerTool<I, O>(tool: AgentTool<I, O>): void {
+    if (this.tools.has(tool.name)) {
+      throw new Error(`A tool named "${tool.name}" is already registered`);
+    }
+    this.tools.set(tool.name, tool);
+  }
+
+  /** Every registered tool, in registration order. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getTools(): AgentTool<any, any>[] {
+    return [...this.tools.values()];
   }
 
   async waitForPendingTasks(): Promise<void> {
@@ -945,11 +1022,38 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
             throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
         }
 
+        const ctx: ToolContext = {
+          correlationId,
+          logger: taskLog,
+          network: config.STELLAR_NETWORK,
+          assertWithinSpendingLimit,
+        };
+        const input = tool.inputSchema.parse(task.payload);
+        const data: unknown = await tool.execute(input, ctx);
+
         taskLog.info({ taskType: task.type }, 'Task completed');
         const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
         this.emit('task:complete', result);
 
-        saveResult({ ...result, timestamp: new Date().toISOString() });
+        const timestamp = new Date().toISOString();
+        saveResult({ ...result, timestamp });
+
+        // The transaction is already on-chain at this point, so an audit-log
+        // failure is logged loudly rather than reported as a task failure that
+        // could prompt the caller to resubmit the payment.
+        try {
+          const auditEntry = buildAuditEntry(task, data, correlationId, timestamp);
+          if (auditEntry) appendAuditEntry(auditEntry);
+        } catch (auditErr) {
+          taskLog.error(
+            {
+              taskType: task.type,
+              error: redactSecretString(describeError(auditErr)),
+            },
+            'Failed to append audit log entry'
+          );
+        }
+
         void dispatchWebhook(result);
 
         return result;

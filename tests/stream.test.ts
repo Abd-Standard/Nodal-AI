@@ -14,8 +14,16 @@ const { mockStopStream, mockStream, mockForAccount, mockPayments } = vi.hoisted(
   return { mockStopStream, mockStream, mockForAccount, mockPayments };
 });
 
+// The agent parses every payload with the tool's exported input schema before
+// dispatch (#746). Mocked tool modules export this pass-through stand-in so
+// the loosely-shaped payloads below still reach the mocked tool methods.
+const { passthroughSchema } = vi.hoisted(() => ({
+  passthroughSchema: { parse: (payload: unknown) => payload },
+}));
+
 // ─── Mock tools ───────────────────────────────────────────────────────────────
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
+  PaymentInputSchema: passthroughSchema,
   StellarPaymentTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
 }));
 vi.mock('../backend/tools/SorobanInvokeTool', async () => {
@@ -45,12 +53,15 @@ vi.mock('../backend/tools/AccountInfoTool', () => ({
   AccountInfoTool: vi.fn().mockImplementation(() => ({ fetch: vi.fn() })),
 }));
 vi.mock('../backend/tools/TrustlineTool', () => ({
+  TrustlineInputSchema: passthroughSchema,
   TrustlineTool: vi.fn().mockImplementation(() => ({ execute: vi.fn(), checkTrustline: vi.fn() })),
 }));
 vi.mock('../backend/tools/MultiSigPaymentTool', () => ({
+  MultiSigInputSchema: passthroughSchema,
   MultiSigPaymentTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
 }));
 vi.mock('../backend/tools/BatchPaymentTool', () => ({
+  BatchPaymentInputSchema: passthroughSchema,
   BatchPaymentTool: vi.fn().mockImplementation(() => ({ execute: vi.fn() })),
 }));
 
