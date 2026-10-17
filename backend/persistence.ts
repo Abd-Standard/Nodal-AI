@@ -45,6 +45,13 @@ function applySchema(db: Database.Database): void {
       CREATE INDEX IF NOT EXISTS idx_spending_records_timestamp
         ON spending_records (timestamp)
     `);
+  // Operator-controlled agent state (e.g. the kill switch), kept across restarts.
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS agent_state (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      )
+    `);
   // Idempotent migration for databases created before correlationId existed.
   const cols = db.prepare(`PRAGMA table_info(agent_results)`).all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === 'correlationId')) {
@@ -166,6 +173,24 @@ export function pruneSpendingRecords(cutoffMs: number): void {
 /** Drop the whole persisted window. */
 export function clearSpendingRecords(): void {
   getDb().prepare(`DELETE FROM spending_records`).run();
+}
+
+/** Persist a single agent-state value, replacing any previous one. */
+export function saveAgentState(key: string, value: string): void {
+  getDb()
+    .prepare(
+      `INSERT INTO agent_state (key, value) VALUES (@key, @value)
+       ON CONFLICT(key) DO UPDATE SET value = excluded.value`
+    )
+    .run({ key, value });
+}
+
+/** Read a persisted agent-state value, or undefined when it was never set. */
+export function loadAgentState(key: string): string | undefined {
+  const row = getDb().prepare(`SELECT value FROM agent_state WHERE key = ?`).get(key) as
+    | { value: string }
+    | undefined;
+  return row?.value;
 }
 
 /** Replace the underlying DB instance — used in tests to inject an in-memory DB. */

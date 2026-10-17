@@ -16,7 +16,7 @@ import { rpc } from '@stellar/stellar-sdk';
 import { config, MAINNET_SPENDING_CAP } from './config';
 import { logger } from './logger';
 import { saveResult } from './persistence';
-import { StructuredError, getErrorType, sanitizeCause } from './errors';
+import { AgentPausedError, StructuredError, getErrorType, sanitizeCause } from './errors';
 import { StellarPaymentTool } from './tools/StellarPaymentTool';
 import { SorobanInvokeTool } from './tools/SorobanInvokeTool';
 import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from './tools/X402PaymentTool';
@@ -56,6 +56,7 @@ import { createLogger, generateCorrelationId } from './utils/logger';
 import { spendingTracker } from './spending_tracker';
 import { dispatchWebhook } from './webhook';
 import { createAgentSigner, Signer } from './signer';
+import { isPaused } from './kill_switch';
 
 // Re-exported so existing importers (`server.ts`, tests) keep working after the
 // singleton moved to spending_tracker.ts.
@@ -173,6 +174,31 @@ export interface AgentResult {
    */
   sequenceIndex?: number;
 }
+
+/**
+ * Tasks that sign and submit a transaction from the agent account. These are
+ * halted while the kill switch is engaged; every other task is read-only and
+ * keeps working.
+ */
+export const VALUE_MOVING_TASK_TYPES: ReadonlySet<TaskType> = new Set<TaskType>([
+  'stellar_payment',
+  'soroban_invoke',
+  'x402_respond',
+  'change_trust',
+  'multisig_payment',
+  'batch_payment',
+  'path_payment',
+  'fee_bump',
+  'dex_offer',
+  'liquidity_pool',
+  'data_entry',
+  'sequence_number',
+  'sponsored_account',
+  'inflation',
+  'soroban_deploy',
+  'swap',
+  'set_options',
+]);
 
 // ─── Middleware types ─────────────────────────────────────────────────────────────
 
@@ -633,6 +659,12 @@ export class PayFiAgent extends EventEmitter {
     // ── Compose middleware chain ────────────────────────────────────────────────
     const executeTask = async (): Promise<AgentResult> => {
       try {
+        if (VALUE_MOVING_TASK_TYPES.has(task.type) && isPaused()) {
+          throw new AgentPausedError(
+            `Agent is paused — ${task.type} is halted until an operator resumes it`
+          );
+        }
+
         let data: unknown;
 
         switch (task.type) {

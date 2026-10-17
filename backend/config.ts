@@ -213,6 +213,12 @@ const EnvSchema = z.object({
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
+  // Kill switch: start with value-moving tasks halted (see backend/kill_switch.ts).
+  PAUSED: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+
   // Backward-compat: sign the body only (no timestamp). Deprecated — removed next release.
   WEBHOOK_LEGACY_SIGNATURE: z
     .enum(['true', 'false'])
@@ -405,6 +411,11 @@ export interface AgentConfig {
    * Backward-compatibility flag for one release. Defaults to false.
    */
   readonly WEBHOOK_LEGACY_SIGNATURE: boolean;
+  /**
+   * When true the agent starts paused: value-moving tasks fail with
+   * errorType AGENT_PAUSED until resumed via POST /admin/resume. Defaults to false.
+   */
+  readonly PAUSED: boolean;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────

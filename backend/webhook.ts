@@ -95,16 +95,26 @@ export function isRetryableWebhookError(errOrStatus: unknown): boolean {
   return true;
 }
 
+/** Operator-state event (kill switch) delivered through the same webhook as task results. */
+export interface AgentStateEvent {
+  event: 'agent.paused' | 'agent.resumed';
+  paused: boolean;
+  reason?: string;
+  timestamp: string;
+}
+
 export interface WebhookDispatchOptions {
   maxAttempts?: number;
   initialDelayMs?: number;
 }
 
 export async function dispatchWebhook(
-  result: AgentResult,
+  result: AgentResult | AgentStateEvent,
   options?: WebhookDispatchOptions
 ): Promise<void> {
   if (!config.WEBHOOK_URL) return;
+
+  const taskType = 'event' in result ? result.event : result.taskType;
 
   const maxAttempts = options?.maxAttempts ?? 3;
   const initialDelayMs = options?.initialDelayMs ?? 1000;
@@ -136,7 +146,7 @@ export async function dispatchWebhook(
         });
         throw error;
       }
-      log.info({ taskType: result.taskType }, 'Webhook delivered');
+      log.info({ taskType }, 'Webhook delivered');
       return;
     } catch (err) {
       lastError = err;
@@ -150,7 +160,7 @@ export async function dispatchWebhook(
       if (!isRetryableWebhookError(err)) {
         log.warn(
           {
-            taskType: result.taskType,
+            taskType,
             status,
             attempt,
             error: err instanceof Error ? err.message : String(err),
@@ -162,7 +172,7 @@ export async function dispatchWebhook(
 
       log.warn(
         {
-          taskType: result.taskType,
+          taskType,
           status,
           attempt,
           maxAttempts,
@@ -180,7 +190,7 @@ export async function dispatchWebhook(
 
   log.warn(
     {
-      taskType: result.taskType,
+      taskType,
       attempts: maxAttempts,
       error: lastError instanceof Error ? lastError.message : String(lastError),
     },

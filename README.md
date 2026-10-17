@@ -194,6 +194,20 @@ Without the helper, compute `HMAC-SHA256(secret, timestamp + "." + rawBody)` and
 
 **Backward compatibility (one release):** set `WEBHOOK_LEGACY_SIGNATURE=true` to keep signing the body only (`HMAC(rawBody)`, no timestamp) while receivers migrate. Legacy signatures are verified by calling `verifyWebhookSignature(rawBody, sig, secret)` without a `timestamp`; they offer no replay protection and the flag will be removed in the next release.
 
+### Kill Switch
+
+Operators can freeze fund movement during an incident without stopping the process — health checks and read-only tasks (`account_info`, `balance_check`, `soroban_query`, …) keep working.
+
+- `POST /admin/pause` and `POST /admin/resume` on the health server toggle it. Both require `Authorization: Bearer <WEBHOOK_SECRET>` and return `401` when `WEBHOOK_SECRET` is not configured.
+- `PAUSED=true` starts the agent paused.
+- The paused state is stored in the agent database (`DB_PATH`), so a paused agent stays paused across restarts until resumed.
+- While paused, every task that signs and submits a transaction (`VALUE_MOVING_TASK_TYPES` in `backend/agent.ts`) fails with `errorType: "AGENT_PAUSED"`.
+- Each pause/resume sends a webhook event: `{ "event": "agent.paused" | "agent.resumed", "paused": boolean, "reason"?: string, "timestamp": string }`.
+
+```bash
+curl -X POST -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:3000/admin/pause
+```
+
 ### Mainnet Checklist
 
 Before deploying to **Stellar mainnet**, verify the following:
