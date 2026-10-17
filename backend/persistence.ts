@@ -9,58 +9,29 @@
 import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import type { AgentResult } from './agent';
+import { migrateSqlite } from './db/migrate';
 
 export type PersistedResult = AgentResult & { timestamp: string };
 
 let _db: Database.Database | null = null;
 
 /**
- * Create every table this module owns, plus the idempotent migrations.
+ * Bring the schema up to date by applying the numbered migrations in
+ * `backend/db/migrations/` (#821).
  *
  * Applied both to the lazily opened connection and to any DB injected through
  * `_setDb()`, so a test database has the same shape as a real one and the two
  * cannot drift apart.
  */
 function applySchema(db: Database.Database): void {
-  db.exec(`
-      CREATE TABLE IF NOT EXISTS agent_results (
-        id            INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp     TEXT    NOT NULL,
-        taskType      TEXT    NOT NULL,
-        success       INTEGER NOT NULL,
-        data          TEXT,
-        error         TEXT,
-        correlationId TEXT
-      )
-    `);
-  // Rolling spending window (#372). Kept here so the tracker survives a
-  // restart instead of silently resetting its cumulative total to zero.
-  db.exec(`
-      CREATE TABLE IF NOT EXISTS spending_records (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        amount    REAL    NOT NULL,
-        timestamp INTEGER NOT NULL
-      )
-    `);
-  db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_spending_records_timestamp
-        ON spending_records (timestamp)
-    `);
-  // Operator-controlled agent state (e.g. the kill switch), kept across restarts.
-  db.exec(`
-      CREATE TABLE IF NOT EXISTS agent_state (
-        key   TEXT PRIMARY KEY,
-        value TEXT NOT NULL
-      )
-    `);
-  // Idempotent migration for databases created before correlationId existed.
-  const cols = db.prepare(`PRAGMA table_info(agent_results)`).all() as Array<{ name: string }>;
-  if (!cols.some((c) => c.name === 'correlationId')) {
-    db.exec(`ALTER TABLE agent_results ADD COLUMN correlationId TEXT`);
-  }
+  migrateSqlite(db);
 }
 
-function getDb(): Database.Database {
+/**
+ * The shared connection, opened (and migrated) on first use. Exposed so other
+ * SQLite-backed stores can reuse it instead of opening a second handle.
+ */
+export function getDb(): Database.Database {
   if (!_db) {
     // Lazy import of config so that tests can inject via _setDb() before any DB access
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -293,6 +264,55 @@ export function pruneSpendingRecords(cutoffMs: number): void {
 /** Drop the whole persisted window. */
 export function clearSpendingRecords(): void {
   getDb().prepare(`DELETE FROM spending_records`).run();
+}
+
+/** A spend held against the persisted window by {@link reserveSpendingRecord}. */
+export interface SpendingReservation {
+  /** Row id; pass to {@link deleteSpendingRecord} to release the hold. */
+  id: number;
+  /** Cumulative total in the window, including this reservation. */
+  total: number;
+}
+
+/**
+ * Atomically check the window total and record `amount` against it (#822).
+ *
+ * The sum and the insert run in one IMMEDIATE transaction, which takes
+ * SQLite's write lock up front, so two connections can never both see room
+ * under `limit` and both insert.
+ *
+ * @throws if `amount` would push the total of records at or after `sinceMs`
+ *   past `limit`; nothing is written in that case.
+ */
+export function reserveSpendingRecord(
+  amount: number,
+  limit: number,
+  sinceMs: number,
+  now: number = Date.now()
+): SpendingReservation {
+  const db = getDb();
+  const reserve = db.transaction((): SpendingReservation => {
+    const row = db
+      .prepare(
+        `SELECT COALESCE(SUM(amount), 0) AS total FROM spending_records
+         WHERE timestamp >= ?`
+      )
+      .get(sinceMs) as { total: number };
+    const total = row.total + amount;
+    if (total > limit) {
+      throw new Error(`Cumulative spending ${total} exceeds limit ${limit}`);
+    }
+    const info = db
+      .prepare(`INSERT INTO spending_records (amount, timestamp) VALUES (?, ?)`)
+      .run(amount, now);
+    return { id: Number(info.lastInsertRowid), total };
+  });
+  return reserve.immediate();
+}
+
+/** Remove one spending record, e.g. to release a reservation whose submission failed. */
+export function deleteSpendingRecord(id: number): void {
+  getDb().prepare(`DELETE FROM spending_records WHERE id = ?`).run(id);
 }
 
 /** Persist a single agent-state value, replacing any previous one. */

@@ -41,7 +41,6 @@ async function shutdown(signal: string): Promise<void> {
     // 3. Stop the health check server
     if (healthServer) {
       await new Promise<void>((resolve, reject) =>
-        healthServer.close((err: Error | undefined) => (err ? reject(err) : resolve()))
         healthServer.close((err?: Error) => (err ? reject(err) : resolve()))
       );
     }
@@ -67,6 +66,9 @@ async function shutdown(signal: string): Promise<void> {
 
 async function start() {
   await configPromise;
+
+  // Bring the database schema up to date before anything reads or writes it.
+  await db.migrate();
 
   // Initialise OpenTelemetry export (no-op when OTLP_ENDPOINT is unset)
   initTelemetry();

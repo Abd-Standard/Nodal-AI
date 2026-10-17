@@ -121,11 +121,22 @@ docker-compose --profile test-only up --build --abort-on-container-exit --exit-c
 
 `--exit-code-from test-runner-only` makes the compose command exit with the test runner's exit code, so CI correctly detects test failures.
 
+### Storage Backends & Migrations
+
+State (spending window, x402 nonces, audit log, agent results) lives in SQLite at `DB_PATH` by default, which suits a single instance. To run several instances against one shared store, set `STORAGE_BACKEND=postgres` and `DATABASE_URL`. The `postgres` profile starts Postgres, a Postgres-backed agent on port 3001 and the shared storage test suite:
+
+```bash
+docker compose --profile postgres up --build agent-postgres
+docker compose --profile postgres run --rm test-runner-postgres
+```
+
+Schema changes are numbered SQL files in [`backend/db/migrations/`](./backend/db/migrations/) (`postgres/` holds the Postgres equivalents). Pending files are applied at startup inside a transaction and recorded in `schema_version`. To change the schema, add the next `NNN_<name>.sql` for both backends. Never edit a migration that has already shipped.
+
 ---
 
 ## Development Environment (Devcontainer & Codespaces)
 
-For zero-setup provisioning, Nodal AI ships a [VS Code Dev Container](https://containers.dev/) configuration in [`.devcontainer/`](./.devcontainer/devcontainer.json). It gives you Node 20, the Rust toolchain (with the `wasm32-unknown-unknown` target), and the Stellar CLI, pre-installed, with no local setup required.
+For zero-setup provisioning, Nodal AI ships a [VS Code Dev Container](https://containers.dev/) configuration in [`.devcontainer/`](./.devcontainer/devcontainer.json). It gives you Node 22 (LTS), the Rust toolchain (with the `wasm32-unknown-unknown` target), and the Stellar CLI, pre-installed, with no local setup required.
 
 **Using VS Code:**
 

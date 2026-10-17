@@ -39,7 +39,7 @@ vi.mock('../backend/server', () => ({
 }));
 
 vi.mock('../backend/db/client', () => ({
-  db: { close: mocks.dbClose },
+  db: { close: mocks.dbClose, migrate: vi.fn().mockResolvedValue(undefined) },
 }));
 
 vi.mock('../backend/telemetry', () => ({
