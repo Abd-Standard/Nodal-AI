@@ -19,6 +19,7 @@ import { db } from './db/client';
 import { handleError } from './middleware/error_handler';
 import { createLogger } from './utils/logger';
 import { spendingTracker } from './agent';
+import { llmUsage } from './ai/llm';
 
 const log = createLogger('health-server');
 
@@ -115,6 +116,7 @@ function isAuthenticated(req: http.IncomingMessage): boolean {
 const HEALTH_PATH = '/health';
 const STATUS_PATH = '/status';
 const SPENDING_PATH = '/spending';
+const METRICS_PATH = '/metrics';
 
 /**
  * Creates and returns the health-check HTTP server.
@@ -182,6 +184,37 @@ export function createHealthServer(): http.Server {
         limit,
         windowMs: config.SPENDING_WINDOW_MS,
         percentUsed: (total / limit) * 100,
+      });
+
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(body);
+      return;
+    }
+
+    // ── GET /metrics ───────────────────────────────────────────────────────
+    if (req.method === 'GET' && req.url === METRICS_PATH) {
+      if (!isAuthenticated(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      const llmMetrics = llmUsage.getMetrics();
+      const spendingStatus = spendingTracker.getWindowStatus();
+
+      const body = JSON.stringify({
+        llm: llmMetrics,
+        spending: {
+          ...spendingStatus,
+          limit: parseFloat(config.AGENT_SPENDING_LIMIT),
+          percentUsed:
+            spendingStatus.total > 0
+              ? (spendingStatus.total / parseFloat(config.AGENT_SPENDING_LIMIT)) * 100
+              : 0,
+        },
       });
 
       res.writeHead(200, {

@@ -25,7 +25,8 @@
     "audit": "npm audit --audit-level=high",
     "prepare": "husky install",
     "changelog:update": "conventional-changelog -p angular -i CHANGELOG.md -s",
-    "docs:generate": "typedoc"
+    "docs:generate": "typedoc",
+    "eval:offline": "npx tsx tests/evals/runner.ts"
   },
   "lint-staged": {
     "backend/**/*.ts": [
@@ -46,7 +47,8 @@
     "express": "5.2.1",
     "opossum": "8.5.0",
     "pino": "10.3.1",
-    "zod": "3.25.76"
+    "zod": "3.25.76",
+    "yaml": "2.7.1"
   },
   "devDependencies": {
     "@stryker-mutator/core": "9.6.1",
