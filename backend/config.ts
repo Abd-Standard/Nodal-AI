@@ -708,6 +708,11 @@ export const config = new Proxy({} as AgentConfig, {
  * by the spending limit assertion before submission.
  */
 // ─── Compile-time encapsulation guard ────────────────────────────────────────
+// AgentConfig intentionally omits AGENT_SECRET_KEY so it is never accessible
+// on the config object. The line below causes a deliberate TS2551 compile error
+// (suppressed by @ts-expect-error) to prove the property does not exist on the type.
+// @ts-expect-error — TS2551: Property 'AGENT_SECRET_KEY' does not exist on 'AgentConfig'
+declare const _configTypeGuard: AgentConfig["AGENT_SECRET_KEY"];
 // AgentConfig intentionally omits AGENT_SECRET_KEY.
 // The TypeScript error below proves AGENT_SECRET_KEY is NOT on the AgentConfig
 // type. The false && guard ensures this line is dead code at runtime — the

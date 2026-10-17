@@ -149,11 +149,29 @@ To report a vulnerability privately, use [GitHub Security Advisories](https://gi
 
 ### Spending Limit Enforcement
 
-PayFiAgent enforces two layers of spending limits to prevent runaway payments:
+PayFiAgent enforces three layers of spending limits to prevent runaway payments:
 
-- **AGENT_SPENDING_LIMIT**: A configurable per-transaction ceiling (set via environment variable). Before every payment task (`stellar_payment` or `x402_respond`), the `assertWithinSpendingLimit()` function in `backend/agent.ts` checks the requested amount. If it exceeds `AGENT_SPENDING_LIMIT`, the task fails immediately with error: `"Payment amount X exceeds AGENT_SPENDING_LIMIT of Y"`.
-- **Mainnet Spending Cap**: A hardcoded safety ceiling of **10,000** on mainnet. Even if `AGENT_SPENDING_LIMIT` is misconfigured above this, mainnet transactions are blocked if they exceed 10,000, throwing: `"Payment amount X exceeds mainnet spending cap of 10,000"`.
+1. **Per-payment cap** (`AGENT_SPENDING_LIMIT`): A configurable per-task ceiling (set via environment variable). Before every value-moving task the orchestrator calls `reserveSpendingLimit()` in `backend/agent.ts`, which checks the requested amount against `AGENT_SPENDING_LIMIT`. If it exceeds the limit the task fails immediately — the tool is never invoked.
+2. **Mainnet hard cap**: A hardcoded safety ceiling of **10,000** on mainnet. Even if `AGENT_SPENDING_LIMIT` is misconfigured above this value, any single payment above 10,000 is blocked on mainnet.
+3. **Rolling-window cumulative cap**: All committed spends are tracked in a sliding time window (`SPENDING_WINDOW_MS`, default 24 h). If the sum of committed spends within the window would exceed `AGENT_SPENDING_LIMIT`, the reservation is rejected before the tool runs.
 
+#### Reserve / commit / release (issue #729)
+
+Spend is *reserved* before the transaction is submitted and only *committed* after successful network confirmation. If submission fails (network error, `op_underfunded`, `tx_bad_seq`, etc.) the reservation is *released* — the phantom spend never counts against the window. This replaces the old `record-before-submit` pattern where a failed payment would permanently consume quota.
+
+#### Per-task spending field (issue #728)
+
+| Task type | Field counted toward the limit |
+|-----------|-------------------------------|
+| `stellar_payment` | `amount` |
+| `x402_respond` | `amount` |
+| `path_payment` | `sendAmount` (the asset leaving the agent's account) |
+| `multisig_payment` | `amount` (only when enough signatures are present to submit; unsigned-XDR responses are free) |
+| `batch_payment` | Sum of all `payments[i].amount` values |
+| `dex_offer` | `amount` (sell amount; `delete` actions pass `"0"` internally and are free) |
+| `fee_bump` | Not tracked (cost is denominated in stroops, not the payment asset) |
+| `soroban_invoke` / `soroban_query` | Not tracked (no asset transfer) |
+| `account_info` / `balance_check` / `change_trust` | Not tracked (read-only or trustline ops) |
 These limits apply to:
 - Direct `stellar_payment` tasks via `StellarPaymentTool`
 - `x402_respond` tasks that trigger automatic payment via `X402PaymentTool`
@@ -488,7 +506,7 @@ sequenceDiagram
     participant H as Horizon
 
     C->>PA: run({ type: "x402_respond", payload })
-    PA->>PA: assertWithinSpendingLimit(amount)
+    PA->>PA: reserveSpendingLimit(amount) → reservationId
     PA->>X: respond(challenge)
     X->>X: X402ChallengeSchema.parse(challenge)
     Note over X: reject if amount > AGENT_SPENDING_LIMIT<br/>reject if expiresAt has passed
@@ -497,6 +515,7 @@ sequenceDiagram
     H-->>ST: txHash, ledger
     ST-->>X: { txHash, ledger }
     X-->>PA: X402PaymentProof
+    PA->>PA: spendingTracker.commit(reservationId)
     PA-->>C: AgentResult
 ```
 
@@ -504,7 +523,7 @@ In practice, the `payload` handed to `run()` is the parsed body of a `402 Paymen
 
 ### Spending limit guard
 
-Before `PayFiAgent.run()` delegates to `X402PaymentTool`, it calls `assertWithinSpendingLimit()` on the payload's `amount` field. If the requested amount exceeds `config.AGENT_SPENDING_LIMIT`, the task throws immediately and `X402PaymentTool.respond()` is never invoked — the agent will not even attempt to validate or pay a challenge above its configured budget.
+Before `PayFiAgent.run()` delegates to `X402PaymentTool`, it calls `reserveSpendingLimit()` on the payload's `amount` field. This reserves the amount against the rolling-window cumulative limit. If the amount exceeds `config.AGENT_SPENDING_LIMIT` (either individually or cumulatively), the task throws immediately and `X402PaymentTool.respond()` is never invoked. On successful submission the reservation is committed; on failure it is released so the amount is not counted against the window.
 
 ### `X402ChallengeSchema`
 
