@@ -6,6 +6,7 @@
  */
 
 import { describe, it, test, expect, vi, beforeEach } from 'vitest';
+import { z } from 'zod';
 import { PayFiAgent, spendingTracker, type TaskType } from '../backend/agent';
 import { StellarPaymentTool } from '../backend/tools/StellarPaymentTool';
 import { BalanceCheckTool } from '../backend/tools/BalanceCheckTool';
@@ -32,20 +33,31 @@ import { OfferBookTool } from '../backend/tools/OfferBookTool';
 import { SorobanStorageTool } from '../backend/tools/SorobanStorageTool';
 import { ValidationError, UnauthorizedError, ErrorType } from '../backend/errors';
 import { appendAuditEntry } from '../backend/persistence';
+import type { AgentTool } from '../backend/tools/AgentTool';
+
+// The agent parses every payload with the tool's exported input schema before
+// dispatch (#746). Mocked tool modules export this pass-through stand-in so
+// the loosely-shaped payloads below still reach the mocked tool methods.
+const { passthroughSchema } = vi.hoisted(() => ({
+  passthroughSchema: { parse: (payload: unknown) => payload },
+}));
 
 vi.mock('../backend/tools/StellarPaymentTool', () => ({
+  PaymentInputSchema: passthroughSchema,
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/SorobanInvokeTool', () => ({
+  SorobanInvokeInputSchema: passthroughSchema,
   SorobanInvokeTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/X402PaymentTool', () => ({
+  X402ChallengeSchema: passthroughSchema,
   X402PaymentTool: vi.fn().mockImplementation(() => ({
     respond: vi.fn(),
   })),
@@ -58,6 +70,7 @@ vi.mock('../backend/tools/AccountInfoTool', () => ({
 }));
 
 vi.mock('../backend/tools/TrustlineTool', () => ({
+  TrustlineInputSchema: passthroughSchema,
   TrustlineTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
     checkTrustline: vi.fn(),
@@ -65,24 +78,28 @@ vi.mock('../backend/tools/TrustlineTool', () => ({
 }));
 
 vi.mock('../backend/tools/MultiSigPaymentTool', () => ({
+  MultiSigInputSchema: passthroughSchema,
   MultiSigPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/BatchPaymentTool', () => ({
+  BatchPaymentInputSchema: passthroughSchema,
   BatchPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/SorobanQueryTool', () => ({
+  SorobanQueryInputSchema: passthroughSchema,
   SorobanQueryTool: vi.fn().mockImplementation(() => ({
     query: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/BalanceCheckTool', () => ({
+  BalanceCheckInputSchema: passthroughSchema,
   BalanceCheckTool: vi.fn().mockImplementation(() => ({
     getBalance: vi.fn().mockResolvedValue({
       publicKey: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
@@ -92,66 +109,77 @@ vi.mock('../backend/tools/BalanceCheckTool', () => ({
 }));
 
 vi.mock('../backend/tools/PathPaymentTool', () => ({
+  PathPaymentInputSchema: passthroughSchema,
   PathPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'path_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/FeeBumpTool', () => ({
+  FeeBumpInputSchema: passthroughSchema,
   FeeBumpTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'fee_bump_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/DexOfferTool', () => ({
+  DexOfferInputSchema: passthroughSchema,
   DexOfferTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'dex_mock_hash', ledger: 1, offerId: '0' }),
   })),
 }));
 
 vi.mock('../backend/tools/LiquidityPoolTool', () => ({
+  LiquidityPoolInputSchema: passthroughSchema,
   LiquidityPoolTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ poolId: 'pool_mock_id' }),
   })),
 }));
 
 vi.mock('../backend/tools/StellarTomlTool', () => ({
+  StellarTomlInputSchema: passthroughSchema,
   StellarTomlTool: vi.fn().mockImplementation(() => ({
     fetchToml: vi.fn().mockResolvedValue({ VERSION: '2.0.0' }),
   })),
 }));
 
 vi.mock('../backend/tools/DataEntryTool', () => ({
+  DataEntryInputSchema: passthroughSchema,
   DataEntryTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'data_entry_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/SequenceNumberTool', () => ({
+  SequenceNumberInputSchema: passthroughSchema,
   SequenceNumberTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ sequence: '12345678' }),
   })),
 }));
 
 vi.mock('../backend/tools/SponsoredAccountTool', () => ({
+  SponsoredAccountInputSchema: passthroughSchema,
   SponsoredAccountTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'sponsored_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/AnchorQuoteTool', () => ({
+  AnchorQuoteInputSchema: passthroughSchema,
   AnchorQuoteTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ quoteId: 'quote_mock_id', price: '1.0' }),
   })),
 }));
 
 vi.mock('../backend/tools/InflationTool', () => ({
+  InflationInputSchema: passthroughSchema,
   InflationTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: 'inflation_mock_hash', ledger: 1 }),
   })),
 }));
 
 vi.mock('../backend/tools/LedgerInfoTool', () => ({
+  LedgerInfoInputSchema: passthroughSchema,
   LedgerInfoTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
@@ -164,12 +192,14 @@ vi.mock('../backend/tools/NetworkStatusTool', () => ({
 }));
 
 vi.mock('../backend/tools/OfferBookTool', () => ({
+  OfferBookInputSchema: passthroughSchema,
   OfferBookTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
 }));
 
 vi.mock('../backend/tools/SorobanStorageTool', () => ({
+  SorobanStorageInputSchema: passthroughSchema,
   SorobanStorageTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn(),
   })),
@@ -1688,5 +1718,126 @@ describe('PayFiAgent — audit log (#744)', () => {
 
     expect(result.success).toBe(true);
     expect(appendAuditEntry).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('PayFiAgent — tool registry (#746)', () => {
+  let agent: PayFiAgent;
+
+  const EchoInputSchema = z.object({ message: z.string().min(1) });
+
+  function makeEchoTool(
+    execute = vi.fn(async (input: { message: string }) => ({ echoed: input.message }))
+  ): AgentTool<{ message: string }, { echoed: string }> {
+    return {
+      name: 'echo',
+      description: 'Echo the message back.',
+      inputSchema: EchoInputSchema,
+      valueMoving: false,
+      execute,
+    };
+  }
+
+  beforeEach(() => {
+    spendingTracker.clear();
+    vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(
+      () => ({ execute: vi.fn().mockResolvedValue({ txHash: 'mock_hash', ledger: 1 }) }) as any
+    );
+    agent = new PayFiAgent();
+  });
+
+  it('registers every built-in task type at construction', () => {
+    const names = agent.getTools().map((tool) => tool.name);
+
+    expect(names).toEqual(
+      expect.arrayContaining([
+        'stellar_payment',
+        'soroban_invoke',
+        'x402_respond',
+        'friendbot',
+        'ledger_info',
+        'soroban_storage',
+      ])
+    );
+    expect(new Set(names).size).toBe(names.length);
+  });
+
+  it('describes every built-in tool', () => {
+    for (const tool of agent.getTools()) {
+      expect(tool.description.length).toBeGreaterThan(0);
+      expect(typeof tool.valueMoving).toBe('boolean');
+      expect(tool.inputSchema).toBeDefined();
+    }
+    const payment = agent.getTools().find((tool) => tool.name === 'stellar_payment');
+    expect(payment?.valueMoving).toBe(true);
+  });
+
+  it('dispatches a third-party tool registered with registerTool()', async () => {
+    const execute = vi.fn(async (input: { message: string }) => ({ echoed: input.message }));
+    agent.registerTool(makeEchoTool(execute));
+
+    const result = await agent.run({
+      type: 'echo',
+      payload: { message: 'hello', extra: 'stripped' },
+      correlationId: 'echo-corr',
+    });
+
+    expect(result.success).toBe(true);
+    expect(result.taskType).toBe('echo');
+    expect(result.data).toEqual({ echoed: 'hello' });
+    // Executes with the parsed payload (unknown keys stripped) and a task context.
+    expect(execute).toHaveBeenCalledWith(
+      { message: 'hello' },
+      expect.objectContaining({ correlationId: 'echo-corr', network: 'mainnet' })
+    );
+  });
+
+  it('validates the payload with the tool schema before execute', async () => {
+    const execute = vi.fn(async (input: { message: string }) => ({ echoed: input.message }));
+    agent.registerTool(makeEchoTool(execute));
+
+    const result = await agent.run({ type: 'echo', payload: { message: '' } });
+
+    expect(result.success).toBe(false);
+    expect(result.taskType).toBe('echo');
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  it('rejects registering a name that is already taken', () => {
+    agent.registerTool(makeEchoTool());
+
+    expect(() => agent.registerTool(makeEchoTool())).toThrow(/already registered/);
+    expect(() =>
+      agent.registerTool({ ...makeEchoTool(), name: 'stellar_payment' })
+    ).toThrow(/already registered/);
+  });
+
+  it('applies the spending limit through the tool context', async () => {
+    agent.registerTool({
+      name: 'custom_payout',
+      description: 'Pay out through an external rail.',
+      inputSchema: z.object({ amount: z.string() }),
+      valueMoving: true,
+      execute: async (input, ctx) => {
+        ctx.assertWithinSpendingLimit(input.amount);
+        return { paid: input.amount };
+      },
+    });
+
+    const result = await agent.run({ type: 'custom_payout', payload: { amount: '10001' } });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/mainnet spending cap/);
+  });
+
+  it('keeps registrations per agent instance', async () => {
+    agent.registerTool(makeEchoTool());
+    const other = new PayFiAgent();
+
+    const result = await other.run({ type: 'echo', payload: { message: 'hi' } });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/Unknown task type: echo/);
   });
 });

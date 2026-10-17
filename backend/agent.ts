@@ -18,36 +18,9 @@ import { config, MAINNET_SPENDING_CAP } from './config';
 import { logger } from './logger';
 import { saveResult, appendAuditEntry, type AuditEntry } from './persistence';
 import { StructuredError, getErrorType, sanitizeCause } from './errors';
-import { StellarPaymentTool } from './tools/StellarPaymentTool';
-import { SorobanInvokeTool } from './tools/SorobanInvokeTool';
-import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from './tools/X402PaymentTool';
-import { AccountInfoTool } from './tools/AccountInfoTool';
-import { TrustlineTool } from './tools/TrustlineTool';
-import { MultiSigPaymentTool } from './tools/MultiSigPaymentTool';
-import { BatchPaymentTool } from './tools/BatchPaymentTool';
-import { SorobanQueryTool } from './tools/SorobanQueryTool';
-import { BalanceCheckTool } from './tools/BalanceCheckTool';
-import { PathPaymentTool } from './tools/PathPaymentTool';
-import { FeeBumpTool } from './tools/FeeBumpTool';
-import { DexOfferTool } from './tools/DexOfferTool';
-import { LiquidityPoolTool } from './tools/LiquidityPoolTool';
-import { StellarTomlTool } from './tools/StellarTomlTool';
-import { DataEntryTool } from './tools/DataEntryTool';
-import { SequenceNumberTool } from './tools/SequenceNumberTool';
-import { InflationTool } from './tools/InflationTool';
-import { SponsoredAccountTool } from './tools/SponsoredAccountTool';
-import { AnchorQuoteTool } from './tools/AnchorQuoteTool';
-import { SorobanDeployTool } from './tools/SorobanDeployTool';
-import { SwapTool } from './tools/SwapTool';
-import { AccountHistoryTool } from './tools/AccountHistoryTool';
-import { SetOptionsTool } from './tools/SetOptionsTool';
-import { SorobanEventIndexerTool } from './tools/SorobanEventIndexerTool';
-import { StellarIdentityTool } from './tools/StellarIdentityTool';
-import { FriendBotTool } from './tools/FriendBotTool';
-import { LedgerInfoTool } from './tools/LedgerInfoTool';
-import { NetworkStatusTool } from './tools/NetworkStatusTool';
-import { OfferBookTool } from './tools/OfferBookTool';
-import { SorobanStorageTool } from './tools/SorobanStorageTool';
+import { X402Challenge, X402ChallengeSchema } from './tools/X402PaymentTool';
+import type { AgentTool, ToolContext } from './tools/AgentTool';
+import { createBuiltinTools } from './tools/builtin';
 import { listen as listenContractEvents } from './tools/ContractEventListener';
 import {
   watchContractStorage,
@@ -98,7 +71,8 @@ const log = createLogger('orchestrator');
 
 // ─── Task types ───────────────────────────────────────────────────────────────
 
-export type TaskType =
+/** Task types handled by the tools PayFiAgent registers at construction. */
+export type BuiltinTaskType =
   | 'stellar_payment'
   | 'soroban_invoke'
   | 'soroban_query'
@@ -129,6 +103,14 @@ export type TaskType =
   | 'network_status'
   | 'offer_book'
   | 'soroban_storage';
+
+/**
+ * Any task type `run()` accepts: a built-in one, or the name of a tool added
+ * with {@link PayFiAgent.registerTool}. Intersecting `string` with an empty
+ * record keeps editor completion for the built-in names while allowing
+ * third-party ones.
+ */
+export type TaskType = BuiltinTaskType | (string & Record<never, never>);
 
 export interface AgentTask {
   type: TaskType;
@@ -295,36 +277,9 @@ function buildAuditEntry(
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
 export class PayFiAgent extends EventEmitter {
-  private paymentTool: StellarPaymentTool;
-  private sorobanTool: SorobanInvokeTool;
-  private sorobanQueryTool: SorobanQueryTool;
-  private x402Tool: X402PaymentTool;
-  private accountInfoTool: AccountInfoTool;
-  private trustlineTool: TrustlineTool;
-  private multiSigTool: MultiSigPaymentTool;
-  private batchPaymentTool: BatchPaymentTool;
-  private balanceCheckTool: BalanceCheckTool;
-  private pathPaymentTool: PathPaymentTool;
-  private feeBumpTool: FeeBumpTool;
-  private dexOfferTool: DexOfferTool;
-  private liquidityPoolTool: LiquidityPoolTool;
-  private stellarTomlTool: StellarTomlTool;
-  private dataEntryTool: DataEntryTool;
-  private sequenceNumberTool: SequenceNumberTool;
-  private sponsoredAccountTool: SponsoredAccountTool;
-  private anchorQuoteTool: AnchorQuoteTool;
-  private inflationTool: InflationTool;
-  private sorobanDeployTool: SorobanDeployTool;
-  private swapTool: SwapTool;
-  private accountHistoryTool: AccountHistoryTool;
-  private setOptionsTool: SetOptionsTool;
-  private sorobanEventIndexerTool: SorobanEventIndexerTool;
-  private stellarIdentityTool: StellarIdentityTool;
-  private friendBotTool: FriendBotTool;
-  private ledgerInfoTool: LedgerInfoTool;
-  private networkStatusTool: NetworkStatusTool;
-  private offerBookTool: OfferBookTool;
-  private sorobanStorageTool: SorobanStorageTool;
+  // Tool registry — every task type run() can dispatch, keyed by tool name.
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private readonly tools = new Map<TaskType, AgentTool<any, any>>();
 
   private activeTasks = 0;
   private isDraining = false;
@@ -347,39 +302,9 @@ export class PayFiAgent extends EventEmitter {
   constructor() {
     super();
 
-    // config.agentKeypair().secret() is the canonical way to obtain the signing secret.
-    // Direct access to config.AGENT_SECRET_KEY is intentionally blocked by the AgentConfig
-    // type (Omit<RawEnv, "AGENT_SECRET_KEY">); using agentKeypair() makes the access explicit.
-    this.paymentTool = new StellarPaymentTool(config.agentKeypair().secret());
-    this.sorobanTool = new SorobanInvokeTool(config.agentKeypair().secret());
-    this.sorobanQueryTool = new SorobanQueryTool(config.agentKeypair().secret());
-    this.x402Tool = new X402PaymentTool(config.agentKeypair().secret());
-    this.accountInfoTool = new AccountInfoTool();
-    this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
-    this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
-    this.batchPaymentTool = new BatchPaymentTool(config.agentKeypair().secret());
-    this.balanceCheckTool = new BalanceCheckTool();
-    this.pathPaymentTool = new PathPaymentTool(config.agentKeypair().secret());
-    this.feeBumpTool = new FeeBumpTool(config.agentKeypair().secret());
-    this.dexOfferTool = new DexOfferTool(config.agentKeypair().secret());
-    this.liquidityPoolTool = new LiquidityPoolTool(config.agentKeypair().secret());
-    this.stellarTomlTool = new StellarTomlTool();
-    this.dataEntryTool = new DataEntryTool(config.agentKeypair().secret());
-    this.sequenceNumberTool = new SequenceNumberTool(config.agentKeypair().secret());
-    this.sponsoredAccountTool = new SponsoredAccountTool(config.agentKeypair().secret());
-    this.anchorQuoteTool = new AnchorQuoteTool();
-    this.inflationTool = new InflationTool(config.agentKeypair().secret());
-    this.sorobanDeployTool = new SorobanDeployTool();
-    this.swapTool = new SwapTool(config.agentKeypair().secret());
-    this.accountHistoryTool = new AccountHistoryTool();
-    this.setOptionsTool = new SetOptionsTool(config.agentKeypair().secret());
-    this.sorobanEventIndexerTool = new SorobanEventIndexerTool();
-    this.stellarIdentityTool = new StellarIdentityTool(config.agentKeypair().secret());
-    this.friendBotTool = new FriendBotTool();
-    this.ledgerInfoTool = new LedgerInfoTool();
-    this.networkStatusTool = new NetworkStatusTool();
-    this.offerBookTool = new OfferBookTool();
-    this.sorobanStorageTool = new SorobanStorageTool();
+    for (const tool of createBuiltinTools()) {
+      this.registerTool(tool);
+    }
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -566,6 +491,29 @@ export class PayFiAgent extends EventEmitter {
     logger.info('Middleware registered', { totalMiddlewares: this.middlewares.length });
   }
 
+  /**
+   * Register a tool so `run({ type: tool.name, payload })` dispatches to it.
+   *
+   * The payload is parsed with `tool.inputSchema` before `tool.execute` is
+   * called, so the tool receives validated input. Names must be unique —
+   * registering a name that is already taken throws rather than silently
+   * replacing a built-in tool.
+   *
+   * @param tool - The tool to register.
+   */
+  registerTool<I, O>(tool: AgentTool<I, O>): void {
+    if (this.tools.has(tool.name)) {
+      throw new Error(`A tool named "${tool.name}" is already registered`);
+    }
+    this.tools.set(tool.name, tool);
+  }
+
+  /** Every registered tool, in registration order. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  getTools(): AgentTool<any, any>[] {
+    return [...this.tools.values()];
+  }
+
   async waitForPendingTasks(): Promise<void> {
     if (this.activeTasks === 0 && this.taskQueue.length === 0) return;
     logger.info('Waiting for pending tasks to finish', {
@@ -688,158 +636,19 @@ export class PayFiAgent extends EventEmitter {
     // ── Compose middleware chain ────────────────────────────────────────────────
     const executeTask = async (): Promise<AgentResult> => {
       try {
-        let data: unknown;
-
-        switch (task.type) {
-          case 'stellar_payment': {
-            const p = task.payload as Record<string, unknown>;
-            assertWithinSpendingLimit(p?.amount);
-            const paymentResult = await this.paymentTool.execute(task.payload);
-            data = {
-              ...paymentResult,
-              network: config.STELLAR_NETWORK,
-            };
-            break;
-          }
-
-          case 'soroban_invoke': {
-            data = await this.sorobanTool.execute(task.payload);
-            break;
-          }
-
-          case 'soroban_query':
-            data = await this.sorobanQueryTool.query(task.payload);
-            break;
-
-          case 'x402_respond': {
-            const p = task.payload as Record<string, unknown>;
-            assertWithinSpendingLimit(p?.amount);
-            data = await this.x402Tool.respond(task.payload);
-            break;
-          }
-
-          case 'account_info':
-            data = await this.accountInfoTool.fetch();
-            break;
-
-          case 'change_trust':
-            data = await this.trustlineTool.execute(task.payload);
-            break;
-
-          case 'multisig_payment':
-            data = await this.multiSigTool.execute(task.payload);
-            break;
-
-          case 'batch_payment':
-            data = await this.batchPaymentTool.execute(task.payload);
-            break;
-
-          case 'balance_check': {
-            const balanceCheckTool = this.balanceCheckTool as {
-              execute?: (payload: unknown) => Promise<unknown>;
-              getBalance?: (payload: unknown) => Promise<unknown>;
-            };
-            if (typeof balanceCheckTool.execute === 'function') {
-              data = await balanceCheckTool.execute(task.payload);
-            } else if (typeof balanceCheckTool.getBalance === 'function') {
-              data = await balanceCheckTool.getBalance(task.payload);
-            } else {
-              throw new Error('Balance check tool does not implement execute() or getBalance().');
-            }
-            break;
-          }
-
-          case 'path_payment':
-            data = await this.pathPaymentTool.execute(task.payload);
-            break;
-
-          case 'fee_bump':
-            data = await this.feeBumpTool.execute(task.payload);
-            break;
-
-          case 'dex_offer':
-            data = await this.dexOfferTool.execute(task.payload);
-            break;
-
-          case 'swap':
-            data = await this.swapTool.execute(task.payload);
-            break;
-
-          case 'account_history':
-            data = await this.accountHistoryTool.fetch(task.payload);
-            break;
-
-          case 'transaction_build':
-            data = await this.transactionBuilderTool.execute(task.payload);
-            break;
-
-          case 'soroban_deploy':
-            data = await this.sorobanDeployTool.execute(task.payload);
-            break;
-
-          case 'liquidity_pool':
-            data = await this.liquidityPoolTool.execute(task.payload);
-            break;
-
-          case 'stellar_toml':
-            data = await this.stellarTomlTool.fetchToml(task.payload);
-            break;
-
-          case 'data_entry':
-            data = await this.dataEntryTool.execute(task.payload);
-            break;
-
-          case 'sequence_number':
-            data = await this.sequenceNumberTool.execute(task.payload);
-            break;
-
-          case 'sponsored_account':
-            data = await this.sponsoredAccountTool.execute(task.payload);
-            break;
-
-          case 'anchor_quote':
-            data = await this.anchorQuoteTool.execute(task.payload);
-            break;
-
-          case 'inflation':
-            data = await this.inflationTool.execute(task.payload);
-            break;
-
-          case 'set_options':
-            data = await this.setOptionsTool.execute(task.payload);
-            break;
-
-          case 'soroban_event_query':
-            data = await this.sorobanEventIndexerTool.query(task.payload);
-            break;
-
-          case 'stellar_identity_auth':
-            data = await this.stellarIdentityTool.execute(task.payload);
-            break;
-
-          case 'friendbot':
-            data = await this.friendBotTool.execute(task.payload);
-            break;
-
-          case 'ledger_info':
-            data = await this.ledgerInfoTool.execute(task.payload);
-            break;
-
-          case 'network_status':
-            data = await this.networkStatusTool.execute();
-            break;
-
-          case 'offer_book':
-            data = await this.offerBookTool.execute(task.payload);
-            break;
-
-          case 'soroban_storage':
-            data = await this.sorobanStorageTool.execute(task.payload);
-            break;
-
-          default:
-            throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
+        const tool = this.tools.get(task.type);
+        if (!tool) {
+          throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
         }
+
+        const ctx: ToolContext = {
+          correlationId,
+          logger: taskLog,
+          network: config.STELLAR_NETWORK,
+          assertWithinSpendingLimit,
+        };
+        const input = tool.inputSchema.parse(task.payload);
+        const data: unknown = await tool.execute(input, ctx);
 
         taskLog.info({ taskType: task.type }, 'Task completed');
         const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
