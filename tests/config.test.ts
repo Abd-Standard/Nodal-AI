@@ -425,6 +425,7 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     process.env.HORIZON_URL = "https://horizon.stellar.org";
     process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
     process.env.AGENT_SPENDING_LIMIT = "9999";
+    process.env.WEBHOOK_SECRET = "mainnet-api-token";
 
     const { configPromise } = await import("../backend/config");
     const cfg = await configPromise;
@@ -432,5 +433,39 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     expect(cfg.STELLAR_NETWORK).toBe("mainnet");
     expect(cfg.AGENT_SPENDING_LIMIT).toBe("9999");
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  // ── HTTP API auth guard (#738) ──────────────────────────────────────────────
+  it("fails on mainnet when no API token is configured", async () => {
+    setMinimalValidEnv();
+    process.env.STELLAR_NETWORK = "mainnet";
+    process.env.HORIZON_URL = "https://horizon.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
+    process.env.AGENT_SPENDING_LIMIT = "100";
+    delete process.env.WEBHOOK_SECRET;
+
+    await expect(async () => {
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
+    }).rejects.toThrow(/process\.exit: 1/);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("WEBHOOK_SECRET is required on mainnet")
+    );
+  });
+
+  it("warns once on testnet when no API token is configured", async () => {
+    setMinimalValidEnv();
+    delete process.env.WEBHOOK_SECRET;
+
+    const { configPromise } = await import("../backend/config");
+    await configPromise;
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const warnings = stderrSpy.mock.calls.filter(([msg]: [string]) =>
+      String(msg).includes("WEBHOOK_SECRET is not set")
+    );
+    expect(warnings).toHaveLength(1);
   });
 });

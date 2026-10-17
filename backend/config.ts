@@ -548,6 +548,24 @@ function parseConfigAndDerive(): AgentConfig {
     }
   }
 
+  // ── HTTP API auth guard ────────────────────────────────────────────────────
+  // /status and /spending expose payment history and spending data. Without a
+  // token the server would serve them to anyone, so mainnet refuses to start;
+  // testnet and futurenet keep open mode but warn once at startup.
+  if (!raw.WEBHOOK_SECRET) {
+    if (raw.STELLAR_NETWORK === 'mainnet') {
+      process.stderr.write(
+        `❌ [Config] WEBHOOK_SECRET is required on mainnet — the HTTP API would otherwise ` +
+          `serve payment history and spending data without authentication.\n`
+      );
+      process.exit(1);
+    }
+    process.stderr.write(
+      `⚠️  [Config] WEBHOOK_SECRET is not set — /status, /spending and /metrics are ` +
+        `unauthenticated (allowed on ${raw.STELLAR_NETWORK} only).\n`
+    );
+  }
+
   // ── Build the config object — secret key stays in closure only ────────────
   const {
     AGENT_SECRET_KEY: _secret,

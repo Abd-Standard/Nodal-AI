@@ -106,12 +106,13 @@ export async function checkDatabase(): Promise<ComponentStatus> {
 
 /**
  * Returns true if the request passes Bearer-token authentication.
- * When WEBHOOK_SECRET is unset, all requests are allowed. The secret is read
- * per request so a rotated value takes effect without re-importing the module.
+ * When WEBHOOK_SECRET is unset, requests are allowed on testnet/futurenet only;
+ * on mainnet they are always rejected. The secret is read per request so a
+ * rotated value takes effect without re-importing the module.
  */
 function isAuthenticated(req: http.IncomingMessage): boolean {
   const secret = process.env.WEBHOOK_SECRET;
-  if (!secret) return true;
+  if (!secret) return config.STELLAR_NETWORK !== 'mainnet';
   const auth = req.headers['authorization'];
   if (!auth) return false;
   const [scheme, token] = auth.split(' ');
