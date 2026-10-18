@@ -4,6 +4,7 @@
   "description": "Modular, secure Stellar Agent Kit with PayFi / x402 support",
   "private": true,
   "scripts": {
+    "mcp": "npx ts-node backend/mcp/index.ts",
     "setup": "npx ts-node scripts/setup.ts",
     "audit:verify": "npx ts-node scripts/audit_verify.ts",
     "build": "tsc",
