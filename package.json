@@ -21,6 +21,7 @@
     "test:e2e:escrow": "vitest run tests/e2e/escrow_flow.test.ts",
     "test:all": "npm run test:rust && npm run test:ts",
     "test:mutation": "stryker run stryker.config.mjs",
+    "test:ai-safety": "vitest run tests/ai-safety/**",
     "lint": "eslint \"backend/**/*.ts\" \"tests/**/*.ts\"",
     "format": "prettier --write \"backend/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\"",
     "format:check": "prettier --check \"backend/**/*.ts\" \"tests/**/*.ts\" \"scripts/**/*.ts\"",
@@ -28,7 +29,9 @@
     "prepare": "husky install",
     "changelog:update": "conventional-changelog -p angular -i CHANGELOG.md -s",
     "docs:generate": "typedoc",
-    "eval:offline": "npx tsx tests/evals/runner.ts"
+    "eval:offline": "npx tsx tests/evals/runner.ts",
+    "tools:schema": "npx ts-node backend/ai/toolSchemas.ts",
+    "tools:schema:check": "npx ts-node backend/ai/toolSchemas.ts --check"
   },
   "lint-staged": {
     "backend/**/*.ts": [
@@ -51,6 +54,7 @@
     "picomatch": "4.0.7",
     "pino": "10.3.1",
     "zod": "3.25.76",
+    "zod-to-json-schema": "3.24.1",
     "yaml": "2.7.1"
   },
   "devDependencies": {
