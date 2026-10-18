@@ -26,6 +26,10 @@ export enum ErrorType {
   ConfigError = 'CONFIG_ERROR',
   /** The operator kill switch is engaged; value-moving tasks are halted. */
   AgentPaused = 'AGENT_PAUSED',
+  /** The task exceeds APPROVAL_THRESHOLD and is waiting for a human decision. */
+  PendingApproval = 'PENDING_APPROVAL',
+  /** The payment destination is not permitted by PAYMENT_DESTINATION_POLICY. */
+  PolicyViolation = 'POLICY_VIOLATION',
   UnknownError = 'UNKNOWN_ERROR',
 }
 
@@ -121,6 +125,13 @@ export class AgentPausedError extends StructuredError {
   constructor(message: string, cause?: unknown) {
     super(message, ErrorType.AgentPaused, cause);
     Object.setPrototypeOf(this, AgentPausedError.prototype);
+  }
+}
+
+export class PolicyViolationError extends StructuredError {
+  constructor(message: string, cause?: unknown) {
+    super(message, ErrorType.PolicyViolation, cause);
+    Object.setPrototypeOf(this, PolicyViolationError.prototype);
   }
 }
 

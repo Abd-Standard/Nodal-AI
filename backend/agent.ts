@@ -12,12 +12,27 @@
 
 // Updated imports
 import { EventEmitter } from 'events';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { rpc } from '@stellar/stellar-sdk';
 import { config, MAINNET_SPENDING_CAP } from './config';
 import { logger } from './logger';
-import { saveResult } from './persistence';
-import { AgentPausedError, StructuredError, getErrorType, sanitizeCause } from './errors';
+import {
+  saveResult,
+  savePendingApproval,
+  getPendingApproval,
+  listPendingApprovals,
+  decideApproval,
+  expirePendingApprovals,
+  PendingApproval,
+} from './persistence';
+import {
+  AgentPausedError,
+  ErrorType,
+  PolicyViolationError,
+  StructuredError,
+  getErrorType,
+  sanitizeCause,
+} from './errors';
 import { StellarPaymentTool } from './tools/StellarPaymentTool';
 import { SorobanInvokeTool } from './tools/SorobanInvokeTool';
 import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from './tools/X402PaymentTool';
@@ -114,6 +129,63 @@ function assertWithinSpendingLimit(amount: unknown): void {
 }
 
 const log = createLogger('orchestrator');
+
+// ─── Payment destination policy (#735) ───────────────────────────────────────
+
+/**
+ * Every counterparty a task would pay: `destination`, the x402 `payTo`, and
+ * each batch payment's `destination`.
+ */
+function taskDestinations(task: AgentTask): string[] {
+  const p = (task.payload ?? {}) as Record<string, unknown>;
+  const destinations: unknown[] = [p.destination, p.payTo];
+  if (Array.isArray(p.payments)) {
+    for (const pay of p.payments) {
+      destinations.push((pay as Record<string, unknown>)?.destination);
+    }
+  }
+  return destinations.filter((d): d is string => typeof d === 'string' && d.length > 0);
+}
+
+/**
+ * Enforce PAYMENT_DESTINATION_POLICY for a value-moving task. Matching ignores
+ * case so federation names compare the way federation servers resolve them.
+ *
+ * @throws PolicyViolationError if any destination is not permitted.
+ */
+function assertDestinationsAllowed(task: AgentTask): void {
+  const policy = config.PAYMENT_DESTINATION_POLICY;
+  if (policy === 'open') return;
+
+  const listed = new Set(config.PAYMENT_DESTINATIONS.map((d) => d.toLowerCase()));
+  for (const destination of taskDestinations(task)) {
+    const isListed = listed.has(destination.toLowerCase());
+    if (policy === 'allowlist' ? !isListed : isListed) {
+      throw new PolicyViolationError(
+        `Destination ${destination} is not permitted by the ${policy} payment destination policy`
+      );
+    }
+  }
+}
+
+/**
+ * The amount a value-moving task would spend, as compared against
+ * APPROVAL_THRESHOLD (#736): `sendAmount` for path payments, the sum of every
+ * payment for batches, and `amount` otherwise. `null` when the task carries no
+ * amount.
+ */
+function taskAmount(task: AgentTask): string | null {
+  const p = (task.payload ?? {}) as Record<string, unknown>;
+  if (task.type === 'batch_payment' && Array.isArray(p.payments)) {
+    const total = p.payments.reduce((sum: number, pay: unknown) => {
+      const amt = parseFloat((pay as Record<string, unknown>)?.amount as string);
+      return sum + (isNaN(amt) ? 0 : amt);
+    }, 0);
+    return String(total);
+  }
+  const amount = task.type === 'path_payment' ? p.sendAmount : p.amount;
+  return typeof amount === 'string' ? amount : null;
+}
 
 // ─── Task types ───────────────────────────────────────────────────────────────
 
@@ -394,6 +466,11 @@ export class PayFiAgent extends EventEmitter {
   // Middleware array for pre/post task execution hooks
   private middlewares: TaskMiddleware[] = [];
 
+  // Tasks re-dispatched by approve() — they skip the approval gate (#736).
+  private readonly approvedTasks = new WeakSet<AgentTask>();
+  // Spending reservation held by each pending approval, released on decision/expiry.
+  private readonly approvalReservations = new Map<string, string>();
+
   constructor() {
     super();
 
@@ -635,6 +712,125 @@ export class PayFiAgent extends EventEmitter {
     return [...this.tools.values()];
   }
 
+  // ─── Human-in-the-loop approvals (#736) ───────────────────────────────────
+
+  /**
+   * Hold a task above APPROVAL_THRESHOLD as `pending_approval` instead of
+   * executing it. Its amount is reserved against the spending window straight
+   * away, so a pile of pending approvals cannot together exceed the limit, and
+   * a notification webhook is sent.
+   *
+   * @returns the pending result, or null when the task does not need approval.
+   */
+  private holdForApproval(task: AgentTask, correlationId: string): AgentResult | null {
+    if (config.APPROVAL_THRESHOLD === undefined) return null;
+    const amount = taskAmount(task);
+    if (amount === null || !(parseFloat(amount) > parseFloat(config.APPROVAL_THRESHOLD))) {
+      return null;
+    }
+
+    const reservationId = reserveSpendingLimit(amount);
+    const createdAt = Date.now();
+    const approval = {
+      id: randomUUID(),
+      taskType: task.type,
+      payload: task.payload,
+      amount,
+      correlationId,
+      createdAt,
+      expiresAt: createdAt + config.APPROVAL_TTL_MS,
+    };
+    try {
+      savePendingApproval(approval);
+    } catch (err) {
+      if (reservationId !== null) spendingTracker.release(reservationId);
+      throw err;
+    }
+    if (reservationId !== null) this.approvalReservations.set(approval.id, reservationId);
+    setTimeout(() => this.expireApprovals(), config.APPROVAL_TTL_MS).unref();
+
+    log.warn(
+      { approvalId: approval.id, taskType: task.type, amount, correlationId },
+      'Task held for approval'
+    );
+    const result: AgentResult = {
+      success: false,
+      taskType: task.type,
+      data: {
+        status: 'pending_approval',
+        approvalId: approval.id,
+        expiresAt: new Date(approval.expiresAt).toISOString(),
+      },
+      error: `Amount ${amount} exceeds APPROVAL_THRESHOLD of ${config.APPROVAL_THRESHOLD} — awaiting approval`,
+      errorType: ErrorType.PendingApproval,
+      correlationId,
+    };
+    void dispatchWebhook(result);
+    return result;
+  }
+
+  private releaseApprovalReservation(id: string): void {
+    const reservationId = this.approvalReservations.get(id);
+    if (reservationId === undefined) return;
+    this.approvalReservations.delete(id);
+    spendingTracker.release(reservationId);
+  }
+
+  /** Expire every pending approval past its deadline and release its reservation. */
+  expireApprovals(): void {
+    for (const id of expirePendingApprovals()) {
+      this.releaseApprovalReservation(id);
+      log.warn({ approvalId: id }, 'Pending approval expired');
+    }
+  }
+
+  /** Approvals still waiting for a decision. */
+  listApprovals(): PendingApproval[] {
+    this.expireApprovals();
+    return listPendingApprovals();
+  }
+
+  /**
+   * Approve a pending task and execute it. Only the call that moves the
+   * approval out of `pending_approval` executes the task, so approving twice
+   * runs it once; later calls just return the approval's current state.
+   *
+   * @returns null when no approval has this id.
+   */
+  async approve(id: string): Promise<{ approval: PendingApproval; result?: AgentResult } | null> {
+    this.expireApprovals();
+    const approval = getPendingApproval(id);
+    if (!approval) return null;
+    if (!decideApproval(id, 'approved')) return { approval };
+
+    log.warn({ approvalId: id, taskType: approval.taskType }, 'Pending approval approved');
+    // The task reserves its own amount when it runs.
+    this.releaseApprovalReservation(id);
+    const task: AgentTask = {
+      type: approval.taskType,
+      payload: approval.payload,
+      ...(approval.correlationId ? { correlationId: approval.correlationId } : {}),
+    };
+    this.approvedTasks.add(task);
+    const result = await this.run(task);
+    return { approval: getPendingApproval(id) ?? approval, result };
+  }
+
+  /**
+   * Deny a pending task and release its spending reservation.
+   *
+   * @returns null when no approval has this id.
+   */
+  deny(id: string): PendingApproval | null {
+    this.expireApprovals();
+    if (!getPendingApproval(id)) return null;
+    if (decideApproval(id, 'denied')) {
+      this.releaseApprovalReservation(id);
+      log.warn({ approvalId: id }, 'Pending approval denied');
+    }
+    return getPendingApproval(id) ?? null;
+  }
+
   async waitForPendingTasks(): Promise<void> {
     if (this.activeTasks === 0 && this.taskQueue.length === 0) return;
     logger.info('Waiting for pending tasks to finish', {
@@ -779,6 +975,15 @@ export class PayFiAgent extends EventEmitter {
           throw new AgentPausedError(
             `Agent is paused — ${task.type} is halted until an operator resumes it`
           );
+        }
+
+        if (VALUE_MOVING_TASK_TYPES.has(task.type)) {
+          assertDestinationsAllowed(task);
+        }
+
+        if (VALUE_MOVING_TASK_TYPES.has(task.type) && !this.approvedTasks.has(task)) {
+          const held = this.holdForApproval(task, correlationId);
+          if (held) return held;
         }
 
         let data: unknown;
