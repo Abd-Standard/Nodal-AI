@@ -70,6 +70,27 @@ function applySchema(db: Database.Database): void {
       CREATE TABLE IF NOT EXISTS trigger_events (
         key       TEXT PRIMARY KEY,
         fired_at  TEXT NOT NULL
+  // Value-moving tasks held for a human decision (#736).
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS pending_approvals (
+        id            TEXT    PRIMARY KEY,
+        taskType      TEXT    NOT NULL,
+        payload       TEXT    NOT NULL,
+        amount        TEXT    NOT NULL,
+        correlationId TEXT,
+        status        TEXT    NOT NULL,
+        createdAt     INTEGER NOT NULL,
+        expiresAt     INTEGER NOT NULL,
+        decidedAt     INTEGER
+      )
+    `);
+  // One row per approval decision (approved / denied / expired).
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS approval_audit_log (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        approvalId TEXT    NOT NULL,
+        decision   TEXT    NOT NULL,
+        ts         INTEGER NOT NULL
       )
     `);
   // Idempotent migration for databases created before correlationId existed.
@@ -330,6 +351,135 @@ export function loadAgentState(key: string): string | undefined {
     | { value: string }
     | undefined;
   return row?.value;
+}
+
+// ─── Pending approvals (#736) ─────────────────────────────────────────────────
+
+export type ApprovalStatus = 'pending_approval' | 'approved' | 'denied' | 'expired';
+
+/** A value-moving task held until an operator approves or denies it. */
+export interface PendingApproval {
+  id: string;
+  taskType: string;
+  payload: unknown;
+  amount: string;
+  correlationId: string | null;
+  status: ApprovalStatus;
+  createdAt: number;
+  expiresAt: number;
+  decidedAt: number | null;
+}
+
+export interface ApprovalAuditRow {
+  approvalId: string;
+  decision: Exclude<ApprovalStatus, 'pending_approval'>;
+  ts: number;
+}
+
+type ApprovalRow = Omit<PendingApproval, 'payload'> & { payload: string };
+
+function toPendingApproval(row: ApprovalRow): PendingApproval {
+  return { ...row, payload: JSON.parse(row.payload) };
+}
+
+/** Persist a newly held task in the `pending_approval` state. */
+export function savePendingApproval(
+  approval: Omit<PendingApproval, 'status' | 'decidedAt'>
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO pending_approvals
+         (id, taskType, payload, amount, correlationId, status, createdAt, expiresAt, decidedAt)
+       VALUES
+         (@id, @taskType, @payload, @amount, @correlationId, 'pending_approval', @createdAt,
+          @expiresAt, NULL)`
+    )
+    .run({ ...approval, payload: JSON.stringify(approval.payload ?? null) });
+}
+
+export function getPendingApproval(id: string): PendingApproval | undefined {
+  const row = getDb().prepare(`SELECT * FROM pending_approvals WHERE id = ?`).get(id) as
+    | ApprovalRow
+    | undefined;
+  return row ? toPendingApproval(row) : undefined;
+}
+
+/** Approvals still waiting for a decision, oldest first. */
+export function listPendingApprovals(): PendingApproval[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM pending_approvals WHERE status = 'pending_approval' ORDER BY createdAt ASC`
+    )
+    .all() as ApprovalRow[];
+  return rows.map(toPendingApproval);
+}
+
+/**
+ * Move a pending, unexpired approval to `approved` or `denied` and record the
+ * decision in the audit log. The status check is part of the UPDATE, so of two
+ * concurrent decisions only one can win.
+ *
+ * @returns true when this call made the decision, false when the approval was
+ *   unknown, already decided or expired.
+ */
+export function decideApproval(
+  id: string,
+  decision: 'approved' | 'denied',
+  now: number = Date.now()
+): boolean {
+  const db = getDb();
+  const decide = db.transaction((): boolean => {
+    const info = db
+      .prepare(
+        `UPDATE pending_approvals SET status = ?, decidedAt = ?
+         WHERE id = ? AND status = 'pending_approval' AND expiresAt > ?`
+      )
+      .run(decision, now, id, now);
+    if (info.changes !== 1) return false;
+    db.prepare(`INSERT INTO approval_audit_log (approvalId, decision, ts) VALUES (?, ?, ?)`).run(
+      id,
+      decision,
+      now
+    );
+    return true;
+  });
+  return decide();
+}
+
+/**
+ * Mark every pending approval past its deadline as `expired`, recording each in
+ * the audit log.
+ *
+ * @returns the ids that expired in this call.
+ */
+export function expirePendingApprovals(now: number = Date.now()): string[] {
+  const db = getDb();
+  const expire = db.transaction((): string[] => {
+    const rows = db
+      .prepare(
+        `SELECT id FROM pending_approvals WHERE status = 'pending_approval' AND expiresAt <= ?`
+      )
+      .all(now) as Array<{ id: string }>;
+    const update = db.prepare(
+      `UPDATE pending_approvals SET status = 'expired', decidedAt = ? WHERE id = ?`
+    );
+    const audit = db.prepare(
+      `INSERT INTO approval_audit_log (approvalId, decision, ts) VALUES (?, 'expired', ?)`
+    );
+    for (const { id } of rows) {
+      update.run(now, id);
+      audit.run(id, now);
+    }
+    return rows.map((r) => r.id);
+  });
+  return expire();
+}
+
+/** Every approval decision, oldest first. */
+export function getApprovalAuditLog(): ApprovalAuditRow[] {
+  return getDb()
+    .prepare(`SELECT approvalId, decision, ts FROM approval_audit_log ORDER BY id ASC`)
+    .all() as ApprovalAuditRow[];
 }
 
 /** Replace the underlying DB instance — used in tests to inject an in-memory DB. */
