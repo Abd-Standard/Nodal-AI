@@ -208,7 +208,7 @@ Every `TaskType` value accepted by `PayFiAgent.run()` is listed below, together 
 | `sequence_number` | `SequenceNumberTool` | Fetch or bump the agent's current sequence number. |
 | `sponsored_account` | `SponsoredAccountTool` | Create a new Stellar account with sponsored reserves. |
 | `anchor_quote` | `AnchorQuoteTool` | Fetch an SEP-38 quote from an anchor for asset conversion. |
-| `inflation` | `InflationTool` | Set or query the account's inflation destination. |
+| `inflation` | `InflationTool` | **Deprecated** (removed next minor release; inflation is disabled on Stellar). Set or query the account's inflation destination. |
 | `soroban_deploy` | `SorobanDeployTool` | Upload WASM bytecode and instantiate Soroban smart contracts. |
 | `swap` | `SwapTool` | Perform atomic DEX asset swaps via strict-send path payments. |
 | `account_history` | `AccountHistoryTool` | Fetch paginated payment transaction history for a Stellar account. |

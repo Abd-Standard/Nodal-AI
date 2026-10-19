@@ -82,6 +82,7 @@ vi.mock('../backend/kill_switch', () => ({
 }));
 
 import type * as http from 'http';
+import { Readable } from 'stream';
 import { createHealthServer } from '../backend/server';
 import { pauseAgent, resumeAgent } from '../backend/kill_switch';
 import {
@@ -98,6 +99,22 @@ import { getResults } from '../backend/persistence';
 function makeReq(method: string, url: string, headers: Record<string, string> = {}): http.IncomingMessage {
   return { method, url, headers } as http.IncomingMessage;
 }
+
+function makeBodyReq(
+  method: string,
+  url: string,
+  body: unknown,
+  headers: Record<string, string> = {}
+): http.IncomingMessage {
+  return Object.assign(Readable.from([JSON.stringify(body)]), {
+    method,
+    url,
+    headers,
+  }) as unknown as http.IncomingMessage;
+}
+
+/** Lets the async route handlers finish reading the body and responding. */
+const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
 
 function makeRes(): http.ServerResponse & {
   _statusCode: number;
@@ -130,6 +147,7 @@ describe('backend/server.ts — health check HTTP server', () => {
     sorobanOk = true;
     databaseOk = true;
     delete process.env.WEBHOOK_SECRET;
+    delete process.env.ADMIN_API_TOKEN;
     vi.clearAllMocks();
   });
 
@@ -394,6 +412,162 @@ describe('backend/server.ts — health check HTTP server', () => {
 
       expect(res._statusCode).toBe(404);
       expect(pauseAgent).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('approvals (#736)', () => {
+    const approval = { id: 'appr-1', status: 'pending_approval' };
+    let agent: any;
+
+    beforeEach(() => {
+      agent = {
+        listApprovals: vi.fn(() => [approval]),
+        approve: vi.fn(async () => ({
+          approval: { ...approval, status: 'approved' },
+          result: { success: true, taskType: 'stellar_payment' },
+        })),
+        deny: vi.fn(() => ({ ...approval, status: 'denied' })),
+      };
+    });
+
+    it('lists pending approvals', () => {
+      createHealthServer(agent);
+      const res = makeRes();
+
+      capturedHandler!(makeReq('GET', '/approvals'), res);
+
+      expect(res._statusCode).toBe(200);
+      expect(JSON.parse(res._body)).toEqual({ approvals: [approval] });
+    });
+
+    it('returns 401 for a decision when WEBHOOK_SECRET is unset', async () => {
+      createHealthServer(agent);
+      const res = makeRes();
+
+      capturedHandler!(makeBodyReq('POST', '/approvals/appr-1', { decision: 'approve' }), res);
+      await flush();
+
+      expect(res._statusCode).toBe(401);
+      expect(agent.approve).not.toHaveBeenCalled();
+    });
+
+    it('returns 401 for a decision with a wrong bearer token', async () => {
+      process.env.WEBHOOK_SECRET = 'admin-secret';
+      createHealthServer(agent);
+      const res = makeRes();
+
+      capturedHandler!(
+        makeBodyReq('POST', '/approvals/appr-1', { decision: 'approve' }, {
+          authorization: 'Bearer nope',
+        }),
+        res
+      );
+      await flush();
+
+      expect(res._statusCode).toBe(401);
+      expect(agent.approve).not.toHaveBeenCalled();
+    });
+
+    it('approves a pending task with a valid bearer token', async () => {
+      process.env.WEBHOOK_SECRET = 'admin-secret';
+      createHealthServer(agent);
+      const res = makeRes();
+
+      capturedHandler!(
+        makeBodyReq('POST', '/approvals/appr-1', { decision: 'approve' }, {
+          authorization: 'Bearer admin-secret',
+        }),
+        res
+      );
+      await flush();
+
+      expect(res._statusCode).toBe(200);
+      expect(agent.approve).toHaveBeenCalledWith('appr-1');
+      expect(JSON.parse(res._body).approval.status).toBe('approved');
+    });
+
+    it('denies a pending task with a valid bearer token', async () => {
+      process.env.WEBHOOK_SECRET = 'admin-secret';
+      createHealthServer(agent);
+      const res = makeRes();
+
+      capturedHandler!(
+        makeBodyReq('POST', '/approvals/appr-1', { decision: 'deny' }, {
+          authorization: 'Bearer admin-secret',
+        }),
+        res
+      );
+      await flush();
+
+      expect(res._statusCode).toBe(200);
+      expect(agent.deny).toHaveBeenCalledWith('appr-1');
+      expect(JSON.parse(res._body).approval.status).toBe('denied');
+    });
+
+    it('returns 400 for an unknown decision and 404 for an unknown id', async () => {
+      process.env.WEBHOOK_SECRET = 'admin-secret';
+      agent.deny = vi.fn(() => null);
+      createHealthServer(agent);
+      const auth = { authorization: 'Bearer admin-secret' };
+
+      const bad = makeRes();
+      capturedHandler!(makeBodyReq('POST', '/approvals/appr-1', { decision: 'maybe' }, auth), bad);
+      const missing = makeRes();
+      capturedHandler!(makeBodyReq('POST', '/approvals/nope', { decision: 'deny' }, auth), missing);
+      await flush();
+
+      expect(bad._statusCode).toBe(400);
+      expect(missing._statusCode).toBe(404);
+    });
+  });
+
+  describe('ADMIN_API_TOKEN (#737)', () => {
+    it('returns 401 when ADMIN_API_TOKEN is set and no token is supplied', () => {
+      process.env.ADMIN_API_TOKEN = 'admin-token';
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(makeReq('GET', '/status'), res);
+
+      expect(res._statusCode).toBe(401);
+      expect(getResults).not.toHaveBeenCalled();
+    });
+
+    it('returns 401 for an invalid token, including one of a different length', () => {
+      process.env.ADMIN_API_TOKEN = 'admin-token';
+      createHealthServer();
+
+      const wrong = makeRes();
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer admin-tokeX' }), wrong);
+      const shorter = makeRes();
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer admin' }), shorter);
+      const noToken = makeRes();
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer' }), noToken);
+
+      expect(wrong._statusCode).toBe(401);
+      expect(shorter._statusCode).toBe(401);
+      expect(noToken._statusCode).toBe(401);
+    });
+
+    it('returns 200 for a valid ADMIN_API_TOKEN', () => {
+      process.env.ADMIN_API_TOKEN = 'admin-token';
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer admin-token' }), res);
+
+      expect(res._statusCode).toBe(200);
+    });
+
+    it('rejects WEBHOOK_SECRET as the token once ADMIN_API_TOKEN is set', () => {
+      process.env.ADMIN_API_TOKEN = 'admin-token';
+      process.env.WEBHOOK_SECRET = 'webhook-secret';
+      createHealthServer();
+      const res = makeRes();
+
+      capturedHandler!(makeReq('GET', '/status', { authorization: 'Bearer webhook-secret' }), res);
+
+      expect(res._statusCode).toBe(401);
     });
   });
 });

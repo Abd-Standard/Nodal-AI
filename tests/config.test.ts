@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
+import { mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import { Keypair } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 
@@ -425,6 +428,7 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     process.env.HORIZON_URL = "https://horizon.stellar.org";
     process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
     process.env.AGENT_SPENDING_LIMIT = "9999";
+    process.env.WEBHOOK_SECRET = "mainnet-api-token";
 
     const { configPromise } = await import("../backend/config");
     const cfg = await configPromise;
@@ -432,5 +436,107 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     expect(cfg.STELLAR_NETWORK).toBe("mainnet");
     expect(cfg.AGENT_SPENDING_LIMIT).toBe("9999");
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  // ── HTTP API auth guard (#738) ──────────────────────────────────────────────
+  it("fails on mainnet when no API token is configured", async () => {
+    setMinimalValidEnv();
+    process.env.STELLAR_NETWORK = "mainnet";
+    process.env.HORIZON_URL = "https://horizon.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
+    process.env.AGENT_SPENDING_LIMIT = "100";
+    delete process.env.WEBHOOK_SECRET;
+    delete process.env.ADMIN_API_TOKEN;
+
+    await expect(async () => {
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
+    }).rejects.toThrow(/process\.exit: 1/);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("ADMIN_API_TOKEN is required on mainnet")
+    );
+  });
+
+  it("warns once on testnet when no API token is configured", async () => {
+    setMinimalValidEnv();
+    delete process.env.WEBHOOK_SECRET;
+    delete process.env.ADMIN_API_TOKEN;
+
+    const { configPromise } = await import("../backend/config");
+    await configPromise;
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const warnings = stderrSpy.mock.calls.filter(([msg]: [string]) =>
+      String(msg).includes("ADMIN_API_TOKEN is not set")
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  // ── Dedicated API token (#737) ──────────────────────────────────────────────
+  it("warns that WEBHOOK_SECRET as the API token is deprecated", async () => {
+    setMinimalValidEnv();
+    process.env.WEBHOOK_SECRET = "legacy-secret";
+    delete process.env.ADMIN_API_TOKEN;
+
+    const { configPromise } = await import("../backend/config");
+    await configPromise;
+
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Using WEBHOOK_SECRET as the HTTP API token is deprecated")
+    );
+  });
+
+  it("accepts ADMIN_API_TOKEN on mainnet without a deprecation warning", async () => {
+    setMinimalValidEnv();
+    process.env.STELLAR_NETWORK = "mainnet";
+    process.env.HORIZON_URL = "https://horizon.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
+    process.env.AGENT_SPENDING_LIMIT = "100";
+    process.env.ADMIN_API_TOKEN = "admin-token";
+    delete process.env.WEBHOOK_SECRET;
+
+    const { configPromise } = await import("../backend/config");
+    const cfg = await configPromise;
+
+    expect(cfg.ADMIN_API_TOKEN).toBe("admin-token");
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).not.toHaveBeenCalledWith(expect.stringContaining("deprecated"));
+  });
+
+  // ── Payment destination policy (#735) ───────────────────────────────────────
+  it("merges PAYMENT_DESTINATIONS and PAYMENT_DESTINATIONS_FILE", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nodal-dest-"));
+    const file = join(dir, "destinations.txt");
+    writeFileSync(file, `# merchants\nmerchant*example.com\n\n${VALID_ISSUER} # issuer\n`);
+    setMinimalValidEnv();
+    process.env.PAYMENT_DESTINATION_POLICY = "allowlist";
+    process.env.PAYMENT_DESTINATIONS = "shop*example.org";
+    process.env.PAYMENT_DESTINATIONS_FILE = file;
+
+    const { configPromise } = await import("../backend/config");
+    const cfg = await configPromise;
+
+    expect(cfg.PAYMENT_DESTINATION_POLICY).toBe("allowlist");
+    expect(cfg.PAYMENT_DESTINATIONS).toEqual([
+      "shop*example.org",
+      "merchant*example.com",
+      VALID_ISSUER,
+    ]);
+  });
+
+  it("fails when a payment destination is neither a G-address nor a federation name", async () => {
+    setMinimalValidEnv();
+    process.env.PAYMENT_DESTINATION_POLICY = "denylist";
+    process.env.PAYMENT_DESTINATIONS = "not-an-address";
+    delete process.env.PAYMENT_DESTINATIONS_FILE;
+
+    await expect(async () => {
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
+    }).rejects.toThrow(/process\.exit: 1/);
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("not-an-address"));
   });
 });

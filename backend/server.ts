@@ -7,24 +7,31 @@
  *   GET /health  → 200 { status: "ok", components: { horizon, soroban, database } }
  *                  503 { status: "degraded", components: { ... } } when a dependency is down
  *   GET /status  → 200 { results: PersistedResult[] }   (paginated via ?limit=&offset=,
- *                  default last 10; Bearer auth when WEBHOOK_SECRET is set)
+ *                  default last 10; Bearer auth when ADMIN_API_TOKEN is set)
  *   POST /admin/pause  → 200 { paused: true }   halt value-moving tasks (kill switch)
  *   POST /admin/resume → 200 { paused: false }  resume them
- *                  Both always require Bearer auth with WEBHOOK_SECRET; 401 when it is unset.
+ *                  Both always require Bearer auth with ADMIN_API_TOKEN; 401 when it is unset.
+ *   GET /approvals     → 200 { approvals: PendingApproval[] }  tasks awaiting a decision
+ *   POST /approvals/:id { "decision": "approve" | "deny" } → 200 { approval, result? }
+ *                  Always requires Bearer auth with ADMIN_API_TOKEN; 401 when it is unset.
+ *
+ * ADMIN_API_TOKEN is the API bearer token. WEBHOOK_SECRET is still accepted in
+ * its place when ADMIN_API_TOKEN is unset, but that fallback is deprecated.
  *
  * Uses only the Node.js built-in `http` module — no additional dependencies.
  * Port is read from config.HEALTH_PORT (env var HEALTH_PORT, default 3000).
  */
 
 import * as http from 'http';
+import { createHash, timingSafeEqual } from 'crypto';
 import { config } from './config';
 import { getResults } from './persistence';
 import { horizonServer, sorobanServer } from './rpc_client';
 import { db } from './db/client';
 import { handleError } from './middleware/error_handler';
 import { createLogger } from './utils/logger';
-import { spendingTracker } from './agent';
-import { isPaused, pauseAgent, resumeAgent } from './kill_switch';
+import { spendingTracker, type PayFiAgent } from './agent';
+import { llmUsage } from './ai/llm';
 
 const log = createLogger('health-server');
 
@@ -105,39 +112,52 @@ export async function checkDatabase(): Promise<ComponentStatus> {
 // ─── Auth helper ──────────────────────────────────────────────────────────────
 
 /**
+ * The bearer token the HTTP API accepts: ADMIN_API_TOKEN, falling back to the
+ * deprecated WEBHOOK_SECRET so existing deployments keep working. Read per
+ * request so a rotated value takes effect without re-importing the module.
+ */
+function apiToken(): string | undefined {
+  return process.env.ADMIN_API_TOKEN || process.env.WEBHOOK_SECRET || undefined;
+}
+
+/**
+ * Constant-time token comparison. Both sides are hashed first so the buffers
+ * handed to timingSafeEqual are always the same length, and the comparison
+ * leaks neither the token's contents nor its length.
+ */
+function tokensMatch(given: string, expected: string): boolean {
+  const a = createHash('sha256').update(given).digest();
+  const b = createHash('sha256').update(expected).digest();
+  return timingSafeEqual(a, b);
+}
+
+/**
  * Returns true if the request passes Bearer-token authentication.
- * When WEBHOOK_SECRET is unset, all requests are allowed. The secret is read
- * per request so a rotated value takes effect without re-importing the module.
+ * When no API token is configured, requests are allowed on testnet/futurenet
+ * only; on mainnet they are always rejected.
  */
 function isAuthenticated(req: http.IncomingMessage): boolean {
-  const secret = process.env.WEBHOOK_SECRET;
-  if (!secret) return true;
+  const secret = apiToken();
+  if (!secret) return config.STELLAR_NETWORK !== 'mainnet';
   const auth = req.headers['authorization'];
   if (!auth) return false;
   const [scheme, token] = auth.split(' ');
-  return scheme?.toLowerCase() === 'bearer' && token === secret;
+  return scheme?.toLowerCase() === 'bearer' && token !== undefined && tokensMatch(token, secret);
 }
 
 const HEALTH_PATH = '/health';
 const STATUS_PATH = '/status';
 const SPENDING_PATH = '/spending';
-const ADMIN_PAUSE_PATH = '/admin/pause';
-const ADMIN_RESUME_PATH = '/admin/resume';
-
-/**
- * Admin routes can freeze or unfreeze fund movement, so unlike the read-only
- * routes they are never open: a WEBHOOK_SECRET must be configured and presented.
- */
-function isAdminAuthenticated(req: http.IncomingMessage): boolean {
-  return !!process.env.WEBHOOK_SECRET && isAuthenticated(req);
-}
+const METRICS_PATH = '/metrics';
+const APPROVALS_PATH = '/approvals';
 
 /**
  * Creates and returns the health-check HTTP server.
  * Does NOT call `.listen()` — the caller (typically `index.ts`) is responsible
- * for binding to `config.HEALTH_PORT`.
+ * for binding to `config.HEALTH_PORT`. The approval routes need `agent`; they
+ * answer 503 without one.
  */
-export function createHealthServer(): http.Server {
+export function createHealthServer(agent?: PayFiAgent): http.Server {
   const server = http.createServer((req, res) => {
     // ── GET /health ────────────────────────────────────────────────────────
     if (req.method === 'GET' && req.url === HEALTH_PATH) {
@@ -151,7 +171,7 @@ export function createHealthServer(): http.Server {
 
     // ── GET /status ────────────────────────────────────────────────────────
     // Delegates to handleResults(), which enforces Bearer-token auth when
-    // WEBHOOK_SECRET is set and honours `limit`/`offset` query parameters.
+    // ADMIN_API_TOKEN is set and honours `limit`/`offset` query parameters.
     // The previous inline branch served persisted results with no auth guard
     // and a hardcoded `getResults(10)`.
     if (req.method === 'GET' && req.url?.split('?')[0] === STATUS_PATH) {
@@ -188,26 +208,63 @@ export function createHealthServer(): http.Server {
       return;
     }
 
-    // ── POST /admin/pause, POST /admin/resume ──────────────────────────────
-    if (req.method === 'POST' && (req.url === ADMIN_PAUSE_PATH || req.url === ADMIN_RESUME_PATH)) {
-      if (!isAdminAuthenticated(req)) {
+    // ── GET /metrics ───────────────────────────────────────────────────────
+    if (req.method === 'GET' && req.url === METRICS_PATH) {
+      if (!isAuthenticated(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized' }));
         return;
       }
 
-      if (req.url === ADMIN_PAUSE_PATH) {
-        pauseAgent('admin API');
-      } else {
-        resumeAgent('admin API');
-      }
+      const llmMetrics = llmUsage.getMetrics();
+      const spendingStatus = spendingTracker.getWindowStatus();
 
-      const body = JSON.stringify({ paused: isPaused() });
+      const body = JSON.stringify({
+        llm: llmMetrics,
+        spending: {
+          ...spendingStatus,
+          limit: parseFloat(config.AGENT_SPENDING_LIMIT),
+          percentUsed:
+            spendingStatus.total > 0
+              ? (spendingStatus.total / parseFloat(config.AGENT_SPENDING_LIMIT)) * 100
+              : 0,
+        },
+      });
+
       res.writeHead(200, {
         'Content-Type': 'application/json',
         'Content-Length': Buffer.byteLength(body),
       });
       res.end(body);
+      return;
+    }
+
+    // ── GET /approvals ─────────────────────────────────────────────────────
+    if (req.method === 'GET' && req.url === APPROVALS_PATH) {
+      if (!isAuthenticated(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+      if (!agent) {
+        res.writeHead(503, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Agent not available' }));
+        return;
+      }
+
+      const body = JSON.stringify({ approvals: agent.listApprovals() });
+      res.writeHead(200, {
+        'Content-Type': 'application/json',
+        'Content-Length': Buffer.byteLength(body),
+      });
+      res.end(body);
+      return;
+    }
+
+    // ── POST /approvals/:id ────────────────────────────────────────────────
+    if (req.method === 'POST' && req.url?.startsWith(`${APPROVALS_PATH}/`)) {
+      const id = decodeURIComponent(req.url.slice(APPROVALS_PATH.length + 1));
+      void handleApprovalDecision(req, res, agent, id);
       return;
     }
 
@@ -223,8 +280,8 @@ export function createHealthServer(): http.Server {
  * Convenience: create the server and immediately start listening.
  * Returns the bound server instance.
  */
-export function startHealthServer(): http.Server {
-  const server = createHealthServer();
+export function startHealthServer(agent?: PayFiAgent): http.Server {
+  const server = createHealthServer(agent);
   const port = config.HEALTH_PORT;
 
   server.listen(port, () => {
@@ -292,7 +349,7 @@ function parseNonNegativeInt(value: string | null, fallback: number): number {
 
 /**
  * GET /status — paginated persisted AgentResult records, newest first.
- * Requires a matching Bearer token when WEBHOOK_SECRET is set.
+ * Requires a matching Bearer token when ADMIN_API_TOKEN is set.
  * Query parameters: `limit` (default 10, max 100) and `offset` (default 0).
  */
 function handleResults(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
@@ -332,5 +389,82 @@ function handleResults(req: http.IncomingMessage, res: http.ServerResponse, url:
       ...errorResponse.headers,
     });
     res.end(body);
+  }
+}
+
+/** Reads and JSON-parses a request body; an empty body parses to `{}`. */
+function readJsonBody(req: http.IncomingMessage): Promise<unknown> {
+  return new Promise((resolve, reject) => {
+    let data = '';
+    req.on('data', (chunk) => (data += chunk));
+    req.on('end', () => {
+      try {
+        resolve(data ? JSON.parse(data) : {});
+      } catch (err) {
+        reject(err);
+      }
+    });
+    req.on('error', reject);
+  });
+}
+
+/**
+ * POST /approvals/:id — approve (execute once) or deny a pending task (#736).
+ * Moves money, so a Bearer token is always required — even on testnet.
+ */
+async function handleApprovalDecision(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  agent: PayFiAgent | undefined,
+  id: string
+): Promise<void> {
+  const send = (status: number, payload: unknown): void => {
+    const body = JSON.stringify(payload);
+    res.writeHead(status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+  };
+
+  if (!apiToken() || !isAuthenticated(req)) {
+    send(401, { error: 'Unauthorized' });
+    return;
+  }
+  if (!agent) {
+    send(503, { error: 'Agent not available' });
+    return;
+  }
+
+  let decision: unknown;
+  try {
+    decision = ((await readJsonBody(req)) as { decision?: unknown } | null)?.decision;
+  } catch {
+    send(400, { error: 'Request body must be JSON' });
+    return;
+  }
+  if (decision !== 'approve' && decision !== 'deny') {
+    send(400, { error: 'decision must be "approve" or "deny"' });
+    return;
+  }
+
+  try {
+    if (decision === 'approve') {
+      const outcome = await agent.approve(id);
+      if (!outcome) send(404, { error: 'Approval not found' });
+      else send(200, outcome);
+    } else {
+      const approval = agent.deny(id);
+      if (!approval) send(404, { error: 'Approval not found' });
+      else send(200, { approval });
+    }
+  } catch (err) {
+    const errorResponse = handleError(err);
+    log.error({
+      msg: 'Failed to process approval decision',
+      status: errorResponse.status,
+      type: errorResponse.type,
+    });
+    send(errorResponse.status, errorResponse);
   }
 }

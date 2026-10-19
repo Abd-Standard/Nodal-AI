@@ -1,0 +1,126 @@
+---
+# Soroban / DeFi cases (11–20)
+
+id: soroban-001
+description: Invoke a Soroban contract method
+prompt: "Call the transfer function on contract CABC with amount 100"
+expectedTaskTypes:
+  - soroban_invoke
+recordedOutput:
+  tasks:
+    - type: soroban_invoke
+      payload:
+        contractId: CABC
+        method: transfer
+        args:
+          - "100"
+---
+id: soroban-002
+description: Query a Soroban contract storage value
+prompt: "Read the balance storage key for GAAA on contract CABC"
+expectedTaskTypes:
+  - soroban_query
+recordedOutput:
+  tasks:
+    - type: soroban_query
+      payload:
+        contractId: CABC
+        key: balance
+        account: GAAA
+---
+id: soroban-003
+description: Deploy a Soroban contract
+prompt: "Deploy the WASM contract at /path/to/contract.wasm"
+expectedTaskTypes:
+  - soroban_deploy
+recordedOutput:
+  tasks:
+    - type: soroban_deploy
+      payload:
+        wasmPath: /path/to/contract.wasm
+---
+id: soroban-004
+description: Query Soroban contract events
+prompt: "Get transfer events from contract CABC in the last 100 ledgers"
+expectedTaskTypes:
+  - soroban_event_query
+recordedOutput:
+  tasks:
+    - type: soroban_event_query
+      payload:
+        contractId: CABC
+        eventType: transfer
+        ledgerRange: 100
+---
+id: defi-001
+description: Place a DEX sell offer
+prompt: "Create a sell offer for 50 USDC at a price of 1.2 XLM per USDC"
+expectedTaskTypes:
+  - dex_offer
+recordedOutput:
+  tasks:
+    - type: dex_offer
+      payload:
+        selling: USDC
+        buying: XLM
+        amount: "50"
+        price: "1.2"
+---
+id: defi-002
+description: Join a liquidity pool
+prompt: "Deposit 100 USDC and 200 XLM into liquidity pool POOL123"
+expectedTaskTypes:
+  - liquidity_pool
+recordedOutput:
+  tasks:
+    - type: liquidity_pool
+      payload:
+        poolId: POOL123
+        maxAmountA: "100"
+        maxAmountB: "200"
+---
+id: defi-003
+description: Token swap
+prompt: "Swap 10 XLM for USDC at best available rate"
+expectedTaskTypes:
+  - swap
+recordedOutput:
+  tasks:
+    - type: swap
+      payload:
+        fromAsset: XLM
+        toAsset: USDC
+        fromAmount: "10"
+---
+id: account-001
+description: Fetch account info
+prompt: "What is the account info for GAAA?"
+expectedTaskTypes:
+  - account_info
+recordedOutput:
+  tasks:
+    - type: account_info
+      payload:
+        accountId: GAAA
+---
+id: account-002
+description: Set account options (home domain)
+prompt: "Set the home domain for the agent account to example.com"
+expectedTaskTypes:
+  - set_options
+recordedOutput:
+  tasks:
+    - type: set_options
+      payload:
+        homeDomain: example.com
+---
+id: identity-001
+description: Stellar identity auth challenge
+prompt: "Generate a SEP-10 auth challenge for account GAAA"
+expectedTaskTypes:
+  - stellar_identity_auth
+recordedOutput:
+  tasks:
+    - type: stellar_identity_auth
+      payload:
+        account: GAAA

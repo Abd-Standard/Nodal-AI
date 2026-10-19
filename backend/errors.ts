@@ -26,8 +26,10 @@ export enum ErrorType {
   ConfigError = 'CONFIG_ERROR',
   /** The operator kill switch is engaged; value-moving tasks are halted. */
   AgentPaused = 'AGENT_PAUSED',
-  /** The agent is draining for shutdown; the task was never executed. */
-  AgentShuttingDown = 'AGENT_SHUTTING_DOWN',
+  /** The task exceeds APPROVAL_THRESHOLD and is waiting for a human decision. */
+  PendingApproval = 'PENDING_APPROVAL',
+  /** The payment destination is not permitted by PAYMENT_DESTINATION_POLICY. */
+  PolicyViolation = 'POLICY_VIOLATION',
   UnknownError = 'UNKNOWN_ERROR',
 }
 
@@ -66,8 +68,7 @@ export class ValidationError extends StructuredError {
 }
 
 export class RateLimitError extends StructuredError {
-  readonly retryAfterSeconds: number | undefined;
-  readonly retryAfterSeconds?: number | undefined;
+  public readonly retryAfterSeconds?: number;
 
   constructor(message: string, retryAfterSeconds?: number, cause?: unknown) {
     super(message, ErrorType.RateLimitError, cause);
@@ -84,8 +85,7 @@ export class UnauthorizedError extends StructuredError {
 }
 
 export class ContractError extends StructuredError {
-  readonly contractId: string | undefined;
-  readonly contractId?: string | undefined;
+  public readonly contractId?: string;
 
   constructor(message: string, contractId?: string, cause?: unknown) {
     super(message, ErrorType.ContractError, cause);
@@ -95,8 +95,7 @@ export class ContractError extends StructuredError {
 }
 
 export class TransactionFailureError extends StructuredError {
-  readonly txHash: string | undefined;
-  readonly txHash?: string | undefined;
+  public readonly txHash?: string;
 
   constructor(message: string, txHash?: string, cause?: unknown) {
     super(message, ErrorType.TransactionFailure, cause);
@@ -126,10 +125,50 @@ export class AgentPausedError extends StructuredError {
   }
 }
 
-export class AgentShuttingDownError extends StructuredError {
-  constructor(message = 'Agent is shutting down — task rejected', cause?: unknown) {
-    super(message, ErrorType.AgentShuttingDown, cause);
-    Object.setPrototypeOf(this, AgentShuttingDownError.prototype);
+export class PolicyViolationError extends StructuredError {
+  constructor(message: string, cause?: unknown) {
+    super(message, ErrorType.PolicyViolation, cause);
+    Object.setPrototypeOf(this, PolicyViolationError.prototype);
+  }
+}
+
+// ─── Destination pre-flight errors (#788) ────────────────────────────────────
+// Raised before signing, so the payment never reaches the network. All three
+// are ValidationErrors (the request cannot succeed as given) with their own
+// class so callers can tell which check failed without string-matching.
+
+/** The destination account does not exist on the network. */
+export class DestinationNotFoundError extends ValidationError {
+  readonly destination: string;
+
+  constructor(message: string, destination: string, cause?: unknown) {
+    super(message, cause);
+    this.destination = destination;
+    Object.setPrototypeOf(this, DestinationNotFoundError.prototype);
+  }
+}
+
+/** The destination has no trustline for the non-native asset being sent. */
+export class MissingTrustlineError extends ValidationError {
+  readonly destination: string;
+  readonly asset: string;
+
+  constructor(message: string, destination: string, asset: string, cause?: unknown) {
+    super(message, cause);
+    this.destination = destination;
+    this.asset = asset;
+    Object.setPrototypeOf(this, MissingTrustlineError.prototype);
+  }
+}
+
+/** The destination requires a memo (SEP-29 `config.memo_required`) and none was given. */
+export class MemoRequiredError extends ValidationError {
+  readonly destination: string;
+
+  constructor(message: string, destination: string, cause?: unknown) {
+    super(message, cause);
+    this.destination = destination;
+    Object.setPrototypeOf(this, MemoRequiredError.prototype);
   }
 }
 

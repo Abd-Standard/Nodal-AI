@@ -423,7 +423,13 @@ function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Arr
       const credentials = authObject.credentials?.();
       if (!credentials) continue;
 
-      const hasAddressCredentials = typeof credentials.address === 'function';
+      // Source-account credentials are authorized by the envelope signature and
+      // carry no address. An XDR union exposes every arm's accessor, so check
+      // the discriminant rather than whether `address` exists.
+      const credentialsType = credentials.switch?.() as { name?: string } | undefined;
+      const hasAddressCredentials = credentialsType
+        ? credentialsType.name === 'sorobanCredentialsAddress'
+        : typeof credentials.address === 'function';
       if (!hasAddressCredentials) {
         continue;
       }
