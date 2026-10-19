@@ -15,9 +15,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CHANGELOG.md following Keep a Changelog format for tracking releases and changes
 - `SorobanInvokeTool` now enforces the spending limit on contract invocations: simulated Stellar Asset Contract transfers that debit the agent are summed from the mandatory Soroban simulation and checked against `AGENT_SPENDING_LIMIT` (and the mainnet cap) before broadcast, and within-limit spends are recorded into the cumulative spending window
 
+- Destination pre-flight checks before signing `stellar_payment` and `path_payment` (#788): a missing account raises `DestinationNotFoundError` (suggesting `createAccount` with at least 1 XLM for XLM payments), a missing trustline raises `MissingTrustlineError`, and a destination that sets SEP-29 `config.memo_required` with no memo attached raises `MemoRequiredError`
+- MPP Charge client (`backend/payments/mpp.ts`, `protocol: 'mpp-charge'`) for facilitator-free per-request payments through a SEP-41 `transfer`, using the agent signer and spending policy (#777)
+- OpenAPI discovery document for paid endpoints at `/.well-known/openapi.json`, generated from route config with `x-payment-info` price/asset/network offers (`backend/x402/middleware.ts`, #781)
+- `account_info` returns the read-only legacy `inflationDestination` (#782)
+
+### Deprecated
+
+- The `inflation` task type and `InflationTool` (#782). Inflation has been disabled on Stellar since protocol 12, so the tool has no effect; every execution now logs a deprecation warning. They will be removed in the next minor release (tracked in #874). Read an account's inflation destination from `account_info` instead.
+
 ### Fixed
 
 - Quick Start code blocks in README.md — commands are now properly enclosed in fenced code blocks
+- `prepareSorobanTx` no longer rejects source-account Soroban authorization entries as "Unexpected Soroban auth signer format"; only address credentials are checked against the agent key
 
 ---
 

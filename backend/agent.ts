@@ -209,6 +209,7 @@ export type BuiltinTaskType =
   | 'sequence_number'
   | 'sponsored_account'
   | 'anchor_quote'
+  /** @deprecated Inflation is disabled on Stellar; removed in the next minor release (#782). */
   | 'inflation'
   | 'soroban_deploy'
   | 'swap'

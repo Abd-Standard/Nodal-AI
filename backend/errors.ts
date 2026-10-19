@@ -135,6 +135,46 @@ export class PolicyViolationError extends StructuredError {
   }
 }
 
+// ─── Destination pre-flight errors (#788) ────────────────────────────────────
+// Raised before signing, so the payment never reaches the network. All three
+// are ValidationErrors (the request cannot succeed as given) with their own
+// class so callers can tell which check failed without string-matching.
+
+/** The destination account does not exist on the network. */
+export class DestinationNotFoundError extends ValidationError {
+  readonly destination: string;
+
+  constructor(message: string, destination: string, cause?: unknown) {
+    super(message, cause);
+    this.destination = destination;
+    Object.setPrototypeOf(this, DestinationNotFoundError.prototype);
+  }
+}
+
+/** The destination has no trustline for the non-native asset being sent. */
+export class MissingTrustlineError extends ValidationError {
+  readonly destination: string;
+  readonly asset: string;
+
+  constructor(message: string, destination: string, asset: string, cause?: unknown) {
+    super(message, cause);
+    this.destination = destination;
+    this.asset = asset;
+    Object.setPrototypeOf(this, MissingTrustlineError.prototype);
+  }
+}
+
+/** The destination requires a memo (SEP-29 `config.memo_required`) and none was given. */
+export class MemoRequiredError extends ValidationError {
+  readonly destination: string;
+
+  constructor(message: string, destination: string, cause?: unknown) {
+    super(message, cause);
+    this.destination = destination;
+    Object.setPrototypeOf(this, MemoRequiredError.prototype);
+  }
+}
+
 function getErrorType(error: unknown): ErrorType {
   if (error instanceof StructuredError) {
     return error.errorType;
