@@ -76,10 +76,12 @@ import { spendingTracker } from './spending_tracker';
 import { dispatchWebhook } from './webhook';
 import { createAgentSigner, Signer } from './signer';
 import { isPaused } from './kill_switch';
+import { taskContext, type AgentEvents } from './events';
 
 // Re-exported so existing importers (`server.ts`, tests) keep working after the
 // singleton moved to spending_tracker.ts.
 export { spendingTracker };
+export type { AgentEvents };
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
@@ -212,6 +214,7 @@ export type BuiltinTaskType =
   | 'sequence_number'
   | 'sponsored_account'
   | 'anchor_quote'
+  /** @deprecated Inflation is disabled on Stellar; removed in the next minor release (#782). */
   | 'inflation'
   | 'soroban_deploy'
   | 'swap'
@@ -505,7 +508,7 @@ function buildAuditEntry(
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
-export class PayFiAgent extends EventEmitter {
+export class PayFiAgent extends EventEmitter<AgentEvents> {
   private readonly signer: Signer;
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
@@ -547,7 +550,7 @@ export class PayFiAgent extends EventEmitter {
 
   // Bound handler references kept so destroy() can call .off() with the exact same function
   // reference — EventEmitter requires identity equality for removal.
-  private readonly _boundHandlers = new Map<string, (...args: unknown[]) => void>();
+  private readonly _boundHandlers = new Map<keyof AgentEvents, (...args: unknown[]) => void>();
 
   // Middleware array for pre/post task execution hooks
   private middlewares: TaskMiddleware[] = [];
@@ -593,13 +596,13 @@ export class PayFiAgent extends EventEmitter {
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
       const safe = err.message.replace(/S[A-Z2-7]{55}/g, '[REDACTED]');
-      logger.error('Unhandled agent error', { error: safe });
+      logger.error({ error: safe }, 'Unhandled agent error');
     };
     const onTaskComplete = (result: AgentResult) => {
-      logger.info('Task complete', { taskType: result.taskType });
+      logger.info({ taskType: result.taskType }, 'Task complete');
     };
     const onTaskFailed = (result: AgentResult) => {
-      logger.warn('Task failed', { taskType: result.taskType, error: result.error });
+      logger.warn({ taskType: result.taskType, error: result.error }, 'Task failed');
     };
 
     this.on('error', onError);
@@ -611,14 +614,17 @@ export class PayFiAgent extends EventEmitter {
     this._boundHandlers.set('task:failed', onTaskFailed as (...args: unknown[]) => void);
 
     // Log only safe fields — public key is derived, not the secret
-    logger.info('PayFiAgent initialised', {
-      network: config.STELLAR_NETWORK,
-      horizon: config.HORIZON_URL,
-      soroban: config.SOROBAN_RPC_URL,
-      agentPubkey: config.AGENT_PUBLIC_KEY,
-      spendingLimit: config.AGENT_SPENDING_LIMIT,
-      assetCode: config.X402_ASSET_CODE,
-    });
+    logger.info(
+      {
+        network: config.STELLAR_NETWORK,
+        horizon: config.HORIZON_URL,
+        soroban: config.SOROBAN_RPC_URL,
+        agentPubkey: config.AGENT_PUBLIC_KEY,
+        spendingLimit: config.AGENT_SPENDING_LIMIT,
+        assetCode: config.X402_ASSET_CODE,
+      },
+      'PayFiAgent initialised'
+    );
   }
 
   /**
@@ -644,13 +650,16 @@ export class PayFiAgent extends EventEmitter {
             // forwarding to onChallenge (or letting Zod's error surface
             // deep inside respond(), where it can't be attributed to the
             // stream that produced it).
-            logger.warn('Dropped invalid x402 challenge memo', {
-              error: err instanceof Error ? err.message : String(err),
-            });
+            logger.warn(
+              {
+                error: err instanceof Error ? err.message : String(err),
+              },
+              'Dropped invalid x402 challenge memo'
+            );
           }
         },
         onerror: (event: MessageEvent) => {
-          logger.warn('Payment stream error', { error: String(event) });
+          logger.warn({ error: String(event) }, 'Payment stream error');
           // The underlying connection is dead — tear it down so `_streamStop`
           // doesn't keep pointing at a broken stream forever, which would
           // otherwise permanently block a future startListening() call (its
@@ -660,7 +669,7 @@ export class PayFiAgent extends EventEmitter {
       });
 
     this._streamStop = closeStream as unknown as () => void;
-    logger.info('Payment stream started', { resourceUrl });
+    logger.info({ resourceUrl }, 'Payment stream started');
   }
 
   /** Stop the active Horizon payment stream subscription. */
@@ -690,7 +699,7 @@ export class PayFiAgent extends EventEmitter {
       this._contractListenerStop();
     }
     this._contractListenerStop = listenContractEvents(contractId, eventTypes, onEvent);
-    logger.info('Contract event listener started', { contractId });
+    logger.info({ contractId }, 'Contract event listener started');
   }
 
   /** Stop the active contract event listener. */
@@ -716,7 +725,7 @@ export class PayFiAgent extends EventEmitter {
     const handle = watchContractStorage(options);
     handle.on('change', onChange);
     this._storageWatcherStop = handle.stop;
-    logger.info('Contract storage watcher started', { contractId: options.contractId });
+    logger.info({ contractId: options.contractId }, 'Contract storage watcher started');
   }
 
   /** Stop the active contract storage watcher. */
@@ -756,7 +765,23 @@ export class PayFiAgent extends EventEmitter {
 
   drain(): void {
     this.isDraining = true;
-    logger.info('Agent draining — rejecting new tasks');
+    // Queued tasks have not started, so settle them now rather than letting
+    // them race the hard-kill timer — otherwise their callers hang forever.
+    const queued = this.taskQueue.splice(0);
+    for (const { task, correlationId, resolve } of queued) {
+      resolve(this.shuttingDownResult(task, correlationId));
+    }
+    logger.info('Agent draining — rejecting new tasks', { rejectedQueuedTasks: queued.length });
+  }
+
+  private shuttingDownResult(task: AgentTask, correlationId: string): AgentResult {
+    return {
+      success: false,
+      taskType: task.type,
+      error: new AgentShuttingDownError().message,
+      errorType: ErrorType.AgentShuttingDown,
+      correlationId,
+    };
   }
 
   /**
@@ -772,7 +797,7 @@ export class PayFiAgent extends EventEmitter {
    */
   use(middleware: TaskMiddleware): void {
     this.middlewares.push(middleware);
-    logger.info('Middleware registered', { totalMiddlewares: this.middlewares.length });
+    logger.info({ totalMiddlewares: this.middlewares.length }, 'Middleware registered');
   }
 
   /**
@@ -922,14 +947,27 @@ export class PayFiAgent extends EventEmitter {
     logger.info('Waiting for pending tasks to finish', {
       activeTasks: this.activeTasks,
       queuedTasks: this.taskQueue.length,
+      timeoutMs,
     });
-    return new Promise<void>((resolve) => {
+    return new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const interval = setInterval(() => {
-        if (this.activeTasks === 0 && this.taskQueue.length === 0) {
+        if (idle()) {
           clearInterval(interval);
-          resolve();
+          clearTimeout(timer);
+          resolve(true);
         }
       }, 100);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          clearInterval(interval);
+          logger.warn('Timed out waiting for pending tasks', {
+            activeTasks: this.activeTasks,
+            queuedTasks: this.taskQueue.length,
+          });
+          resolve(false);
+        }, timeoutMs);
+      }
     });
   }
 
@@ -964,12 +1002,7 @@ export class PayFiAgent extends EventEmitter {
     const taskLog = createLogger('orchestrator', correlationId);
 
     if (this.isDraining) {
-      return {
-        success: false,
-        taskType: task.type,
-        error: 'Agent is shutting down — task rejected',
-        correlationId,
-      };
+      return this.shuttingDownResult(task, correlationId);
     }
 
     // ── Idempotency check (#payment-idempotency) ─────────────────────────────
@@ -1005,8 +1038,14 @@ export class PayFiAgent extends EventEmitter {
           },
           'Agent at capacity — task queued'
         );
+        this.emit('task:queued', {
+          taskType: task.type,
+          correlationId,
+          queueLength: this.taskQueue.length + 1,
+        });
         return new Promise<AgentResult>((resolve) => {
           this.taskQueue.push({ task, correlationId, resolve });
+          queueDepth.set(this.taskQueue.length);
         });
       }
 
@@ -1018,6 +1057,7 @@ export class PayFiAgent extends EventEmitter {
         },
         'Task rejected — max concurrent tasks reached'
       );
+      recordTask(task.type, 'rejected');
       return {
         success: false,
         taskType: task.type,
@@ -1028,7 +1068,24 @@ export class PayFiAgent extends EventEmitter {
       };
     }
 
-    return this.executeTask(task, correlationId, taskLog);
+    return this.executeInstrumented(task, correlationId, taskLog);
+  }
+
+  /**
+   * Run executeTask() and record its outcome and latency in the Prometheus
+   * metrics (backend/metrics.ts). Kept outside executeTask() so every exit
+   * path — success, tool failure, middleware throw — is counted exactly once.
+   */
+  private async executeInstrumented(
+    task: AgentTask,
+    correlationId: string,
+    taskLog: ReturnType<typeof createLogger>
+  ): Promise<AgentResult> {
+    const startedAt = process.hrtime.bigint();
+    const result = await this.executeTask(task, correlationId, taskLog);
+    const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+    recordTask(task.type, result.success ? 'success' : 'failure', durationSeconds);
+    return result;
   }
 
   /**
@@ -1039,8 +1096,9 @@ export class PayFiAgent extends EventEmitter {
     if (this.taskQueue.length === 0) return;
     if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) return;
     const next = this.taskQueue.shift();
+    queueDepth.set(this.taskQueue.length);
     if (!next) return;
-    void this.executeTask(
+    void this.executeInstrumented(
       next.task,
       next.correlationId,
       createLogger('orchestrator', next.correlationId)
@@ -1054,7 +1112,25 @@ export class PayFiAgent extends EventEmitter {
     taskLog: ReturnType<typeof createLogger>
   ): Promise<AgentResult> {
     this.activeTasks++;
-    // ── Measure duration for all result paths (#duration-ms) ─────────────────
+    this.emit('task:started', { taskType: task.type, correlationId });
+    taskLog.info({ taskType: task.type }, "Running task");
+    try {
+      let data: unknown;
+
+      switch (task.type) {
+        case "stellar_payment": {
+          // issue #729 — reserve before submit, commit/release after
+          const p = task.payload as Record<string, unknown>;
+          const reservationId = reserveSpendingLimit(p?.amount);
+          try {
+            data = await this.paymentTool.execute(task.payload);
+            if (reservationId !== null) spendingTracker.commit(reservationId);
+          } catch (toolErr) {
+            if (reservationId !== null) spendingTracker.release(reservationId);
+            throw toolErr;
+          }
+          break;
+        }
     const startMs = Date.now();
 
     taskLog.info({ taskType: task.type }, 'Running task');
@@ -1315,7 +1391,11 @@ export class PayFiAgent extends EventEmitter {
     }
 
     try {
-      return await chain();
+      // Lets rpc_client emit task:retry / tx:* on this agent for this task.
+      return await taskContext.run(
+        { taskType: task.type, correlationId, emit: this.emit.bind(this) },
+        chain
+      );
     } catch (err) {
       const durationMs = Date.now() - startMs;
       const safe = redactSecretString(describeError(err));

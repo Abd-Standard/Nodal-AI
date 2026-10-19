@@ -282,10 +282,13 @@ export class SorobanInvokeTool {
       .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    logger.info('Simulating Soroban transaction', {
-      method: input.method,
-      contractId: input.contractId,
-    });
+    logger.info(
+      {
+        method: input.method,
+        contractId: input.contractId,
+      },
+      'Simulating Soroban transaction'
+    );
 
     // 4. MANDATORY simulate step — throws on simulation failure
     const { tx: preparedTx, events } = await prepareSorobanTxWithEvents(tx);
@@ -434,7 +437,7 @@ export class SorobanInvokeTool {
       const status = await sorobanServer.getTransaction(hash);
 
       if (status.status === 'SUCCESS') {
-        logger.info('Soroban transaction confirmed', { txHash: hash });
+        logger.info({ txHash: hash }, 'Soroban transaction confirmed');
         return { txHash: hash };
       }
       if (status.status === 'FAILED') {
@@ -442,11 +445,14 @@ export class SorobanInvokeTool {
           `Soroban transaction failed on-chain: ${hash} — ${status.resultXdr ?? 'no XDR'}`
         );
       }
-      logger.debug('Polling for Soroban transaction confirmation', {
-        txHash: hash,
-        attempt: i + 1,
-        maxAttempts,
-      });
+      logger.debug(
+        {
+          txHash: hash,
+          attempt: i + 1,
+          maxAttempts,
+        },
+        'Polling for Soroban transaction confirmation'
+      );
     }
     throw new Error(`Soroban transaction not confirmed within polling window: ${hash}`);
   }

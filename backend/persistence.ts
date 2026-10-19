@@ -9,13 +9,15 @@
 import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import type { AgentResult } from './agent';
+import { migrateSqlite } from './db/migrate';
 
 export type PersistedResult = AgentResult & { timestamp: string };
 
 let _db: Database.Database | null = null;
 
 /**
- * Create every table this module owns, plus the idempotent migrations.
+ * Bring the schema up to date by applying the numbered migrations in
+ * `backend/db/migrations/` (#821).
  *
  * Applied both to the lazily opened connection and to any DB injected through
  * `_setDb()`, so a test database has the same shape as a real one and the two
@@ -53,6 +55,23 @@ function applySchema(db: Database.Database): void {
         value TEXT NOT NULL
       )
     `);
+  // Event-driven triggers for autonomous PayFi
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS triggers (
+        id          TEXT PRIMARY KEY,
+        source      TEXT NOT NULL,
+        filter      TEXT NOT NULL,
+        task        TEXT NOT NULL,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL,
+        last_fired_at TEXT
+      )
+    `);
+  // Trigger event dedupe - prevents double execution on stream replay
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS trigger_events (
+        key       TEXT PRIMARY KEY,
+        fired_at  TEXT NOT NULL
   // Value-moving tasks held for a human decision (#736).
   db.exec(`
       CREATE TABLE IF NOT EXISTS pending_approvals (
@@ -107,7 +126,11 @@ function applySchema(db: Database.Database): void {
     `);
 }
 
-function getDb(): Database.Database {
+/**
+ * The shared connection, opened (and migrated) on first use. Exposed so other
+ * SQLite-backed stores can reuse it instead of opening a second handle.
+ */
+export function getDb(): Database.Database {
   if (!_db) {
     // Lazy import of config so that tests can inject via _setDb() before any DB access
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -346,6 +369,55 @@ export function pruneSpendingRecords(cutoffMs: number): void {
 /** Drop the whole persisted window. */
 export function clearSpendingRecords(): void {
   getDb().prepare(`DELETE FROM spending_records`).run();
+}
+
+/** A spend held against the persisted window by {@link reserveSpendingRecord}. */
+export interface SpendingReservation {
+  /** Row id; pass to {@link deleteSpendingRecord} to release the hold. */
+  id: number;
+  /** Cumulative total in the window, including this reservation. */
+  total: number;
+}
+
+/**
+ * Atomically check the window total and record `amount` against it (#822).
+ *
+ * The sum and the insert run in one IMMEDIATE transaction, which takes
+ * SQLite's write lock up front, so two connections can never both see room
+ * under `limit` and both insert.
+ *
+ * @throws if `amount` would push the total of records at or after `sinceMs`
+ *   past `limit`; nothing is written in that case.
+ */
+export function reserveSpendingRecord(
+  amount: number,
+  limit: number,
+  sinceMs: number,
+  now: number = Date.now()
+): SpendingReservation {
+  const db = getDb();
+  const reserve = db.transaction((): SpendingReservation => {
+    const row = db
+      .prepare(
+        `SELECT COALESCE(SUM(amount), 0) AS total FROM spending_records
+         WHERE timestamp >= ?`
+      )
+      .get(sinceMs) as { total: number };
+    const total = row.total + amount;
+    if (total > limit) {
+      throw new Error(`Cumulative spending ${total} exceeds limit ${limit}`);
+    }
+    const info = db
+      .prepare(`INSERT INTO spending_records (amount, timestamp) VALUES (?, ?)`)
+      .run(amount, now);
+    return { id: Number(info.lastInsertRowid), total };
+  });
+  return reserve.immediate();
+}
+
+/** Remove one spending record, e.g. to release a reservation whose submission failed. */
+export function deleteSpendingRecord(id: number): void {
+  getDb().prepare(`DELETE FROM spending_records WHERE id = ?`).run(id);
 }
 
 /** Persist a single agent-state value, replacing any previous one. */

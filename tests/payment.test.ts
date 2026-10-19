@@ -64,6 +64,23 @@ const TEST_SECRET = 'SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X';
 const VALID_DEST = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
 const VALID_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 
+// The destination pre-flight (#788) rejects non-native payments to an account
+// without a trustline, so USDC payments need a destination that has one.
+function withUsdcTrustline(): void {
+  mockHorizonServer.loadAccount.mockImplementation(async (key: string) => ({
+    ...makeMockAccount(key),
+    balances: [
+      { asset_type: 'native', balance: '10000.0000000' },
+      {
+        asset_type: 'credit_alphanum4',
+        asset_code: 'USDC',
+        asset_issuer: VALID_ISSUER,
+        balance: '0',
+      },
+    ],
+  }));
+}
+
 // ─── Test suite ───────────────────────────────────────────────────────────────
 
 describe('StellarPaymentTool', () => {
@@ -377,6 +394,7 @@ describe('StellarPaymentTool', () => {
     });
 
     it('completes a custom asset payment (USDC)', async () => {
+      withUsdcTrustline();
       const result = await tool.execute({
         destination: VALID_DEST,
         amount: '50.5',
@@ -389,7 +407,9 @@ describe('StellarPaymentTool', () => {
 
     it('calls loadAccount with the agent public key', async () => {
       await tool.execute({ destination: VALID_DEST, amount: '1', assetCode: 'XLM' });
-      expect(mockHorizonServer.loadAccount).toHaveBeenCalledOnce();
+      // Once for the destination pre-flight, once for the source account
+      expect(mockHorizonServer.loadAccount).toHaveBeenCalledTimes(2);
+      expect(mockHorizonServer.loadAccount).toHaveBeenCalledWith(VALID_DEST);
       expect(mockHorizonServer.loadAccount).toHaveBeenCalledWith(tool.publicKey);
     });
 
@@ -432,7 +452,11 @@ describe('StellarPaymentTool', () => {
     });
 
     it('propagates account not found error', async () => {
-      mockHorizonServer.setAccountError(new Error('Horizon: account not found (404)'));
+      // Only the source account is missing; the destination pre-flight passes
+      mockHorizonServer.loadAccount.mockImplementation(async (key: string) => {
+        if (key === tool.publicKey) throw new Error('Horizon: account not found (404)');
+        return makeMockAccount(key);
+      });
 
       await expect(
         tool.execute({ destination: VALID_DEST, amount: '1', assetCode: 'XLM' })
@@ -760,6 +784,7 @@ describe('StellarPaymentTool — mutation-killing: destination key validation', 
   });
 
   it('accepts a valid USDC payment with the correct issuer', async () => {
+    withUsdcTrustline();
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
       hash: 'usdc_tx',
       ledger: 5,
