@@ -191,6 +191,9 @@ const EnvSchema = z.object({
 
   // Persistence
   DB_PATH: z.string().default('./agent.db'),
+  // Shared Postgres store for multi-instance deployments (#822).
+  STORAGE_BACKEND: z.enum(['sqlite', 'postgres']).default('sqlite'),
+  DATABASE_URL: z.string().min(1).optional(),
 
   // Logging
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -300,6 +303,19 @@ export interface AgentConfig {
    * Defaults to "./agent.db". Use ":memory:" for in-process tests.
    */
   readonly DB_PATH: string;
+
+  /**
+   * Where persistent state lives. "sqlite" (default) uses DB_PATH and suits a
+   * single instance; "postgres" uses DATABASE_URL and is shared by every
+   * instance of a horizontally scaled deployment.
+   */
+  readonly STORAGE_BACKEND: 'sqlite' | 'postgres';
+
+  /**
+   * Postgres connection string. Required when STORAGE_BACKEND is "postgres".
+   * Contains credentials — never logged.
+   */
+  readonly DATABASE_URL?: string | undefined;
 
   /**
    * The asset code for the x402 / PayFi asset.
@@ -577,6 +593,12 @@ function parseConfigAndDerive(): AgentConfig {
     }
   }
 
+  // ── Postgres storage needs a connection string ─────────────────────────────
+  if (raw.STORAGE_BACKEND === 'postgres' && !raw.DATABASE_URL) {
+    process.stderr.write('❌ [Config] DATABASE_URL is required when STORAGE_BACKEND=postgres.\n');
+    process.exit(1);
+  }
+
   // ── Derive public key from secret ──────────────────────────────────────────
   let keypair: Keypair;
   try {
@@ -673,6 +695,7 @@ function parseConfigAndDerive(): AgentConfig {
     OTLP_ENDPOINT,
     WEBHOOK_URL,
     WEBHOOK_SECRET,
+    DATABASE_URL,
     ...rest
   } = raw;
 
@@ -695,6 +718,7 @@ function parseConfigAndDerive(): AgentConfig {
     ...(OTLP_ENDPOINT ? { OTLP_ENDPOINT } : {}),
     ...(WEBHOOK_URL ? { WEBHOOK_URL } : {}),
     ...(WEBHOOK_SECRET ? { WEBHOOK_SECRET } : {}),
+    ...(DATABASE_URL ? { DATABASE_URL } : {}),
     ...(raw.CONTRACT_EVENT_POLL_MS !== undefined
       ? { CONTRACT_EVENT_POLL_MS: raw.CONTRACT_EVENT_POLL_MS }
       : {}),

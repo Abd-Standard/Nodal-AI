@@ -15,6 +15,7 @@ import { StellarPaymentTool } from './StellarPaymentTool';
 import { buildMemo } from './MemoAttachmentTool';
 import { logger } from '../logger';
 import { INonceStore, SqliteNonceStore, MAX_NONCE_TTL_MS } from '../nonce_store';
+import { getStorage } from '../db/storage';
 import { TransactionFailureError } from '../errors';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
@@ -139,16 +140,20 @@ export class X402PaymentTool {
   /**
    * @param signer      - Signs payments; defaults to the agent signer.
    * @param nonceStore  - Pluggable nonce store.  Defaults to SqliteNonceStore
-   *                      backed by the shared agent.db file.  Inject an
-   *                      InMemoryNonceStore (or a custom Redis/DynamoDB
-   *                      implementation of INonceStore) in tests or for
-   *                      multi-instance deployments.
+   *                      backed by the shared agent.db file, or to the shared
+   *                      Postgres store when STORAGE_BACKEND=postgres.  Inject
+   *                      an InMemoryNonceStore (or a custom implementation of
+   *                      INonceStore) in tests.
    */
   constructor(signer: Signer = createAgentSigner(), nonceStore?: INonceStore) {
     this.signer = signer;
     this.paymentTool = new StellarPaymentTool(signer);
     this.horizonServer = horizonServer;
-    this.nonceStore = nonceStore ?? new SqliteNonceStore(new Database(config.DB_PATH));
+    this.nonceStore =
+      nonceStore ??
+      (config.STORAGE_BACKEND === 'postgres'
+        ? getStorage().nonceStore()
+        : new SqliteNonceStore(new Database(config.DB_PATH)));
   }
 
   /**

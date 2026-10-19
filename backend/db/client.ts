@@ -1,12 +1,13 @@
 /**
  * backend/db/client.ts
- * DatabaseManager — thin abstraction over the local storage layer.
- * Provides a healthCheck() method consumed by the health endpoint and
- * a close() method called during graceful shutdown.
+ * DatabaseManager — thin abstraction over the configured storage backend
+ * (SQLite by default, Postgres with STORAGE_BACKEND=postgres; see storage.ts).
+ * Provides migrate() run at startup, a healthCheck() method consumed by the
+ * health endpoint and a close() method called during graceful shutdown.
  */
 
 import { createLogger } from '../utils/logger';
-import { probeDb, closeDb } from '../persistence';
+import { getStorage } from './storage';
 
 const log = createLogger('database');
 
@@ -39,7 +40,7 @@ export class DatabaseManager {
   async healthCheck(): Promise<boolean> {
     if (!this._isOpen) return false;
     try {
-      probeDb();
+      await getStorage().probe();
       return true;
     } catch (err) {
       log.error({ msg: 'Database health probe failed', err: String(err) });
@@ -47,9 +48,20 @@ export class DatabaseManager {
     }
   }
 
+  /**
+   * Apply pending schema migrations (#821). Called once at startup so a
+   * schema change fails the boot instead of the first query that needs it.
+   */
+  async migrate(): Promise<void> {
+    const applied = await getStorage().migrate();
+    if (applied > 0) {
+      log.info({ msg: 'Applied database migrations', backend: getStorage().backend, applied });
+    }
+  }
+
   /** Flush pending writes and release the connection. */
   async close(): Promise<void> {
-    closeDb();
+    await getStorage().close();
     this._isOpen = false;
     log.info({ msg: 'Database connection closed' });
   }
