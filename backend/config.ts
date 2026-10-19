@@ -270,6 +270,33 @@ const EnvSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+
+  // ─── LLM Provider Configuration ─────────────────────────────────────────
+  // AI layer: LLM provider for the planner (optional - disabled if not set)
+
+  // LLM provider: openai, anthropic, or mock (for testing)
+  LLM_PROVIDER: z
+    .enum(['openai', 'anthropic', 'mock'])
+    .default('mock')
+    .optional(),
+
+  // Model identifier (e.g., gpt-4o, claude-3-sonnet-20240229)
+  LLM_MODEL: z.string().min(1).optional(),
+
+  // API key for the LLM provider (secret - never logged)
+  LLM_API_KEY: z.string().min(1).optional(),
+
+  // Base URL for OpenAI-compatible APIs (useful for local models, OpenAI proxies)
+  LLM_BASE_URL: z.string().url().optional(),
+
+  // Timeout for LLM requests in milliseconds
+  LLM_TIMEOUT_MS: z.coerce.number().int().min(1000).max(300000).default(60000),
+
+  // Maximum tokens per request
+  LLM_MAX_TOKENS: z.coerce.number().int().min(1).max(128000).default(4096),
+
+  // Temperature for LLM sampling (0-2)
+  LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.7),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -519,6 +546,48 @@ export interface AgentConfig {
    * errorType AGENT_PAUSED until resumed via POST /admin/resume. Defaults to false.
    */
   readonly PAUSED: boolean;
+
+  // ─── LLM Provider Configuration ─────────────────────────────────────────
+
+  /**
+   * LLM provider to use for the AI planner.
+   * Optional - when not set, the AI layer is disabled.
+   * Values: "openai", "anthropic", "mock"
+   */
+  readonly LLM_PROVIDER?: 'openai' | 'anthropic' | 'mock';
+
+  /**
+   * Model identifier for the LLM provider.
+   * Examples: "gpt-4o", "claude-3-sonnet-20240229"
+   * Optional - each provider has its own default if not specified.
+   */
+  readonly LLM_MODEL?: string;
+
+  /**
+   * Base URL for OpenAI-compatible APIs.
+   * Useful for local models (Ollama, LM Studio) or proxy services.
+   * Only applies when LLM_PROVIDER is "openai".
+   */
+  readonly LLM_BASE_URL?: string;
+
+  /**
+   * Timeout for LLM requests in milliseconds.
+   * Defaults to 60,000 (1 minute).
+   */
+  readonly LLM_TIMEOUT_MS: number;
+
+  /**
+   * Maximum tokens to request from the LLM per response.
+   * Defaults to 4,096.
+   */
+  readonly LLM_MAX_TOKENS: number;
+
+  /**
+   * Temperature for LLM sampling (0-2).
+   * Higher values produce more creative outputs, lower values are more deterministic.
+   * Defaults to 0.7.
+   */
+  readonly LLM_TEMPERATURE: number;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -722,6 +791,13 @@ function parseConfigAndDerive(): AgentConfig {
     ...(raw.CONTRACT_EVENT_POLL_MS !== undefined
       ? { CONTRACT_EVENT_POLL_MS: raw.CONTRACT_EVENT_POLL_MS }
       : {}),
+    // LLM configuration - all have defaults
+    LLM_TIMEOUT_MS: raw.LLM_TIMEOUT_MS ?? 60_000,
+    LLM_MAX_TOKENS: raw.LLM_MAX_TOKENS ?? 4096,
+    LLM_TEMPERATURE: raw.LLM_TEMPERATURE ?? 0.7,
+    ...(raw.LLM_PROVIDER ? { LLM_PROVIDER: raw.LLM_PROVIDER } : {}),
+    ...(raw.LLM_MODEL ? { LLM_MODEL: raw.LLM_MODEL } : {}),
+    ...(raw.LLM_BASE_URL ? { LLM_BASE_URL: raw.LLM_BASE_URL } : {}),
     // Secret is captured in closure; never on the object
     agentKeypair: () => _keypair,
   };
@@ -736,6 +812,13 @@ function parseConfigAndDerive(): AgentConfig {
       `   Spending limit : ${cfg.AGENT_SPENDING_LIMIT} ${cfg.X402_ASSET_CODE}\n` +
       `   Max retries    : ${cfg.MAX_RETRIES}\n`
   );
+
+  // Add LLM info to banner if configured
+  if (cfg.LLM_PROVIDER) {
+    process.stdout.write(
+      `   LLM provider   : ${cfg.LLM_PROVIDER}${cfg.LLM_MODEL ? ` (${cfg.LLM_MODEL})` : ''}\n`
+    );
+  }
 
   return cfg;
 }
@@ -843,6 +926,48 @@ export const configPromise = {
   ) => ensureConfigPromise().catch(onrejected),
   finally: (onfinally?: (() => void) | null) => ensureConfigPromise().finally(onfinally),
 } as PromiseLike<AgentConfig>;
+
+// ─── LLM Provider Helper ───────────────────────────────────────────────────
+
+/**
+ * Gets the LLM API key from the environment.
+ * The key is NEVER exposed on the config object - call this function directly.
+ * @returns The LLM API key or undefined if not configured
+ */
+export function getLLMApiKey(): string | undefined {
+  return process.env.LLM_API_KEY;
+}
+
+/**
+ * Creates an LLM provider from the current configuration.
+ * Returns undefined if LLM_PROVIDER is not set.
+ *
+ * Usage:
+ *   const provider = createLLMProvider();
+ *   if (provider) {
+ *     const response = await provider.generate(messages, options);
+ *   }
+ */
+export function createLLMProvider(): ReturnType<typeof import('./ai/providers').createLLMProvider> | undefined {
+  const providerType = process.env.LLM_PROVIDER as 'openai' | 'anthropic' | 'mock' | undefined;
+  const apiKey = process.env.LLM_API_KEY;
+
+  if (!providerType) {
+    return undefined;
+  }
+
+  // Dynamically import to avoid circular dependencies
+  const { createLLMProvider: createProvider } = require('./ai/providers');
+
+  return createProvider({
+    provider: providerType,
+    model: process.env.LLM_MODEL,
+    apiKey: apiKey || '',
+    baseUrl: process.env.LLM_BASE_URL,
+    timeoutMs: parseInt(process.env.LLM_TIMEOUT_MS || '60000', 10),
+    maxRetries: 3,
+  });
+}
 
 export const config = new Proxy({} as AgentConfig, {
   get(target, prop, receiver) {
