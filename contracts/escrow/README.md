@@ -20,6 +20,8 @@ The contract stores its state in the persistent instance storage using the `Data
 | `InitializedAt` | `u64` | The ledger timestamp (seconds) at which `initialize` ran; returned as `initialized_at` in `EscrowState`. |
 | `PendingArbiter` | `Address` | The replacement arbiter proposed by the depositor via `propose_new_arbiter`. Present only while a rotation is pending; removed by `accept_arbiter_rotation`. |
 | `PendingArbiterTime` | `u64` | The ledger timestamp (seconds) at which the pending rotation was proposed. `accept_arbiter_rotation` succeeds only once `MIN_ROTATION_DELAY` (24 hours) has elapsed since this time; removed together with `PendingArbiter`. |
+| `FeeBps` | `u32` | Platform fee in basis points (`0..=MAX_FEE_BPS`, i.e. ≤ 10%). Present only for escrows created with `initialize_with_fee`. |
+| `FeeRecipient` | `Address` | Platform address paid the fee on every release. Present only for escrows created with `initialize_with_fee`. |
 
 ---
 
@@ -61,6 +63,16 @@ All public entry points are defined on the `EscrowContract` struct:
   - `amount` must be greater than zero.
   - `expiry` timestamp must be strictly in the future.
 
+### `initialize_with_fee(env: Env, depositor: Address, recipient: Address, arbiter: Address, token: Address, amount: i128, expiry: u64, fee_bps: u32, fee_recipient: Address)`
+- **Purpose**: Same as `initialize`, plus a platform fee taken atomically on every release (`release`, `release_partial`, `release_by_depositor`). Refunds and cancellations are never charged.
+- **Authorization**: Requires depositor signature.
+- **Validation**: everything `initialize` checks, plus `fee_bps <= MAX_FEE_BPS` (1_000 bps = 10%, otherwise `InvalidFee`).
+- **Rounding**: `fee = floor(released * fee_bps / 10_000)`; the recipient receives `released - fee`, so `recipient + fee == released` exactly and any sub-unit remainder goes to the recipient.
+
+### `get_fee_config(env: Env) -> (u32, Option<Address>)`
+- **Purpose**: Returns `(fee_bps, fee_recipient)`; `(0, None)` for escrows created with plain `initialize`.
+- **Authorization**: None (Read-only query).
+
 ### `release(env: Env, arbiter: Address)`
 - **Purpose**: Settles the escrow by transferring locked funds to the recipient.
 - **Authorization**: Requires arbiter signature (`arbiter.require_auth()`).
@@ -95,6 +107,16 @@ All public entry points are defined on the `EscrowContract` struct:
   - The `depositor` and `arbiter` arguments must match the registered depositor and arbiter respectively.
   - Escrow must be in the `Active` state.
 
+### `release_by_depositor(env: Env, depositor: Address)`
+- **Purpose**: Lets the depositor release the remaining locked funds to the recipient early, without waiting for the arbiter. Any platform fee applies as for `release`.
+- **Authorization**: Requires stored depositor signature; the `depositor` argument must match (otherwise `NotDepositor`).
+- **Validation**: Escrow must be in the `Active` state.
+
+### `refund_by_recipient(env: Env, recipient: Address)`
+- **Purpose**: Lets the recipient voluntarily return the remaining locked funds to the depositor at any time (no expiry wait, no fee).
+- **Authorization**: Requires stored recipient signature; the `recipient` argument must match (otherwise `NotRecipient`).
+- **Validation**: Escrow must be in the `Active` state.
+
 ### `propose_new_arbiter(env: Env, depositor: Address, new_arbiter: Address)`
 - **Purpose**: Proposes a replacement arbiter, starting the time-locked rotation window enforced by `MIN_ROTATION_DELAY` (24 hours).
 - **Authorization**: Requires stored depositor signature (`stored_depositor.require_auth()`); the `depositor` argument must match the registered depositor.
@@ -128,6 +150,8 @@ If an execution condition is violated, the contract panics with one of the follo
 | `9` | `InvalidParties` | Depositor, recipient, and arbiter must all be distinct addresses. |
 | `10` | `RotationLocked` | The arbiter rotation time-lock has not yet expired. |
 | `11` | `NoPendingRotation` | No pending arbiter rotation proposal. |
+| `12` | `InvalidFee` | The fee exceeds `MAX_FEE_BPS`. |
+| `13` | `NotRecipient` | The caller is not the authorized recipient. |
 
 > **Keep this table in sync:** it is generated from the `EscrowError` enum in [`src/lib.rs`](src/lib.rs) (codes and doc comments). Whenever that enum changes, regenerate the table from it rather than editing rows by hand.
 
@@ -144,6 +168,9 @@ Soroban emits contract events as **public on-chain data**. Every event is readab
 | `refund` | `refunded` | `depositor`, `amount` | No |
 | `release_partial` | `partial_released` / `released` | `recipient`, `release_amount`, `remaining` | No |
 | `cancel` | `escrow`, `cancelled` | `depositor`, `amount` | No |
+| `release_by_depositor` | `escrow`, `released_by_depositor` | `depositor`, `recipient`, `amount` | No |
+| `refund_by_recipient` | `escrow`, `refunded_by_recipient` | `recipient`, `depositor`, `amount` | No |
+| any release with a fee | `escrow`, `fee_paid` | `fee_recipient`, `fee` | No |
 | `propose_new_arbiter` | `arbiter_rotation_proposed` | `depositor`, `new_arbiter`, `now` | No |
 | `accept_arbiter_rotation` | `arbiter_rotation_accepted` | `new_arbiter`, `now` | No |
 

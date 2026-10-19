@@ -20,6 +20,7 @@
     "test:rust": "cargo test --locked --manifest-path contracts/escrow/Cargo.toml",
     "test:rust:coverage": "cargo tarpaulin --locked --manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust",
     "check:wasm-size": "bash scripts/check_wasm_size.sh",
+    "bindings:escrow": "bash scripts/generate_escrow_bindings.sh",
     "test:e2e": "vitest run tests/e2e/**",
     "test:e2e:escrow": "vitest run tests/e2e/escrow_flow.test.ts",
     "test:all": "npm run test:rust && npm run test:ts",
