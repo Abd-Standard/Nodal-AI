@@ -104,6 +104,10 @@ export const StellarTomlSchema = z
     TRANSFER_SERVER_SEP0024: z.string().optional(),
     KYC_SERVER: z.string().optional(),
     WEB_AUTH_ENDPOINT: z.string().optional(),
+    /** SEP-45 web auth endpoint for contract (C…) accounts. */
+    WEB_AUTH_FOR_CONTRACTS_ENDPOINT: z.string().optional(),
+    /** SEP-45 contract whose `web_auth_verify` the challenge entries invoke. */
+    WEB_AUTH_CONTRACT_ID: z.string().optional(),
     SIGNING_KEY: z.string().optional(),
     HORIZON_URL: z.string().optional(),
     ACCOUNTS: z.array(z.string()).optional(),

@@ -271,6 +271,7 @@ Before deploying to **Stellar mainnet**, verify the following:
 - [ ] **Set `STELLAR_NETWORK=mainnet`** — This enables the mainnet spending cap and enforces HTTPS-only RPC connections.
 - [ ] **Set `AGENT_SPENDING_LIMIT` below 10,000** — The limit should reflect your acceptable per-transaction maximum (e.g., `1000` for USD denominations). Values above 10,000 will be rejected on mainnet.
 - [ ] **Verify `X402_ASSET_ISSUER`** — Confirm this is the canonical USDC anchor account on mainnet. Misconfiguration sends payments to the wrong issuer.
+- [ ] **Leave `X402_ASSET_CONTRACT` unset or check it** — `X402_ASSET_ISSUER` is the classic issuer (`G…`, used for trustlines and classic payments); `X402_ASSET_CONTRACT` is the asset's Stellar Asset Contract (`C…`, used by Soroban transfers and x402 payment requirements). It is derived from the code, issuer and network when unset, and startup fails if an explicit value doesn't match.
 - [ ] **Test with `simulateOnly: true` first** — For `soroban_invoke` tasks, set `simulateOnly: true` to dry-run contract logic without broadcasting. This validates gas estimation and state changes in a safe sandbox.
 
 All four checks are enforced at startup via `backend/config.ts` validation and at task dispatch time via `backend/agent.ts` guards.
@@ -497,6 +498,7 @@ Each value below is wired into `PayFiAgent.run()` in `backend/agent.ts`. Any unr
 | `ledger_info` | `LedgerInfoTool` | Fetch the latest ledger sequence and protocol version from Soroban RPC. Cached for 6 seconds unless `forceRefresh: true`. Read-only. |
 | `network_status` | `NetworkStatusTool` | Check health and latency of the configured Horizon and Soroban RPC endpoints. Read-only. |
 | `offer_book` | `OfferBookTool` | Query the Stellar DEX order book for an asset pair and return bids, asks, and the top-of-book spread. Read-only. |
+| `cross_border_payment` | `CrossBorderPaymentTool` | SEP-31 payment as the sending anchor: SEP-12 KYC for sender and receiver, optional SEP-38 firm quote, SEP-31 transaction, then the on-chain payment with the anchor's memo. Spending limit enforced. |
 | `soroban_storage` | `SorobanStorageTool` | Read a Soroban contract's storage entry (`persistent`, `temporary`, or `instance`) and return the decoded value. Read-only. |
 
 > **Standalone utilities:** `BalanceCheckTool` (`backend/tools/BalanceCheckTool.ts`) and `SorobanQueryTool` (`backend/tools/SorobanQueryTool.ts`) are importable directly and are not dispatched through `PayFiAgent.run()`. Use them outside the agent task loop when you only need a read-only query.
@@ -536,6 +538,8 @@ Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `data_entry`: `{ action: "set"; name: string; value: string }` or `{ action: "delete"; name: string }` or `{ action: "get"; name: string; accountId?: string }` (`name` and `value` are at most 64 bytes)
 - `sequence_number`: `{ action: "get"; accountId?: string }` or `{ action: "bump"; bumpTo: string | number | bigint }`
 - `sponsored_account`: `{ newAccountPublicKey: string; startingBalance?: string; newAccountSignature?: string; newAccountSecret?: string }` (`startingBalance` defaults to `"0"`; supply `newAccountSecret` or a base64 `newAccountSignature` so the new account co-signs the `endSponsoringFutureReserves` operation, which the network requires)
+- `cross_border_payment`: `{ anchorDomain: string; amount: string; assetCode: string; assetIssuer: string; sender: Party; receiver: Party; destinationAsset?: string; fundingMethod?: string; jwt?: string }` where `Party` is `{ customerId: string }` or `{ kyc: KycFields; type?: string }`. See [Cross-border payments (SEP-31)](#cross-border-payments-sep-31).
+- `stellar_identity_auth`: `{ anchorUrl: string; publicKey?: string }` for SEP-10, or `{ homeDomain: string; contractAccount: string }` (a `C…` address) for SEP-45. Returns `{ token }`.
 - `anchor_quote`: `{ anchorQuoteUrl: string; sellAsset: string; buyAsset: string; sellAmount?: string; buyAmount?: string; context?: "sep6" | "sep31"; jwtToken?: string }` (at least one of `sellAmount` / `buyAmount` is required)
 - `set_options`: `{ homeDomain?: string; masterWeight?: number; lowThreshold?: number; medThreshold?: number; highThreshold?: number; setFlags?: number; clearFlags?: number; confirmLockoutRisk?: boolean; confirmAuthImmutable?: boolean }` (weights and thresholds are 0–255; `homeDomain` is at most 32 characters)
   > ⚠️ **Irreversible changes are guarded.** `masterWeight: 0` is rejected unless the account's other ed25519 signers can still meet the high threshold (pre-auth and hash-x signers don't count). Otherwise the agent would be permanently locked out of its account. `setFlags` including `AuthImmutableFlag` (`4`) is rejected because it permanently freezes the account's auth flags and blocks merging. Pass `confirmLockoutRisk: true` or `confirmAuthImmutable: true` only when you intend the irreversible outcome.
@@ -598,6 +602,37 @@ agent.destroy();
 
 ---
 
+## Cross-border payments (SEP-31)
+
+The `cross_border_payment` task sends a payment through a SEP-31 Receiving Anchor, with the agent acting as the Sending Anchor ([`backend/tools/CrossBorderPaymentTool.ts`](./backend/tools/CrossBorderPaymentTool.ts)):
+
+1. **SEP-1:** read the anchor's `stellar.toml` (`DIRECT_PAYMENT_SERVER`, `KYC_SERVER`, `ANCHOR_QUOTE_SERVER`, `WEB_AUTH_ENDPOINT`).
+2. **SEP-10:** authenticate the agent account, unless a `jwt` is supplied.
+3. **SEP-31 `GET /info`:** check that the anchor receives `assetCode`, the amount is within `min_amount`/`max_amount`, and whether a quote is required. Pick the funding method and SEP-12 customer types (explicit values are required when the anchor offers several).
+4. **SEP-12:** for each party given as `kyc`, the fields are validated locally against SEP-9 formats. Examples: ISO 3166-1 alpha-3 country codes, E.164 phone numbers, `YYYY-MM-DD` dates in the past, valid email and IP addresses. Unknown field names are rejected. The tool then reads the anchor's requirements with `GET /customer` and fails with `KycValidationError` (listing `missingFields` / `invalidFields`) before anything is submitted. Valid fields are registered with `PUT /customer`. A party given as `customerId` skips this step.
+5. **SEP-38:** when `destinationAsset` is set (e.g. `iso4217:BRL`), request a firm quote (`context: "sep31"`) and attach it.
+6. **SEP-31 `POST /transactions`:** create the transaction, then poll `GET /transactions/:id` until the anchor reports `pending_sender` with its Stellar account and memo.
+7. **Payment:** pay the anchor's account with `StellarPaymentTool`, using the anchor-provided memo (`id`, `text`, or base64 `hash`).
+
+Writes (`PUT /customer`, `POST /quote`, `POST /transactions`) are never retried, so a network retry cannot create a duplicate transaction. The task is value-moving: `AGENT_SPENDING_LIMIT` is enforced on `amount`, and the kill switch halts it.
+
+```typescript
+await agent.run({
+  type: "cross_border_payment",
+  payload: {
+    anchorDomain: "anchor.example.com",
+    amount: "100",
+    assetCode: "USDC",
+    assetIssuer: "G...",
+    destinationAsset: "iso4217:BRL",
+    sender: { kyc: { first_name: "Ada", last_name: "Lovelace", email_address: "ada@example.com" } },
+    receiver: { kyc: { first_name: "Grace", last_name: "Hopper", bank_account_number: "123456789", bank_number: "021000021" } },
+  },
+});
+```
+
+`tests/e2e/cross_border_payment.test.ts` runs the full flow against the SDF test anchor (`RUN_E2E=true`). It skips with the reason when the anchor's SEP-31 `/info` does not currently list the asset.
+
 ## x402 Payment Flow
 
 Nodal AI implements the [x402](https://github.com/x402-foundation/x402) protocol so the agent can pay for gated resources autonomously. The verified flow below covers what happens once `PayFiAgent.run()` is dispatched an `x402_respond` task — the upstream step of a resource server actually issuing the 402 challenge happens outside this codebase (in whatever client first calls `PayFiAgent.run()`), so it's described in prose rather than diagrammed.
@@ -643,6 +678,7 @@ Once past the spending check, `X402PaymentTool.respond()` validates the challeng
 | `payTo`       | `string`                | The recipient Stellar account. Must be exactly 56 characters (a valid Stellar public key).                               |
 | `nonce`       | `string` (UUID v4)      | A unique identifier for this challenge, used to correlate the resulting payment with the original request.               |
 | `expiresAt`   | `string` (ISO datetime) | The deadline after which the challenge is no longer valid. Checked against `new Date()` before any payment is attempted. |
+| `network`     | `string` (optional)     | CAIP-2 network the payment must settle on (`stellar:testnet`, `stellar:pubnet`, `stellar:futurenet`). When present it must match the agent's network, or the challenge is rejected before payment. |
 
 If `rawChallenge` doesn't conform to this shape, `X402ChallengeSchema.parse()` throws and no payment is attempted.
 
@@ -671,7 +707,7 @@ Once `StellarPaymentTool.execute()` returns a settled `txHash`, `respond()` buil
 ```typescript
 interface X402PaymentProof {
   protocol: "x402"; // protocol tag, always "x402"
-  network: string; // config.STELLAR_NETWORK
+  network: string; // CAIP-2 ID of config.STELLAR_NETWORK, e.g. "stellar:testnet" (toCaip2 in backend/network.ts)
   txHash: string; // settled Stellar transaction hash
   nonce: string; // the original challenge nonce, in full
   payer: string; // the agent's Stellar public key

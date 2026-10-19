@@ -38,7 +38,8 @@ import {
   SorobanEventIndexerTool,
   SorobanEventIndexerInputSchema,
 } from './SorobanEventIndexerTool';
-import { StellarIdentityTool, WebAuthInputSchema } from './StellarIdentityTool';
+import { StellarIdentityTool, StellarIdentityInputSchema } from './StellarIdentityTool';
+import { CrossBorderPaymentTool, CrossBorderPaymentInputSchema } from './CrossBorderPaymentTool';
 import { FriendBotTool, FriendBotInputSchema } from './FriendBotTool';
 import { LedgerInfoTool, LedgerInfoInputSchema } from './LedgerInfoTool';
 import { NetworkStatusTool } from './NetworkStatusTool';
@@ -83,6 +84,7 @@ export function createBuiltinTools(): AgentTool<any, any>[] {
   const setOptionsTool = new SetOptionsTool(config.agentKeypair().secret());
   const sorobanEventIndexerTool = new SorobanEventIndexerTool();
   const stellarIdentityTool = new StellarIdentityTool(config.agentKeypair().secret());
+  const crossBorderPaymentTool = new CrossBorderPaymentTool();
   const friendBotTool = new FriendBotTool();
   const ledgerInfoTool = new LedgerInfoTool();
   const networkStatusTool = new NetworkStatusTool();
@@ -289,10 +291,23 @@ export function createBuiltinTools(): AgentTool<any, any>[] {
     }),
     defineTool({
       name: 'stellar_identity_auth',
-      description: 'Perform SEP-10 Web Auth with an anchor and obtain a JWT.',
-      inputSchema: WebAuthInputSchema,
+      description:
+        'Obtain an anchor JWT: SEP-10 Web Auth for the agent account, or SEP-45 for a contract (C…) account.',
+      inputSchema: StellarIdentityInputSchema,
       valueMoving: false,
       execute: (input) => stellarIdentityTool.execute(input),
+    }),
+    defineTool({
+      name: 'cross_border_payment',
+      description:
+        'SEP-31 cross-border payment: SEP-12 KYC for sender and receiver, optional SEP-38 quote, ' +
+        'SEP-31 transaction, then on-chain payment with the anchor memo. Spending limit enforced.',
+      inputSchema: CrossBorderPaymentInputSchema,
+      valueMoving: true,
+      execute: async (input, ctx) => {
+        ctx.assertWithinSpendingLimit(input.amount);
+        return crossBorderPaymentTool.execute(input);
+      },
     }),
     defineTool({
       name: 'friendbot',

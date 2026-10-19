@@ -214,7 +214,8 @@ Every `TaskType` value accepted by `PayFiAgent.run()` is listed below, together 
 | `account_history` | `AccountHistoryTool` | Fetch paginated payment transaction history for a Stellar account. |
 | `set_options` | `SetOptionsTool` | Manage account flags, thresholds, signers, and home domain via Stellar `setOptions` operation. |
 | `soroban_event_query` | `SorobanEventIndexerTool` | Query historical Soroban contract events by ledger range and topic filters. Read-only. |
-| `stellar_identity_auth` | `StellarIdentityTool` | Perform SEP-0010 Web Auth challenge-response authentication with an anchor and obtain a JWT. |
+| `stellar_identity_auth` | `StellarIdentityTool` | Obtain an anchor JWT: SEP-0010 Web Auth for the agent account, or SEP-0045 Web Auth for a contract (`C…`) account, signing the contract's authorization entry through the `Signer`. |
+| `cross_border_payment` | `CrossBorderPaymentTool` | SEP-31 cross-border payment as the sending anchor (SEP-12 KYC, SEP-38 quote, SEP-31 transaction, on-chain payment with the anchor memo). |
 | `friendbot` | `FriendBotTool` | Request test account funding on testnet or futurenet via Friendbot. Not available on mainnet. |
 
 ### Lifecycle Hooks

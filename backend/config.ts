@@ -20,9 +20,9 @@
 import { z } from 'zod';
 import { readFileSync } from 'fs';
 import * as dotenv from 'dotenv';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Asset, Keypair, Networks } from '@stellar/stellar-sdk';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { isValidStellarPublicKey } from './utils/stellarSchemas';
+import { isValidStellarContractId, isValidStellarPublicKey } from './utils/stellarSchemas';
 
 export const MAINNET_SPENDING_CAP = 10_000;
 
@@ -126,6 +126,14 @@ const EnvSchema = z.object({
     .refine((val) => isValidStellarPublicKey(val), {
       message: 'X402_ASSET_ISSUER is not a valid Ed25519 public key',
     }),
+  // SEP-41 contract (C…) of the x402 asset — its Stellar Asset Contract (SAC).
+  // Derived from X402_ASSET_CODE + X402_ASSET_ISSUER when unset (#776).
+  X402_ASSET_CONTRACT: z
+    .string()
+    .refine((val) => isValidStellarContractId(val), {
+      message: 'X402_ASSET_CONTRACT must be a valid contract address (C…)',
+    })
+    .optional(),
   ALLOWED_X402_ORIGINS: z.string().optional(),
   // Maximum amount a single x402 challenge may request. Unset = no per-challenge cap.
   X402_MAX_PRICE: z
@@ -362,6 +370,15 @@ export interface AgentConfig {
    * Required.
    */
   readonly X402_ASSET_ISSUER: string;
+
+  /**
+   * The SEP-41 contract address (C…) of the x402 asset's Stellar Asset Contract.
+   * Classic operations (trustlines, payments) use X402_ASSET_ISSUER (G…); Soroban
+   * and x402 payment requirements use this contract address. Derived from
+   * X402_ASSET_CODE + X402_ASSET_ISSUER and the network passphrase when unset; an
+   * explicit value must match that derivation.
+   */
+  readonly X402_ASSET_CONTRACT: string;
 
   /**
    * The spending limit for the agent.
@@ -779,6 +796,30 @@ function parseConfigAndDerive(): AgentConfig {
     process.exit(1);
   }
 
+  // ── x402 asset contract (C…) vs classic issuer (G…) (#776) ─────────────────
+  const networkPassphrase = {
+    testnet: Networks.TESTNET,
+    mainnet: Networks.PUBLIC,
+    futurenet: Networks.FUTURENET,
+  }[raw.STELLAR_NETWORK];
+  const x402AssetContract = (
+    raw.X402_ASSET_CODE === 'XLM'
+      ? Asset.native()
+      : new Asset(raw.X402_ASSET_CODE, raw.X402_ASSET_ISSUER)
+  ).contractId(networkPassphrase);
+  if (raw.X402_ASSET_CONTRACT && raw.X402_ASSET_CONTRACT !== x402AssetContract) {
+    process.stderr.write(
+      `❌ [Config] X402_ASSET_CONTRACT is not the Stellar Asset Contract for ` +
+        `${raw.X402_ASSET_CODE}${raw.X402_ASSET_CODE === 'XLM' ? '' : `:${raw.X402_ASSET_ISSUER}`} ` +
+        `on ${raw.STELLAR_NETWORK}.\n` +
+        `   Provided : ${raw.X402_ASSET_CONTRACT}\n` +
+        `   Derived  : ${x402AssetContract}\n` +
+        `   X402_ASSET_ISSUER is the classic issuer (G…); X402_ASSET_CONTRACT is the SAC (C…). ` +
+        `Unset X402_ASSET_CONTRACT to derive it.\n`
+    );
+    process.exit(1);
+  }
+
   // ── Build the config object — secret key stays in closure only ────────────
   const {
     AGENT_SECRET_KEY: _secret,
@@ -805,6 +846,7 @@ function parseConfigAndDerive(): AgentConfig {
     X402_NONCE_TTL_MS: raw.X402_NONCE_TTL_MS,
     MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
     PAYMENT_DESTINATIONS: paymentDestinations,
+    X402_ASSET_CONTRACT: x402AssetContract,
     ...(ALLOWED_X402_ORIGINS ? { ALLOWED_X402_ORIGINS } : {}),
     ...(AGENT_SECRET_KEY_ARN ? { AGENT_SECRET_KEY_ARN } : {}),
     ...(OTLP_ENDPOINT ? { OTLP_ENDPOINT } : {}),

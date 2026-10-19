@@ -222,6 +222,7 @@ export type BuiltinTaskType =
   | 'set_options'
   | 'soroban_event_query'
   | 'stellar_identity_auth'
+  | 'cross_border_payment'
   | 'friendbot'
   | 'ledger_info'
   | 'network_status'
@@ -394,6 +395,7 @@ export const VALUE_MOVING_TASK_TYPES: ReadonlySet<TaskType> = new Set<TaskType>(
   'soroban_deploy',
   'swap',
   'set_options',
+  'cross_border_payment',
 ]);
 
 // ─── Middleware types ─────────────────────────────────────────────────────────────

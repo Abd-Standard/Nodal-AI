@@ -8,7 +8,7 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { hash, Keypair } from '@stellar/stellar-sdk';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { X402PaymentTool } from '../backend/tools/X402PaymentTool';
 import { KeypairSigner } from '../backend/signer';
 import { StellarPaymentTool } from '../backend/tools/StellarPaymentTool';
@@ -370,12 +370,32 @@ describe('X402PaymentTool', () => {
 
   // ── Happy path ──────────────────────────────────────────────────────────────
 
+  describe('CAIP-2 network (#775)', () => {
+    it('accepts a challenge for the agent network', async () => {
+      const proof = await tool.respond({ ...VALID_CHALLENGE, network: 'stellar:testnet' });
+      expect(proof.network).toBe('stellar:testnet');
+    });
+
+    it('rejects a challenge for another network before paying', async () => {
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, nonce: randomUUID(), network: 'stellar:pubnet' })
+      ).rejects.toThrow(/challenge is for stellar:pubnet, but the agent is on stellar:testnet/);
+      expect(mockPaymentTool.execute).not.toHaveBeenCalled();
+    });
+
+    it('rejects a non-CAIP-2 network', async () => {
+      await expect(
+        tool.respond({ ...VALID_CHALLENGE, nonce: randomUUID(), network: 'testnet' })
+      ).rejects.toThrow(/unsupported network testnet/);
+    });
+  });
+
   describe('Happy path', () => {
     it('returns a valid x402 payment proof structure', async () => {
       const proof = await tool.respond(VALID_CHALLENGE);
 
       expect(proof.protocol).toBe('x402');
-      expect(proof.network).toBe('testnet');
+      expect(proof.network).toBe('stellar:testnet');
       expect(proof.txHash).toBe('x402_mock_tx_hash');
       expect(proof.nonce).toBe(VALID_CHALLENGE.nonce);
       expect(proof.payer).toMatch(/^G[A-Z2-7]{55}$/);
@@ -588,7 +608,7 @@ describe('X402PaymentTool', () => {
 
     const VALID_PROOF = {
       protocol: 'x402' as const,
-      network: 'testnet',
+      network: 'stellar:testnet' as const,
       txHash: 'abc123',
       nonce: NONCE,
       payer: Keypair.fromSecret(TEST_SECRET).publicKey(),
@@ -598,6 +618,13 @@ describe('X402PaymentTool', () => {
     it('passes for a valid proof and matching challenge', async () => {
       setupValidMocks();
       await expect(tool.verify(VALID_PROOF, VALID_CHALLENGE)).resolves.toBeUndefined();
+    });
+
+    it('throws when the proof network is not the agent network as CAIP-2 (#775)', async () => {
+      setupValidMocks();
+      await expect(
+        tool.verify({ ...VALID_PROOF, network: 'stellar:pubnet' }, VALID_CHALLENGE)
+      ).rejects.toThrow('network mismatch');
     });
 
     it('throws when destination does not match originalChallenge.payTo', async () => {
