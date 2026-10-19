@@ -671,7 +671,23 @@ export class PayFiAgent extends EventEmitter {
 
   drain(): void {
     this.isDraining = true;
-    logger.info('Agent draining — rejecting new tasks');
+    // Queued tasks have not started, so settle them now rather than letting
+    // them race the hard-kill timer — otherwise their callers hang forever.
+    const queued = this.taskQueue.splice(0);
+    for (const { task, correlationId, resolve } of queued) {
+      resolve(this.shuttingDownResult(task, correlationId));
+    }
+    logger.info('Agent draining — rejecting new tasks', { rejectedQueuedTasks: queued.length });
+  }
+
+  private shuttingDownResult(task: AgentTask, correlationId: string): AgentResult {
+    return {
+      success: false,
+      taskType: task.type,
+      error: new AgentShuttingDownError().message,
+      errorType: ErrorType.AgentShuttingDown,
+      correlationId,
+    };
   }
 
   /**
@@ -837,14 +853,27 @@ export class PayFiAgent extends EventEmitter {
     logger.info('Waiting for pending tasks to finish', {
       activeTasks: this.activeTasks,
       queuedTasks: this.taskQueue.length,
+      timeoutMs,
     });
-    return new Promise<void>((resolve) => {
+    return new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const interval = setInterval(() => {
-        if (this.activeTasks === 0 && this.taskQueue.length === 0) {
+        if (idle()) {
           clearInterval(interval);
-          resolve();
+          clearTimeout(timer);
+          resolve(true);
         }
       }, 100);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          clearInterval(interval);
+          logger.warn('Timed out waiting for pending tasks', {
+            activeTasks: this.activeTasks,
+            queuedTasks: this.taskQueue.length,
+          });
+          resolve(false);
+        }, timeoutMs);
+      }
     });
   }
 
@@ -879,12 +908,7 @@ export class PayFiAgent extends EventEmitter {
     const taskLog = createLogger('orchestrator', correlationId);
 
     if (this.isDraining) {
-      return {
-        success: false,
-        taskType: task.type,
-        error: 'Agent is shutting down — task rejected',
-        correlationId,
-      };
+      return this.shuttingDownResult(task, correlationId);
     }
 
     // ── Concurrency rate limit — queue when saturated if queueCapacity allows,
