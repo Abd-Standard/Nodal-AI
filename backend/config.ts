@@ -247,8 +247,13 @@ const EnvSchema = z.object({
 
   MAX_SOROBAN_FEE_STROOPS: z.coerce.number().int().min(100).default(1_000_000),
 
-  // Health check HTTP server
-  HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  // MCP server
+  MCP_ALLOW_PAYMENTS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  MCP_TRANSPORT: z.enum(['stdio', 'http']).default('stdio'),
+  MCP_PORT: z.coerce.number().int().min(1).max(65535).default(3001),
 
   // Contract event listener polling interval in milliseconds.
   CONTRACT_EVENT_POLL_MS: z.coerce.number().int().min(100).optional(),
@@ -521,6 +526,18 @@ export interface AgentConfig {
    * Defaults to 0 (no queuing — excess tasks are rejected immediately).
    */
   readonly QUEUE_CAPACITY: number;
+  /**
+   * When true, value-moving tools are exposed via MCP. Defaults to false.
+   */
+  readonly MCP_ALLOW_PAYMENTS: boolean;
+  /**
+   * MCP transport: "stdio" or "http". Defaults to "stdio".
+   */
+  readonly MCP_TRANSPORT: 'stdio' | 'http';
+  /**
+   * Port for MCP HTTP server. Defaults to 3001.
+   */
+  readonly MCP_PORT: number;
   /**
    * Port for the health-check HTTP server.
    * Validated by EnvSchema to be an integer between 1 and 65535.

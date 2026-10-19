@@ -55,6 +55,23 @@ function applySchema(db: Database.Database): void {
         value TEXT NOT NULL
       )
     `);
+  // Event-driven triggers for autonomous PayFi
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS triggers (
+        id          TEXT PRIMARY KEY,
+        source      TEXT NOT NULL,
+        filter      TEXT NOT NULL,
+        task        TEXT NOT NULL,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL,
+        last_fired_at TEXT
+      )
+    `);
+  // Trigger event dedupe - prevents double execution on stream replay
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS trigger_events (
+        key       TEXT PRIMARY KEY,
+        fired_at  TEXT NOT NULL
   // Value-moving tasks held for a human decision (#736).
   db.exec(`
       CREATE TABLE IF NOT EXISTS pending_approvals (

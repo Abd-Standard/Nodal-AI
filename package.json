@@ -7,6 +7,7 @@
     "node": ">=22.0.0"
   },
   "scripts": {
+    "mcp": "npx ts-node backend/mcp/index.ts",
     "setup": "npx ts-node scripts/setup.ts",
     "audit:verify": "npx ts-node scripts/audit_verify.ts",
     "build": "tsc && node -e \"require('fs').cpSync('backend/db/migrations', 'dist/backend/db/migrations', { recursive: true })\"",
