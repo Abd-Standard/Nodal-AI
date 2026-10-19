@@ -108,6 +108,16 @@ describe('AccountInfoTool', () => {
     expect(info.balances.length).toBeGreaterThan(0);
   });
 
+  it('exposes the legacy inflation destination read-only (#782)', async () => {
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(
+      makeMockAccount({ inflation_destination: AGENT_KEY }) as any
+    );
+    expect((await tool.fetch()).inflationDestination).toBe(AGENT_KEY);
+
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount() as any);
+    expect((await tool.fetch()).inflationDestination).toBeNull();
+  });
+
   it('returns empty balances array for an account with no balances', async () => {
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount({ balances: [] }) as any);
     const info = await tool.fetch();

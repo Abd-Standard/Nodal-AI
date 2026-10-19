@@ -102,7 +102,7 @@ export function listen(
       const response = await sorobanServer.getEvents({
         filters: [{ type: 'contract', contractIds: [contractId] }],
         ...(cursor ? { cursor } : { startLedger: await startLedgerPromise! }),
-      } as rpc.Server.GetEventsRequest);
+      } as rpc.Api.GetEventsRequest);
 
       // Successfully contacted RPC: reset reconnect attempts
       reconnectAttempts = 0;
@@ -116,7 +116,7 @@ export function listen(
       if (response.events.length > 0) {
         const lastEvent = response.events[response.events.length - 1];
         if (lastEvent) {
-          cursor = lastEvent.pagingToken;
+          cursor = lastEvent.id;
         }
       } else if ('cursor' in response && response.cursor) {
         cursor = response.cursor;

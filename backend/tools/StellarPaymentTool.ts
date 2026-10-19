@@ -22,6 +22,7 @@ import { loadAccount, resolveNetworkPassphrase, submitTransaction } from '../rpc
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 import { createLogger } from '../utils/logger';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
+import { assertDestinationReady } from '../utils/destinationPreflight';
 
 const log = createLogger('stellar-payment');
 
@@ -172,7 +173,8 @@ export class StellarPaymentTool {
    *
    * Steps:
    * 1. Validate input with Zod schema
-   * 2. Resolve asset (native XLM or custom asset)
+   * 2. Resolve asset (native XLM or custom asset) and pre-flight the destination
+   *    (exists, trustline present, SEP-29 memo supplied when required)
    * 3. Load source account to get latest sequence number
    * 4. Build transaction with payment operation and optional memo
    * 5. Validate transaction envelope
@@ -182,6 +184,8 @@ export class StellarPaymentTool {
    * @param rawInput - Raw payment input (will be validated)
    * @returns Object containing transaction hash and ledger number
    * @throws {z.ZodError} If input fails validation
+   * @throws {DestinationNotFoundError | MissingTrustlineError | MemoRequiredError}
+   *   If the destination cannot receive this payment
    * @throws {Error} If source account not found or transaction submission fails
    */
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
@@ -199,6 +203,14 @@ export class StellarPaymentTool {
     }
     const asset =
       input.assetCode === 'XLM' ? Asset.native() : new Asset(input.assetCode, input.assetIssuer);
+
+    // Pre-flight: destination exists, trusts the asset, and gets any SEP-29 required memo
+    await assertDestinationReady({
+      destination: input.destination,
+      asset,
+      hasMemo: input.memo !== undefined,
+      amount: input.amount,
+    });
 
     // 3. Load source account (latest sequence number)
     let sourceAccount = await loadAccount(this.signer.publicKey());
