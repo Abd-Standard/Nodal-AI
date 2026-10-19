@@ -17,6 +17,15 @@
  * keys (`G…`). They share the 56-character length and nothing else: a contract
  * ID checked with `isValidEd25519PublicKey` would be rejected outright. They
  * get their own schema rather than being folded in.
+ *
+ * # Muxed accounts (Issue #787)
+ *
+ * A muxed account (`M…`, 69 characters) is a `G…` account plus a 64-bit ID,
+ * used by exchanges and custodians in place of a memo. The protocol accepts
+ * one wherever an operation *pays to* an account (payment and path-payment
+ * destinations), so those fields use `stellarDestinationSchema`. Fields that
+ * name an account itself — signers, issuers, sponsors, fee sources — stay on
+ * `stellarPublicKeySchema` and remain `G…`-only.
  */
 
 import { StrKey } from '@stellar/stellar-sdk';
@@ -28,6 +37,27 @@ export const STRKEY_LENGTH = 56;
 /** Whether a string is a valid Ed25519 account public key (`G…`). */
 export function isValidStellarPublicKey(value: string): boolean {
   return StrKey.isValidEd25519PublicKey(value);
+}
+
+/** Whether a string is a valid muxed account address (`M…`). */
+export function isValidStellarMuxedAddress(value: string): boolean {
+  return StrKey.isValidMed25519PublicKey(value);
+}
+
+/** Whether a string can receive a payment: a `G…` account or a muxed `M…` account. */
+export function isValidStellarDestination(value: string): boolean {
+  return isValidStellarPublicKey(value) || isValidStellarMuxedAddress(value);
+}
+
+/**
+ * The underlying `G…` account of a destination. A muxed `M…` address is
+ * reduced to the account it multiplexes; anything else is returned unchanged.
+ */
+export function baseAccountId(address: string): string {
+  if (!isValidStellarMuxedAddress(address)) return address;
+  // The first 32 bytes of a decoded M-address are the Ed25519 key; the
+  // trailing 8 are the mux ID.
+  return StrKey.encodeEd25519PublicKey(StrKey.decodeMed25519PublicKey(address).subarray(0, 32));
 }
 
 /** Whether a string is a valid contract address (`C…`). */
@@ -46,20 +76,7 @@ export function isValidStellarContractId(value: string): boolean {
  * caller gets describes the first thing that is actually wrong.
  */
 export function stellarPublicKeySchema(label = 'Stellar public key') {
-  const invalidMessage =
-    label === 'Signer public key'
-      ? 'Invalid signer public key: Invalid Stellar public key'
-      : label === 'Asset issuer'
-        ? 'Invalid asset issuer: must be a valid Stellar public key'
-        : label === 'payTo'
-          ? 'Invalid Stellar public key: payTo must be a valid Stellar address'
-          : label.toLowerCase() === 'destination'
-            ? `Invalid Stellar public key: ${label} must be a valid Stellar public key`
-            : label.toLowerCase() === 'inflation destination'
-              ? 'Invalid inflation destination: must be a valid Stellar public key'
-              : label === 'Stellar public key'
-                ? 'Invalid Stellar public key'
-                : `Invalid Stellar public key: ${label} is not valid`;
+  const invalidMessage = invalidPublicKeyMessage(label);
 
   return z
     .string()
@@ -70,6 +87,34 @@ export function stellarPublicKeySchema(label = 'Stellar public key') {
     .refine(isValidStellarPublicKey, {
       message: invalidMessage,
     });
+}
+
+/**
+ * A payment destination: a `G…` account public key or a muxed `M…` account,
+ * both checksum-verified. Use only where the protocol accepts a muxed account
+ * (payment and path-payment destinations); everywhere else use
+ * `stellarPublicKeySchema`.
+ */
+export function stellarDestinationSchema(label = 'Destination') {
+  return z.string().refine(isValidStellarDestination, {
+    message: invalidPublicKeyMessage(label),
+  });
+}
+
+function invalidPublicKeyMessage(label: string): string {
+  return label === 'Signer public key'
+    ? 'Invalid signer public key: Invalid Stellar public key'
+    : label === 'Asset issuer'
+      ? 'Invalid asset issuer: must be a valid Stellar public key'
+      : label === 'payTo'
+        ? 'Invalid Stellar public key: payTo must be a valid Stellar address'
+        : label.toLowerCase() === 'destination'
+          ? `Invalid Stellar public key: ${label} must be a valid Stellar public key`
+          : label.toLowerCase() === 'inflation destination'
+            ? 'Invalid inflation destination: must be a valid Stellar public key'
+            : label === 'Stellar public key'
+              ? 'Invalid Stellar public key'
+              : `Invalid Stellar public key: ${label} is not valid`;
 }
 
 /** A Stellar contract address (`C…`). */

@@ -244,6 +244,10 @@ const EnvSchema = z.object({
 
   MAX_SOROBAN_FEE_STROOPS: z.coerce.number().int().min(100).default(1_000_000),
 
+  // Ceiling on the per-operation inclusion fee chosen by estimateFee() (#790),
+  // so surge pricing can never push a classic transaction's fee without bound.
+  MAX_FEE_STROOPS: z.coerce.number().int().min(100).default(100_000),
+
   // Health check HTTP server
   HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
 
@@ -466,6 +470,12 @@ export interface AgentConfig {
    * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
    */
   readonly MAX_SOROBAN_FEE_STROOPS: number;
+
+  /**
+   * Maximum per-operation inclusion fee in stroops that estimateFee() will
+   * bid, including on a fee-bump surge retry. Defaults to 100_000 (0.01 XLM).
+   */
+  readonly MAX_FEE_STROOPS: number;
 
   /**
    * Maximum number of tasks allowed to execute concurrently in agent.run().
