@@ -740,4 +740,6 @@ describe('Escrow E2E — testnet', () => {
 
     await expect(sendTx(sorobanServer, refundTx, depositorKp)).rejects.toThrow();
   }, 120_000);
+  });
 });
+

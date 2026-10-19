@@ -62,6 +62,7 @@ import { SetOptionsTool } from './tools/SetOptionsTool';
 import { SorobanEventIndexerTool } from './tools/SorobanEventIndexerTool';
 import { StellarIdentityTool } from './tools/StellarIdentityTool';
 import { FriendBotTool } from './tools/FriendBotTool';
+import { NanoPaymentTool } from './tools/NanoPaymentTool';
 import { listen as listenContractEvents } from './tools/ContractEventListener';
 import {
   watchContractStorage,
@@ -105,9 +106,7 @@ export type { AgentEvents };
  *   exceed the limit.
  */
 function reserveSpendingLimit(amount: unknown): string | null {
-  if (typeof amount !== "string") return null; // let the tool's own schema catch this
-function assertWithinSpendingLimit(amount: unknown): void {
-  if (typeof amount !== 'string') return; // let the tool's own schema catch this
+  if (typeof amount !== 'string') return null; // let the tool's own schema catch this
 
   const parsed = parseFloat(amount);
   const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
@@ -120,7 +119,6 @@ function assertWithinSpendingLimit(amount: unknown): void {
     );
   }
   // Layer 2: mainnet hard cap
-  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
   if (!isNaN(parsed) && config.STELLAR_NETWORK === 'mainnet' && parsed > MAINNET_SPENDING_CAP) {
     throw new Error(
       `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
@@ -131,6 +129,10 @@ function assertWithinSpendingLimit(amount: unknown): void {
   // Layer 3: reserve against rolling-window cumulative limit (issue #729)
   // Returns a reservationId — caller must commit() on success or release() on failure.
   return spendingTracker.reserve(amount);
+}
+
+function assertWithinSpendingLimit(amount: unknown): void {
+  reserveSpendingLimit(amount);
 }
 
 const log = createLogger('orchestrator');
@@ -224,6 +226,7 @@ export type BuiltinTaskType =
   | 'stellar_identity_auth'
   | 'cross_border_payment'
   | 'friendbot'
+  | 'nano_payment'
   | 'ledger_info'
   | 'network_status'
   | 'offer_book'
@@ -285,6 +288,7 @@ export type TaskPayloadMap = {
   soroban_event_query: { contractId: string; startLedger?: number; eventTypes?: string[] };
   stellar_identity_auth: { accountId: string; callback?: string };
   friendbot: { accountId: string };
+  nano_payment: { recipient: string; amountRaw: string; senderAccount?: string; senderSeed?: string; rpcUrl?: string; skipPrecheck?: boolean };
   soroban_query: { contractId: string; key: string };
   network_status: Record<string, never>;
   ledger_info: Record<string, never>;
@@ -322,6 +326,7 @@ export type TaskResultMap = {
   soroban_event_query: { events: unknown[] };
   stellar_identity_auth: { token: string };
   friendbot: { txHash: string; accountId: string };
+  nano_payment: { blockHash: string; recipient: string; amountRaw: string; network: 'nano'; precheckPassed: boolean; timestamp: string };
   soroban_query: { value: unknown };
   network_status: { buildNumber: string; currentProtocolVersion: number; currentLedger: number };
   ledger_info: { sequence: number; totalCoins: string; baseFee: number };
@@ -538,6 +543,7 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
   private sorobanEventIndexerTool: SorobanEventIndexerTool;
   private stellarIdentityTool: StellarIdentityTool;
   private friendBotTool: FriendBotTool;
+  private nanoPaymentTool: NanoPaymentTool;
 
   private activeTasks = 0;
   private isDraining = false;
@@ -594,6 +600,7 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
     this.sorobanEventIndexerTool = new SorobanEventIndexerTool();
     this.stellarIdentityTool = new StellarIdentityTool(this.signer);
     this.friendBotTool = new FriendBotTool();
+    this.nanoPaymentTool = new NanoPaymentTool();
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
@@ -1115,24 +1122,6 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
   ): Promise<AgentResult> {
     this.activeTasks++;
     this.emit('task:started', { taskType: task.type, correlationId });
-    taskLog.info({ taskType: task.type }, "Running task");
-    try {
-      let data: unknown;
-
-      switch (task.type) {
-        case "stellar_payment": {
-          // issue #729 — reserve before submit, commit/release after
-          const p = task.payload as Record<string, unknown>;
-          const reservationId = reserveSpendingLimit(p?.amount);
-          try {
-            data = await this.paymentTool.execute(task.payload);
-            if (reservationId !== null) spendingTracker.commit(reservationId);
-          } catch (toolErr) {
-            if (reservationId !== null) spendingTracker.release(reservationId);
-            throw toolErr;
-          }
-          break;
-        }
     const startMs = Date.now();
 
     taskLog.info({ taskType: task.type }, 'Running task');
@@ -1305,6 +1294,10 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
 
           case 'friendbot':
             data = await this.friendBotTool.execute(task.payload);
+            break;
+
+          case 'nano_payment':
+            data = await this.nanoPaymentTool.execute(task.payload);
             break;
 
           default:
