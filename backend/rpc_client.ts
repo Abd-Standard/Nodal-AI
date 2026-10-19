@@ -26,9 +26,11 @@ import {
 import { logger } from './logger';
 import { validateXDR } from './types/xdr';
 import { createLogger } from './utils/logger';
+import { BREAKER_STATE, rpcBreakerState } from './metrics';
 import { isThrottled, handleRateLimitResponse, withBackoffGuard } from './network';
 export { withBackoffGuard } from './network';
 import { withSpan } from './telemetry';
+import { emitTaskEvent } from './events';
 
 const log = createLogger('rpc-client');
 // Exported so the breaker's behaviour can be asserted against the real
@@ -103,7 +105,10 @@ export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   breaker: CircuitBreaker<TArgs, TResult>,
   name: string
 ): CircuitBreaker<TArgs, TResult> {
+  rpcBreakerState.set({ circuit: name }, BREAKER_STATE.closed);
+
   breaker.on('open', () => {
+    rpcBreakerState.set({ circuit: name }, BREAKER_STATE.open);
     log.warn(
       {
         circuit: name,
@@ -117,6 +122,7 @@ export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   });
 
   breaker.on('halfOpen', () => {
+    rpcBreakerState.set({ circuit: name }, BREAKER_STATE.halfOpen);
     log.info(
       {
         circuit: name,
@@ -127,6 +133,7 @@ export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
 
   breaker.on('close', () => {
     resetBreakerStats(breaker);
+    rpcBreakerState.set({ circuit: name }, BREAKER_STATE.closed);
     log.info(
       {
         circuit: name,
@@ -239,13 +246,21 @@ export async function withRetry<T>(
             throw err;
           }
 
-          logger.warn('Retry attempt failed', {
-            attempt,
-            maxRetries: retries,
-            error: (err as Error).message,
-          });
+          logger.warn(
+            {
+              attempt,
+              maxRetries: retries,
+              error: (err as Error).message,
+            },
+            'Retry attempt failed'
+          );
 
           if (attempt < retries) {
+            emitTaskEvent('task:retry', {
+              attempt,
+              maxRetries: retries,
+              error: (err as Error).message,
+            });
             const exponential = delayMs * Math.pow(2, attempt - 1);
             const capped = Math.min(exponential, maxDelayMs);
             const jitter = Math.random() * 0.2 * capped;
@@ -351,8 +366,10 @@ export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
   // Clearing every key (rather than just the source) keeps this correct for
   // fee-bump and multi-signer envelopes without having to unpick which account
   // actually advanced.
+  const hash = tx.hash().toString('hex');
+  emitTaskEvent('tx:submitted', { hash });
   try {
-    return await withBackoffGuard(() =>
+    const result = await withBackoffGuard(() =>
       withRetry(() => {
         const controller = new AbortController();
         let timeoutId: ReturnType<typeof setTimeout>;
@@ -367,6 +384,8 @@ export async function submitTransaction(tx: Transaction | FeeBumpTransaction) {
         );
       })
     );
+    emitTaskEvent('tx:confirmed', { hash, ledger: result.ledger });
+    return result;
   } finally {
     invalidateAccountCache();
   }
@@ -423,7 +442,13 @@ function validateSorobanAuth(tx: Transaction | { operations?: Array<{ auth?: Arr
       const credentials = authObject.credentials?.();
       if (!credentials) continue;
 
-      const hasAddressCredentials = typeof credentials.address === 'function';
+      // Source-account credentials are authorized by the envelope signature and
+      // carry no address. An XDR union exposes every arm's accessor, so check
+      // the discriminant rather than whether `address` exists.
+      const credentialsType = credentials.switch?.() as { name?: string } | undefined;
+      const hasAddressCredentials = credentialsType
+        ? credentialsType.name === 'sorobanCredentialsAddress'
+        : typeof credentials.address === 'function';
       if (!hasAddressCredentials) {
         continue;
       }

@@ -19,27 +19,26 @@ export interface TypedBalance {
 }
 
 /**
- * Convert Horizon's loosely-typed balances to properly typed entries.
+ * Convert Horizon's balance lines to properly typed entries.
+ *
+ * Uses the SDK's `HorizonApi.BalanceLine` union directly so no cast is needed:
+ * native lines carry no asset code/issuer/limit, and liquidity-pool share lines
+ * carry no asset code/issuer, so those fields are only read when present.
  */
-export function getTypedBalances(account: Horizon.Account): TypedBalance[] {
-  const rawBalances = account.balances as Array<{
-    asset_type: string;
-    asset_code?: string;
-    asset_issuer?: string;
-    balance: string;
-    limit?: string;
-    is_authorized?: boolean;
-    is_authorized_to_maintain_liabilities?: boolean;
-  }>;
-
-  return rawBalances.map((b) => ({
+export function getTypedBalances(
+  account: Pick<Horizon.AccountResponse, 'balances'>
+): TypedBalance[] {
+  return account.balances.map((b: Horizon.HorizonApi.BalanceLine) => ({
     assetType: b.asset_type as TypedBalance['assetType'],
-    assetCode: b.asset_code,
-    assetIssuer: b.asset_issuer,
+    assetCode: 'asset_code' in b ? b.asset_code : undefined,
+    assetIssuer: 'asset_issuer' in b ? b.asset_issuer : undefined,
     balance: b.balance,
-    limit: b.limit,
-    isAuthorized: b.is_authorized,
-    isAuthorizedToMaintainLiabilities: b.is_authorized_to_maintain_liabilities,
+    limit: 'limit' in b ? b.limit : undefined,
+    isAuthorized: 'is_authorized' in b ? b.is_authorized : undefined,
+    isAuthorizedToMaintainLiabilities:
+      'is_authorized_to_maintain_liabilities' in b
+        ? b.is_authorized_to_maintain_liabilities
+        : undefined,
   }));
 }
 
@@ -47,7 +46,7 @@ export function getTypedBalances(account: Horizon.Account): TypedBalance[] {
  * Find a balance entry by asset code and issuer.
  */
 export function findBalance(
-  account: Horizon.Account,
+  account: Pick<Horizon.AccountResponse, 'balances'>,
   assetCode: string,
   assetIssuer?: string
 ): TypedBalance | undefined {

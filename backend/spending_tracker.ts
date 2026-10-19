@@ -73,16 +73,22 @@ export class SpendingTracker {
         timestamp: r.timestamp,
       }));
       if (this.records.length > 0) {
-        logger.info('Restored spending window from persistence', {
-          records: this.records.length,
-          total: this.total(),
-        });
+        logger.info(
+          {
+            records: this.records.length,
+            total: this.total(),
+          },
+          'Restored spending window from persistence'
+        );
       }
     } catch (err) {
       // No database, or it is unreadable — carry on with an empty window.
-      logger.warn('Could not restore spending window; starting empty', {
-        error: String(err),
-      });
+      logger.warn(
+        {
+          error: String(err),
+        },
+        'Could not restore spending window; starting empty'
+      );
       this.records = [];
     }
   }
@@ -152,11 +158,14 @@ export class SpendingTracker {
     const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
     if (!isNaN(total) && !isNaN(limit)) {
       if (total > limit * 0.8) {
-        logger.warn('Approaching spending limit', {
-          total,
-          limit,
-          percent: ((total / limit) * 100).toFixed(1),
-        });
+        logger.warn(
+          {
+            total,
+            limit,
+            percent: ((total / limit) * 100).toFixed(1),
+          },
+          'Approaching spending limit'
+        );
       }
       if (total > limit) {
         throw new Error(`Cumulative spending ${total} exceeds limit ${limit}`);
@@ -298,7 +307,7 @@ export class SpendingTracker {
       saveSpendingRecord(record);
     } catch (err) {
       // A spend that cannot be written down still counts in this process.
-      logger.warn('Could not persist spending record', { error: String(err) });
+      logger.warn({ error: String(err) }, 'Could not persist spending record');
     }
   }
 

@@ -9,13 +9,15 @@
 import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import type { AgentResult } from './agent';
+import { migrateSqlite } from './db/migrate';
 
 export type PersistedResult = AgentResult & { timestamp: string };
 
 let _db: Database.Database | null = null;
 
 /**
- * Create every table this module owns, plus the idempotent migrations.
+ * Bring the schema up to date by applying the numbered migrations in
+ * `backend/db/migrations/` (#821).
  *
  * Applied both to the lazily opened connection and to any DB injected through
  * `_setDb()`, so a test database has the same shape as a real one and the two
@@ -53,6 +55,29 @@ function applySchema(db: Database.Database): void {
         value TEXT NOT NULL
       )
     `);
+  // Value-moving tasks held for a human decision (#736).
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS pending_approvals (
+        id            TEXT    PRIMARY KEY,
+        taskType      TEXT    NOT NULL,
+        payload       TEXT    NOT NULL,
+        amount        TEXT    NOT NULL,
+        correlationId TEXT,
+        status        TEXT    NOT NULL,
+        createdAt     INTEGER NOT NULL,
+        expiresAt     INTEGER NOT NULL,
+        decidedAt     INTEGER
+      )
+    `);
+  // One row per approval decision (approved / denied / expired).
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS approval_audit_log (
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        approvalId TEXT    NOT NULL,
+        decision   TEXT    NOT NULL,
+        ts         INTEGER NOT NULL
+      )
+    `);
   // Idempotent migration for databases created before correlationId existed.
   const cols = db.prepare(`PRAGMA table_info(agent_results)`).all() as Array<{ name: string }>;
   if (!cols.some((c) => c.name === 'correlationId')) {
@@ -60,7 +85,11 @@ function applySchema(db: Database.Database): void {
   }
 }
 
-function getDb(): Database.Database {
+/**
+ * The shared connection, opened (and migrated) on first use. Exposed so other
+ * SQLite-backed stores can reuse it instead of opening a second handle.
+ */
+export function getDb(): Database.Database {
   if (!_db) {
     // Lazy import of config so that tests can inject via _setDb() before any DB access
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -295,6 +324,55 @@ export function clearSpendingRecords(): void {
   getDb().prepare(`DELETE FROM spending_records`).run();
 }
 
+/** A spend held against the persisted window by {@link reserveSpendingRecord}. */
+export interface SpendingReservation {
+  /** Row id; pass to {@link deleteSpendingRecord} to release the hold. */
+  id: number;
+  /** Cumulative total in the window, including this reservation. */
+  total: number;
+}
+
+/**
+ * Atomically check the window total and record `amount` against it (#822).
+ *
+ * The sum and the insert run in one IMMEDIATE transaction, which takes
+ * SQLite's write lock up front, so two connections can never both see room
+ * under `limit` and both insert.
+ *
+ * @throws if `amount` would push the total of records at or after `sinceMs`
+ *   past `limit`; nothing is written in that case.
+ */
+export function reserveSpendingRecord(
+  amount: number,
+  limit: number,
+  sinceMs: number,
+  now: number = Date.now()
+): SpendingReservation {
+  const db = getDb();
+  const reserve = db.transaction((): SpendingReservation => {
+    const row = db
+      .prepare(
+        `SELECT COALESCE(SUM(amount), 0) AS total FROM spending_records
+         WHERE timestamp >= ?`
+      )
+      .get(sinceMs) as { total: number };
+    const total = row.total + amount;
+    if (total > limit) {
+      throw new Error(`Cumulative spending ${total} exceeds limit ${limit}`);
+    }
+    const info = db
+      .prepare(`INSERT INTO spending_records (amount, timestamp) VALUES (?, ?)`)
+      .run(amount, now);
+    return { id: Number(info.lastInsertRowid), total };
+  });
+  return reserve.immediate();
+}
+
+/** Remove one spending record, e.g. to release a reservation whose submission failed. */
+export function deleteSpendingRecord(id: number): void {
+  getDb().prepare(`DELETE FROM spending_records WHERE id = ?`).run(id);
+}
+
 /** Persist a single agent-state value, replacing any previous one. */
 export function saveAgentState(key: string, value: string): void {
   getDb()
@@ -311,6 +389,135 @@ export function loadAgentState(key: string): string | undefined {
     | { value: string }
     | undefined;
   return row?.value;
+}
+
+// ─── Pending approvals (#736) ─────────────────────────────────────────────────
+
+export type ApprovalStatus = 'pending_approval' | 'approved' | 'denied' | 'expired';
+
+/** A value-moving task held until an operator approves or denies it. */
+export interface PendingApproval {
+  id: string;
+  taskType: string;
+  payload: unknown;
+  amount: string;
+  correlationId: string | null;
+  status: ApprovalStatus;
+  createdAt: number;
+  expiresAt: number;
+  decidedAt: number | null;
+}
+
+export interface ApprovalAuditRow {
+  approvalId: string;
+  decision: Exclude<ApprovalStatus, 'pending_approval'>;
+  ts: number;
+}
+
+type ApprovalRow = Omit<PendingApproval, 'payload'> & { payload: string };
+
+function toPendingApproval(row: ApprovalRow): PendingApproval {
+  return { ...row, payload: JSON.parse(row.payload) };
+}
+
+/** Persist a newly held task in the `pending_approval` state. */
+export function savePendingApproval(
+  approval: Omit<PendingApproval, 'status' | 'decidedAt'>
+): void {
+  getDb()
+    .prepare(
+      `INSERT INTO pending_approvals
+         (id, taskType, payload, amount, correlationId, status, createdAt, expiresAt, decidedAt)
+       VALUES
+         (@id, @taskType, @payload, @amount, @correlationId, 'pending_approval', @createdAt,
+          @expiresAt, NULL)`
+    )
+    .run({ ...approval, payload: JSON.stringify(approval.payload ?? null) });
+}
+
+export function getPendingApproval(id: string): PendingApproval | undefined {
+  const row = getDb().prepare(`SELECT * FROM pending_approvals WHERE id = ?`).get(id) as
+    | ApprovalRow
+    | undefined;
+  return row ? toPendingApproval(row) : undefined;
+}
+
+/** Approvals still waiting for a decision, oldest first. */
+export function listPendingApprovals(): PendingApproval[] {
+  const rows = getDb()
+    .prepare(
+      `SELECT * FROM pending_approvals WHERE status = 'pending_approval' ORDER BY createdAt ASC`
+    )
+    .all() as ApprovalRow[];
+  return rows.map(toPendingApproval);
+}
+
+/**
+ * Move a pending, unexpired approval to `approved` or `denied` and record the
+ * decision in the audit log. The status check is part of the UPDATE, so of two
+ * concurrent decisions only one can win.
+ *
+ * @returns true when this call made the decision, false when the approval was
+ *   unknown, already decided or expired.
+ */
+export function decideApproval(
+  id: string,
+  decision: 'approved' | 'denied',
+  now: number = Date.now()
+): boolean {
+  const db = getDb();
+  const decide = db.transaction((): boolean => {
+    const info = db
+      .prepare(
+        `UPDATE pending_approvals SET status = ?, decidedAt = ?
+         WHERE id = ? AND status = 'pending_approval' AND expiresAt > ?`
+      )
+      .run(decision, now, id, now);
+    if (info.changes !== 1) return false;
+    db.prepare(`INSERT INTO approval_audit_log (approvalId, decision, ts) VALUES (?, ?, ?)`).run(
+      id,
+      decision,
+      now
+    );
+    return true;
+  });
+  return decide();
+}
+
+/**
+ * Mark every pending approval past its deadline as `expired`, recording each in
+ * the audit log.
+ *
+ * @returns the ids that expired in this call.
+ */
+export function expirePendingApprovals(now: number = Date.now()): string[] {
+  const db = getDb();
+  const expire = db.transaction((): string[] => {
+    const rows = db
+      .prepare(
+        `SELECT id FROM pending_approvals WHERE status = 'pending_approval' AND expiresAt <= ?`
+      )
+      .all(now) as Array<{ id: string }>;
+    const update = db.prepare(
+      `UPDATE pending_approvals SET status = 'expired', decidedAt = ? WHERE id = ?`
+    );
+    const audit = db.prepare(
+      `INSERT INTO approval_audit_log (approvalId, decision, ts) VALUES (?, 'expired', ?)`
+    );
+    for (const { id } of rows) {
+      update.run(now, id);
+      audit.run(id, now);
+    }
+    return rows.map((r) => r.id);
+  });
+  return expire();
+}
+
+/** Every approval decision, oldest first. */
+export function getApprovalAuditLog(): ApprovalAuditRow[] {
+  return getDb()
+    .prepare(`SELECT approvalId, decision, ts FROM approval_audit_log ORDER BY id ASC`)
+    .all() as ApprovalAuditRow[];
 }
 
 /** Replace the underlying DB instance — used in tests to inject an in-memory DB. */

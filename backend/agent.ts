@@ -12,12 +12,27 @@
 
 // Updated imports
 import { EventEmitter } from 'events';
-import { createHash } from 'crypto';
+import { createHash, randomUUID } from 'crypto';
 import { rpc } from '@stellar/stellar-sdk';
 import { config, MAINNET_SPENDING_CAP } from './config';
 import { logger } from './logger';
-import { saveResult } from './persistence';
-import { AgentPausedError, StructuredError, getErrorType, sanitizeCause } from './errors';
+import {
+  saveResult,
+  savePendingApproval,
+  getPendingApproval,
+  listPendingApprovals,
+  decideApproval,
+  expirePendingApprovals,
+  PendingApproval,
+} from './persistence';
+import {
+  AgentPausedError,
+  ErrorType,
+  PolicyViolationError,
+  StructuredError,
+  getErrorType,
+  sanitizeCause,
+} from './errors';
 import { StellarPaymentTool } from './tools/StellarPaymentTool';
 import { SorobanInvokeTool } from './tools/SorobanInvokeTool';
 import { X402PaymentTool, X402Challenge, X402ChallengeSchema } from './tools/X402PaymentTool';
@@ -58,10 +73,12 @@ import { spendingTracker } from './spending_tracker';
 import { dispatchWebhook } from './webhook';
 import { createAgentSigner, Signer } from './signer';
 import { isPaused } from './kill_switch';
+import { taskContext, type AgentEvents } from './events';
 
 // Re-exported so existing importers (`server.ts`, tests) keep working after the
 // singleton moved to spending_tracker.ts.
 export { spendingTracker };
+export type { AgentEvents };
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
@@ -115,6 +132,63 @@ function assertWithinSpendingLimit(amount: unknown): void {
 
 const log = createLogger('orchestrator');
 
+// ─── Payment destination policy (#735) ───────────────────────────────────────
+
+/**
+ * Every counterparty a task would pay: `destination`, the x402 `payTo`, and
+ * each batch payment's `destination`.
+ */
+function taskDestinations(task: AgentTask): string[] {
+  const p = (task.payload ?? {}) as Record<string, unknown>;
+  const destinations: unknown[] = [p.destination, p.payTo];
+  if (Array.isArray(p.payments)) {
+    for (const pay of p.payments) {
+      destinations.push((pay as Record<string, unknown>)?.destination);
+    }
+  }
+  return destinations.filter((d): d is string => typeof d === 'string' && d.length > 0);
+}
+
+/**
+ * Enforce PAYMENT_DESTINATION_POLICY for a value-moving task. Matching ignores
+ * case so federation names compare the way federation servers resolve them.
+ *
+ * @throws PolicyViolationError if any destination is not permitted.
+ */
+function assertDestinationsAllowed(task: AgentTask): void {
+  const policy = config.PAYMENT_DESTINATION_POLICY;
+  if (policy === 'open') return;
+
+  const listed = new Set(config.PAYMENT_DESTINATIONS.map((d) => d.toLowerCase()));
+  for (const destination of taskDestinations(task)) {
+    const isListed = listed.has(destination.toLowerCase());
+    if (policy === 'allowlist' ? !isListed : isListed) {
+      throw new PolicyViolationError(
+        `Destination ${destination} is not permitted by the ${policy} payment destination policy`
+      );
+    }
+  }
+}
+
+/**
+ * The amount a value-moving task would spend, as compared against
+ * APPROVAL_THRESHOLD (#736): `sendAmount` for path payments, the sum of every
+ * payment for batches, and `amount` otherwise. `null` when the task carries no
+ * amount.
+ */
+function taskAmount(task: AgentTask): string | null {
+  const p = (task.payload ?? {}) as Record<string, unknown>;
+  if (task.type === 'batch_payment' && Array.isArray(p.payments)) {
+    const total = p.payments.reduce((sum: number, pay: unknown) => {
+      const amt = parseFloat((pay as Record<string, unknown>)?.amount as string);
+      return sum + (isNaN(amt) ? 0 : amt);
+    }, 0);
+    return String(total);
+  }
+  const amount = task.type === 'path_payment' ? p.sendAmount : p.amount;
+  return typeof amount === 'string' ? amount : null;
+}
+
 // ─── Task types ───────────────────────────────────────────────────────────────
 
 /** Task types handled by the tools PayFiAgent registers at construction. */
@@ -137,6 +211,7 @@ export type BuiltinTaskType =
   | 'sequence_number'
   | 'sponsored_account'
   | 'anchor_quote'
+  /** @deprecated Inflation is disabled on Stellar; removed in the next minor release (#782). */
   | 'inflation'
   | 'soroban_deploy'
   | 'swap'
@@ -347,7 +422,7 @@ function buildAuditEntry(
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
-export class PayFiAgent extends EventEmitter {
+export class PayFiAgent extends EventEmitter<AgentEvents> {
   private readonly signer: Signer;
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
@@ -389,10 +464,15 @@ export class PayFiAgent extends EventEmitter {
 
   // Bound handler references kept so destroy() can call .off() with the exact same function
   // reference — EventEmitter requires identity equality for removal.
-  private readonly _boundHandlers = new Map<string, (...args: unknown[]) => void>();
+  private readonly _boundHandlers = new Map<keyof AgentEvents, (...args: unknown[]) => void>();
 
   // Middleware array for pre/post task execution hooks
   private middlewares: TaskMiddleware[] = [];
+
+  // Tasks re-dispatched by approve() — they skip the approval gate (#736).
+  private readonly approvedTasks = new WeakSet<AgentTask>();
+  // Spending reservation held by each pending approval, released on decision/expiry.
+  private readonly approvalReservations = new Map<string, string>();
 
   constructor() {
     super();
@@ -430,13 +510,13 @@ export class PayFiAgent extends EventEmitter {
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
       const safe = err.message.replace(/S[A-Z2-7]{55}/g, '[REDACTED]');
-      logger.error('Unhandled agent error', { error: safe });
+      logger.error({ error: safe }, 'Unhandled agent error');
     };
     const onTaskComplete = (result: AgentResult) => {
-      logger.info('Task complete', { taskType: result.taskType });
+      logger.info({ taskType: result.taskType }, 'Task complete');
     };
     const onTaskFailed = (result: AgentResult) => {
-      logger.warn('Task failed', { taskType: result.taskType, error: result.error });
+      logger.warn({ taskType: result.taskType, error: result.error }, 'Task failed');
     };
 
     this.on('error', onError);
@@ -448,14 +528,17 @@ export class PayFiAgent extends EventEmitter {
     this._boundHandlers.set('task:failed', onTaskFailed as (...args: unknown[]) => void);
 
     // Log only safe fields — public key is derived, not the secret
-    logger.info('PayFiAgent initialised', {
-      network: config.STELLAR_NETWORK,
-      horizon: config.HORIZON_URL,
-      soroban: config.SOROBAN_RPC_URL,
-      agentPubkey: config.AGENT_PUBLIC_KEY,
-      spendingLimit: config.AGENT_SPENDING_LIMIT,
-      assetCode: config.X402_ASSET_CODE,
-    });
+    logger.info(
+      {
+        network: config.STELLAR_NETWORK,
+        horizon: config.HORIZON_URL,
+        soroban: config.SOROBAN_RPC_URL,
+        agentPubkey: config.AGENT_PUBLIC_KEY,
+        spendingLimit: config.AGENT_SPENDING_LIMIT,
+        assetCode: config.X402_ASSET_CODE,
+      },
+      'PayFiAgent initialised'
+    );
   }
 
   /**
@@ -481,13 +564,16 @@ export class PayFiAgent extends EventEmitter {
             // forwarding to onChallenge (or letting Zod's error surface
             // deep inside respond(), where it can't be attributed to the
             // stream that produced it).
-            logger.warn('Dropped invalid x402 challenge memo', {
-              error: err instanceof Error ? err.message : String(err),
-            });
+            logger.warn(
+              {
+                error: err instanceof Error ? err.message : String(err),
+              },
+              'Dropped invalid x402 challenge memo'
+            );
           }
         },
         onerror: (event: MessageEvent) => {
-          logger.warn('Payment stream error', { error: String(event) });
+          logger.warn({ error: String(event) }, 'Payment stream error');
           // The underlying connection is dead — tear it down so `_streamStop`
           // doesn't keep pointing at a broken stream forever, which would
           // otherwise permanently block a future startListening() call (its
@@ -497,7 +583,7 @@ export class PayFiAgent extends EventEmitter {
       });
 
     this._streamStop = closeStream as unknown as () => void;
-    logger.info('Payment stream started', { resourceUrl });
+    logger.info({ resourceUrl }, 'Payment stream started');
   }
 
   /** Stop the active Horizon payment stream subscription. */
@@ -527,7 +613,7 @@ export class PayFiAgent extends EventEmitter {
       this._contractListenerStop();
     }
     this._contractListenerStop = listenContractEvents(contractId, eventTypes, onEvent);
-    logger.info('Contract event listener started', { contractId });
+    logger.info({ contractId }, 'Contract event listener started');
   }
 
   /** Stop the active contract event listener. */
@@ -553,7 +639,7 @@ export class PayFiAgent extends EventEmitter {
     const handle = watchContractStorage(options);
     handle.on('change', onChange);
     this._storageWatcherStop = handle.stop;
-    logger.info('Contract storage watcher started', { contractId: options.contractId });
+    logger.info({ contractId: options.contractId }, 'Contract storage watcher started');
   }
 
   /** Stop the active contract storage watcher. */
@@ -593,7 +679,23 @@ export class PayFiAgent extends EventEmitter {
 
   drain(): void {
     this.isDraining = true;
-    logger.info('Agent draining — rejecting new tasks');
+    // Queued tasks have not started, so settle them now rather than letting
+    // them race the hard-kill timer — otherwise their callers hang forever.
+    const queued = this.taskQueue.splice(0);
+    for (const { task, correlationId, resolve } of queued) {
+      resolve(this.shuttingDownResult(task, correlationId));
+    }
+    logger.info('Agent draining — rejecting new tasks', { rejectedQueuedTasks: queued.length });
+  }
+
+  private shuttingDownResult(task: AgentTask, correlationId: string): AgentResult {
+    return {
+      success: false,
+      taskType: task.type,
+      error: new AgentShuttingDownError().message,
+      errorType: ErrorType.AgentShuttingDown,
+      correlationId,
+    };
   }
 
   /**
@@ -609,7 +711,7 @@ export class PayFiAgent extends EventEmitter {
    */
   use(middleware: TaskMiddleware): void {
     this.middlewares.push(middleware);
-    logger.info('Middleware registered', { totalMiddlewares: this.middlewares.length });
+    logger.info({ totalMiddlewares: this.middlewares.length }, 'Middleware registered');
   }
 
   /**
@@ -635,19 +737,151 @@ export class PayFiAgent extends EventEmitter {
     return [...this.tools.values()];
   }
 
+  // ─── Human-in-the-loop approvals (#736) ───────────────────────────────────
+
+  /**
+   * Hold a task above APPROVAL_THRESHOLD as `pending_approval` instead of
+   * executing it. Its amount is reserved against the spending window straight
+   * away, so a pile of pending approvals cannot together exceed the limit, and
+   * a notification webhook is sent.
+   *
+   * @returns the pending result, or null when the task does not need approval.
+   */
+  private holdForApproval(task: AgentTask, correlationId: string): AgentResult | null {
+    if (config.APPROVAL_THRESHOLD === undefined) return null;
+    const amount = taskAmount(task);
+    if (amount === null || !(parseFloat(amount) > parseFloat(config.APPROVAL_THRESHOLD))) {
+      return null;
+    }
+
+    const reservationId = reserveSpendingLimit(amount);
+    const createdAt = Date.now();
+    const approval = {
+      id: randomUUID(),
+      taskType: task.type,
+      payload: task.payload,
+      amount,
+      correlationId,
+      createdAt,
+      expiresAt: createdAt + config.APPROVAL_TTL_MS,
+    };
+    try {
+      savePendingApproval(approval);
+    } catch (err) {
+      if (reservationId !== null) spendingTracker.release(reservationId);
+      throw err;
+    }
+    if (reservationId !== null) this.approvalReservations.set(approval.id, reservationId);
+    setTimeout(() => this.expireApprovals(), config.APPROVAL_TTL_MS).unref();
+
+    log.warn(
+      { approvalId: approval.id, taskType: task.type, amount, correlationId },
+      'Task held for approval'
+    );
+    const result: AgentResult = {
+      success: false,
+      taskType: task.type,
+      data: {
+        status: 'pending_approval',
+        approvalId: approval.id,
+        expiresAt: new Date(approval.expiresAt).toISOString(),
+      },
+      error: `Amount ${amount} exceeds APPROVAL_THRESHOLD of ${config.APPROVAL_THRESHOLD} — awaiting approval`,
+      errorType: ErrorType.PendingApproval,
+      correlationId,
+    };
+    void dispatchWebhook(result);
+    return result;
+  }
+
+  private releaseApprovalReservation(id: string): void {
+    const reservationId = this.approvalReservations.get(id);
+    if (reservationId === undefined) return;
+    this.approvalReservations.delete(id);
+    spendingTracker.release(reservationId);
+  }
+
+  /** Expire every pending approval past its deadline and release its reservation. */
+  expireApprovals(): void {
+    for (const id of expirePendingApprovals()) {
+      this.releaseApprovalReservation(id);
+      log.warn({ approvalId: id }, 'Pending approval expired');
+    }
+  }
+
+  /** Approvals still waiting for a decision. */
+  listApprovals(): PendingApproval[] {
+    this.expireApprovals();
+    return listPendingApprovals();
+  }
+
+  /**
+   * Approve a pending task and execute it. Only the call that moves the
+   * approval out of `pending_approval` executes the task, so approving twice
+   * runs it once; later calls just return the approval's current state.
+   *
+   * @returns null when no approval has this id.
+   */
+  async approve(id: string): Promise<{ approval: PendingApproval; result?: AgentResult } | null> {
+    this.expireApprovals();
+    const approval = getPendingApproval(id);
+    if (!approval) return null;
+    if (!decideApproval(id, 'approved')) return { approval };
+
+    log.warn({ approvalId: id, taskType: approval.taskType }, 'Pending approval approved');
+    // The task reserves its own amount when it runs.
+    this.releaseApprovalReservation(id);
+    const task: AgentTask = {
+      type: approval.taskType,
+      payload: approval.payload,
+      ...(approval.correlationId ? { correlationId: approval.correlationId } : {}),
+    };
+    this.approvedTasks.add(task);
+    const result = await this.run(task);
+    return { approval: getPendingApproval(id) ?? approval, result };
+  }
+
+  /**
+   * Deny a pending task and release its spending reservation.
+   *
+   * @returns null when no approval has this id.
+   */
+  deny(id: string): PendingApproval | null {
+    this.expireApprovals();
+    if (!getPendingApproval(id)) return null;
+    if (decideApproval(id, 'denied')) {
+      this.releaseApprovalReservation(id);
+      log.warn({ approvalId: id }, 'Pending approval denied');
+    }
+    return getPendingApproval(id) ?? null;
+  }
+
   async waitForPendingTasks(): Promise<void> {
     if (this.activeTasks === 0 && this.taskQueue.length === 0) return;
     logger.info('Waiting for pending tasks to finish', {
       activeTasks: this.activeTasks,
       queuedTasks: this.taskQueue.length,
+      timeoutMs,
     });
-    return new Promise<void>((resolve) => {
+    return new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const interval = setInterval(() => {
-        if (this.activeTasks === 0 && this.taskQueue.length === 0) {
+        if (idle()) {
           clearInterval(interval);
-          resolve();
+          clearTimeout(timer);
+          resolve(true);
         }
       }, 100);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          clearInterval(interval);
+          logger.warn('Timed out waiting for pending tasks', {
+            activeTasks: this.activeTasks,
+            queuedTasks: this.taskQueue.length,
+          });
+          resolve(false);
+        }, timeoutMs);
+      }
     });
   }
 
@@ -682,12 +916,7 @@ export class PayFiAgent extends EventEmitter {
     const taskLog = createLogger('orchestrator', correlationId);
 
     if (this.isDraining) {
-      return {
-        success: false,
-        taskType: task.type,
-        error: 'Agent is shutting down — task rejected',
-        correlationId,
-      };
+      return this.shuttingDownResult(task, correlationId);
     }
 
     // ── Concurrency rate limit — queue when saturated if queueCapacity allows,
@@ -702,8 +931,14 @@ export class PayFiAgent extends EventEmitter {
           },
           'Agent at capacity — task queued'
         );
+        this.emit('task:queued', {
+          taskType: task.type,
+          correlationId,
+          queueLength: this.taskQueue.length + 1,
+        });
         return new Promise<AgentResult>((resolve) => {
           this.taskQueue.push({ task, correlationId, resolve });
+          queueDepth.set(this.taskQueue.length);
         });
       }
 
@@ -715,6 +950,7 @@ export class PayFiAgent extends EventEmitter {
         },
         'Task rejected — max concurrent tasks reached'
       );
+      recordTask(task.type, 'rejected');
       return {
         success: false,
         taskType: task.type,
@@ -725,7 +961,24 @@ export class PayFiAgent extends EventEmitter {
       };
     }
 
-    return this.executeTask(task, correlationId, taskLog);
+    return this.executeInstrumented(task, correlationId, taskLog);
+  }
+
+  /**
+   * Run executeTask() and record its outcome and latency in the Prometheus
+   * metrics (backend/metrics.ts). Kept outside executeTask() so every exit
+   * path — success, tool failure, middleware throw — is counted exactly once.
+   */
+  private async executeInstrumented(
+    task: AgentTask,
+    correlationId: string,
+    taskLog: ReturnType<typeof createLogger>
+  ): Promise<AgentResult> {
+    const startedAt = process.hrtime.bigint();
+    const result = await this.executeTask(task, correlationId, taskLog);
+    const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+    recordTask(task.type, result.success ? 'success' : 'failure', durationSeconds);
+    return result;
   }
 
   /**
@@ -736,8 +989,9 @@ export class PayFiAgent extends EventEmitter {
     if (this.taskQueue.length === 0) return;
     if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) return;
     const next = this.taskQueue.shift();
+    queueDepth.set(this.taskQueue.length);
     if (!next) return;
-    void this.executeTask(
+    void this.executeInstrumented(
       next.task,
       next.correlationId,
       createLogger('orchestrator', next.correlationId)
@@ -751,6 +1005,7 @@ export class PayFiAgent extends EventEmitter {
     taskLog: ReturnType<typeof createLogger>
   ): Promise<AgentResult> {
     this.activeTasks++;
+    this.emit('task:started', { taskType: task.type, correlationId });
     taskLog.info({ taskType: task.type }, "Running task");
     try {
       let data: unknown;
@@ -779,6 +1034,15 @@ export class PayFiAgent extends EventEmitter {
           throw new AgentPausedError(
             `Agent is paused — ${task.type} is halted until an operator resumes it`
           );
+        }
+
+        if (VALUE_MOVING_TASK_TYPES.has(task.type)) {
+          assertDestinationsAllowed(task);
+        }
+
+        if (VALUE_MOVING_TASK_TYPES.has(task.type) && !this.approvedTasks.has(task)) {
+          const held = this.holdForApproval(task, correlationId);
+          if (held) return held;
         }
 
         let data: unknown;
@@ -1079,7 +1343,11 @@ export class PayFiAgent extends EventEmitter {
     }
 
     try {
-      return await chain();
+      // Lets rpc_client emit task:retry / tx:* on this agent for this task.
+      return await taskContext.run(
+        { taskType: task.type, correlationId, emit: this.emit.bind(this) },
+        chain
+      );
     } catch (err) {
       const durationMs = Date.now() - startMs;
       const safe = redactSecretString(describeError(err));
