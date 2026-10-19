@@ -27,11 +27,10 @@ vi.mock('../backend/config', () => ({
 
 const VALID_CONTRACT = 'CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH';
 
-function makeEvent(id: string, pagingToken: string) {
+function makeEvent(id: string) {
   return {
     id,
     topic: [{ toString: () => 'released' }],
-    pagingToken,
   } as any;
 }
 
@@ -44,7 +43,7 @@ describe('SorobanEventIndexerTool', () => {
   });
 
   it('returns historical events and latest ledger', async () => {
-    const event = makeEvent('evt-1', 'tok-1');
+    const event = makeEvent('evt-1');
     vi.mocked(rpcClient.sorobanServer.getEvents).mockResolvedValue({
       events: [event],
       latestLedger: 500,

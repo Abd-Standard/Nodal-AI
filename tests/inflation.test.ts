@@ -5,9 +5,23 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { Keypair } from '@stellar/stellar-sdk';
-import { InflationTool } from '../backend/tools/InflationTool';
+import { InflationTool, INFLATION_DEPRECATION_WARNING } from '../backend/tools/InflationTool';
 import { KeypairSigner } from '../backend/signer';
 import * as rpcClient from '../backend/rpc_client';
+
+const { mockInflationWarn } = vi.hoisted(() => ({ mockInflationWarn: vi.fn() }));
+
+// Capture the inflation tool's logger so the deprecation warning can be asserted (#782).
+vi.mock('../backend/utils/logger', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../backend/utils/logger')>();
+  return {
+    ...actual,
+    createLogger: (component: string, correlationId?: string) =>
+      component === 'inflation'
+        ? { warn: mockInflationWarn, info: vi.fn(), error: vi.fn(), debug: vi.fn() }
+        : actual.createLogger(component, correlationId),
+  };
+});
 
 vi.mock('../backend/rpc_client', () => ({
   loadAccount: vi.fn(),
@@ -68,6 +82,19 @@ describe('InflationTool', () => {
       hash: 'inflation_hash',
       ledger: 7,
     } as any);
+  });
+
+  describe('deprecation (#782)', () => {
+    it('logs a deprecation warning on every execution', async () => {
+      vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount() as any);
+
+      await tool.execute({ action: 'get' });
+      await tool.execute({ action: 'set', inflationDestination: INFLATION_DEST });
+
+      expect(mockInflationWarn).toHaveBeenCalledTimes(2);
+      expect(mockInflationWarn).toHaveBeenCalledWith(INFLATION_DEPRECATION_WARNING);
+      expect(INFLATION_DEPRECATION_WARNING).toMatch(/deprecated.*removed in the next minor/);
+    });
   });
 
   describe('set', () => {

@@ -39,7 +39,7 @@ vi.mock('../backend/server', () => ({
 }));
 
 vi.mock('../backend/db/client', () => ({
-  db: { close: mocks.dbClose },
+  db: { close: mocks.dbClose, migrate: vi.fn().mockResolvedValue(undefined) },
 }));
 
 vi.mock('../backend/telemetry', () => ({
@@ -90,6 +90,7 @@ describe('backend/index.ts graceful shutdown', () => {
 
       expect(mocks.drain).toHaveBeenCalledTimes(1);
       expect(mocks.waitForPendingTasks).toHaveBeenCalledTimes(1);
+      expect(mocks.waitForPendingTasks).toHaveBeenCalledWith(8_000);
       expect(mocks.healthServerClose).toHaveBeenCalledTimes(1);
       expect(mocks.healthServerClose).toHaveBeenCalledWith(expect.any(Function));
       expect(mocks.dbClose).toHaveBeenCalledTimes(1);

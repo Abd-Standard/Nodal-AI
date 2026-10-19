@@ -109,12 +109,15 @@ export class FeeBumpTool {
     // Fee-bump fee must be at least (inner ops + 1) * newFeePerOp per Stellar protocol
     const feeBumpFee = String((operationCount + 1) * newFeePerOp);
 
-    logger.info('Building fee-bump transaction', {
-      feeAccount,
-      innerTxHash: innerTx.hash().toString('hex'),
-      baseFeeMultiplier: input.baseFeeMultiplier,
-      feeBumpFee,
-    });
+    logger.info(
+      {
+        feeAccount,
+        innerTxHash: innerTx.hash().toString('hex'),
+        baseFeeMultiplier: input.baseFeeMultiplier,
+        feeBumpFee,
+      },
+      'Building fee-bump transaction'
+    );
 
     const feeBumpTx = TransactionBuilder.buildFeeBumpTransaction(
       feeAccount,

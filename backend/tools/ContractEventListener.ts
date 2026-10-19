@@ -102,7 +102,7 @@ export function listen(
       const response = await sorobanServer.getEvents({
         filters: [{ type: 'contract', contractIds: [contractId] }],
         ...(cursor ? { cursor } : { startLedger: await startLedgerPromise! }),
-      } as rpc.Server.GetEventsRequest);
+      } as rpc.Api.GetEventsRequest);
 
       // Successfully contacted RPC: reset reconnect attempts
       reconnectAttempts = 0;
@@ -116,7 +116,7 @@ export function listen(
       if (response.events.length > 0) {
         const lastEvent = response.events[response.events.length - 1];
         if (lastEvent) {
-          cursor = lastEvent.pagingToken;
+          cursor = lastEvent.id;
         }
       } else if ('cursor' in response && response.cursor) {
         cursor = response.cursor;
@@ -127,12 +127,15 @@ export function listen(
       }
     } catch (err) {
       reconnectAttempts++;
-      logger.error('ContractEventListener polling error', {
-        contractId,
-        reconnectAttempts,
-        maxReconnectAttempts,
-        error: (err as Error).message,
-      });
+      logger.error(
+        {
+          contractId,
+          reconnectAttempts,
+          maxReconnectAttempts,
+          error: (err as Error).message,
+        },
+        'ContractEventListener polling error'
+      );
 
       if (reconnectAttempts >= maxReconnectAttempts) {
         isStopped = true;
@@ -151,10 +154,13 @@ export function listen(
           try {
             onErrorCallback(error);
           } catch (callbackErr) {
-            logger.error('ContractEventListener onError callback threw', {
-              contractId,
-              error: (callbackErr as Error).message,
-            });
+            logger.error(
+              {
+                contractId,
+                error: (callbackErr as Error).message,
+              },
+              'ContractEventListener onError callback threw'
+            );
           }
         }
 
