@@ -16,6 +16,8 @@ const log = createLogger('process');
 let agent: PayFiAgent;
 let healthServer: any;
 const HARD_KILL_MS = 10_000;
+// Leave headroom inside the hard-kill window for the remaining teardown steps.
+export const PENDING_TASKS_TIMEOUT_MS = 8_000;
 let isShuttingDown = false;
 
 async function shutdown(signal: string): Promise<void> {
@@ -34,8 +36,9 @@ async function shutdown(signal: string): Promise<void> {
     // 1. Stop accepting new tasks
     if (agent) {
       agent.drain();
-      // 2. Wait for in-flight tasks to settle
-      await agent.waitForPendingTasks();
+      // 2. Wait (bounded) for in-flight tasks to settle; queued ones were
+      //    already rejected by drain().
+      await agent.waitForPendingTasks(PENDING_TASKS_TIMEOUT_MS);
     }
 
     // 3. Stop the health check server
@@ -74,7 +77,7 @@ async function start() {
   initTelemetry();
 
   agent = new PayFiAgent();
-  healthServer = startHealthServer();
+  healthServer = startHealthServer(agent);
 
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

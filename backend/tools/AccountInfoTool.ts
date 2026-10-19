@@ -12,6 +12,12 @@ export interface AccountInfo {
   balances: { asset: string; balance: string }[];
   sequenceNumber: string;
   subentryCount: number;
+  /**
+   * Legacy inflation destination, read-only. Inflation is disabled on Stellar;
+   * this is kept so the value stays readable after the `inflation` task type
+   * is removed (#782).
+   */
+  inflationDestination: string | null;
 }
 
 export class AccountInfoTool {
@@ -28,6 +34,7 @@ export class AccountInfoTool {
       balances,
       sequenceNumber: account.sequenceNumber(),
       subentryCount: account.subentry_count,
+      inflationDestination: account.inflation_destination ?? null,
     };
   }
 }
