@@ -73,10 +73,12 @@ import { spendingTracker } from './spending_tracker';
 import { dispatchWebhook } from './webhook';
 import { createAgentSigner, Signer } from './signer';
 import { isPaused } from './kill_switch';
+import { taskContext, type AgentEvents } from './events';
 
 // Re-exported so existing importers (`server.ts`, tests) keep working after the
 // singleton moved to spending_tracker.ts.
 export { spendingTracker };
+export type { AgentEvents };
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
@@ -420,7 +422,7 @@ function buildAuditEntry(
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
-export class PayFiAgent extends EventEmitter {
+export class PayFiAgent extends EventEmitter<AgentEvents> {
   private readonly signer: Signer;
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
@@ -462,7 +464,7 @@ export class PayFiAgent extends EventEmitter {
 
   // Bound handler references kept so destroy() can call .off() with the exact same function
   // reference — EventEmitter requires identity equality for removal.
-  private readonly _boundHandlers = new Map<string, (...args: unknown[]) => void>();
+  private readonly _boundHandlers = new Map<keyof AgentEvents, (...args: unknown[]) => void>();
 
   // Middleware array for pre/post task execution hooks
   private middlewares: TaskMiddleware[] = [];
@@ -923,6 +925,11 @@ export class PayFiAgent extends EventEmitter {
           },
           'Agent at capacity — task queued'
         );
+        this.emit('task:queued', {
+          taskType: task.type,
+          correlationId,
+          queueLength: this.taskQueue.length + 1,
+        });
         return new Promise<AgentResult>((resolve) => {
           this.taskQueue.push({ task, correlationId, resolve });
         });
@@ -972,6 +979,7 @@ export class PayFiAgent extends EventEmitter {
     taskLog: ReturnType<typeof createLogger>
   ): Promise<AgentResult> {
     this.activeTasks++;
+    this.emit('task:started', { taskType: task.type, correlationId });
     taskLog.info({ taskType: task.type }, "Running task");
     try {
       let data: unknown;
@@ -1309,7 +1317,11 @@ export class PayFiAgent extends EventEmitter {
     }
 
     try {
-      return await chain();
+      // Lets rpc_client emit task:retry / tx:* on this agent for this task.
+      return await taskContext.run(
+        { taskType: task.type, correlationId, emit: this.emit.bind(this) },
+        chain
+      );
     } catch (err) {
       const durationMs = Date.now() - startMs;
       const safe = redactSecretString(describeError(err));

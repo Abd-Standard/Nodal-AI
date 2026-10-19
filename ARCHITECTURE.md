@@ -224,11 +224,28 @@ The following hooks fire in order around every task execution:
 1. **Draining check** — if `agent.drain()` has been called, new tasks are rejected immediately with `"Agent is shutting down — task rejected"`.
 2. **Concurrency gate** — tasks that arrive while `activeTasks >= MAX_CONCURRENT_TASKS` are either queued (bounded by `QUEUE_CAPACITY`) or rejected.
 3. **Middleware chain** — registered via `agent.use(fn)`. Runs in FIFO registration order; each middleware calls `next()` to continue. A middleware can short-circuit by returning a result without calling `next()`.
-4. **Tool lookup and validation** — the registered `AgentTool` for `task.type` is looked up and `task.payload` is parsed with its `inputSchema`. Unknown types and invalid payloads fail here.
-5. **Tool execution** — `tool.execute(input, ctx)` runs with the parsed input. Payment tools call `ctx.assertWithinSpendingLimit()` before moving funds; it throws synchronously on violation.
-6. **`task:complete` / `task:failed` event** — emitted on the `PayFiAgent` EventEmitter so external listeners can react without polling.
+4. **Spending limit guard** — called inside `executeTask()` for payment-bearing task types before the tool is invoked. Throws synchronously on violation.
+5. **Tool execution** — the matching tool's method is called with `task.payload`.
+6. **`task:complete` / `task:failed` event** — emitted on the `PayFiAgent` EventEmitter so external listeners can react without polling (see [Agent Events](#agent-events)).
 7. **`saveResult`** — persists the `AgentResult` (plus a `timestamp`) to the local DB via `backend/persistence.ts`.
 8. **`dispatchWebhook`** — fire-and-forget POST to `WEBHOOK_URL` (if configured) with the serialised `AgentResult`. Errors in webhook delivery are logged but do not affect the returned result.
+
+### Agent Events
+
+`PayFiAgent` is a typed `EventEmitter<AgentEvents>` (`backend/events.ts`). Every task-scoped payload carries `taskType` and `correlationId`.
+
+| Event | Payload | Emitted when |
+|---|---|---|
+| `task:queued` | `queueLength` | The agent is at capacity and the task joins the queue. |
+| `task:started` | — | A concurrency slot is taken and the task begins. |
+| `task:retry` | `attempt`, `maxRetries`, `error` | An RPC call failed with a retryable error and will be retried. |
+| `task:retry_exhausted` | `taskType`, `attempts` | A `StellarRPCError` ended the task after all retries. |
+| `tx:submitted` | `hash` | A transaction is sent to Horizon. |
+| `tx:confirmed` | `hash`, `ledger` | Horizon accepted the transaction into a ledger. |
+| `task:complete` / `task:failed` | `AgentResult` | The task finished. |
+| `error` | `Error` | Unhandled agent error. |
+
+A successful payment emits `task:started → tx:submitted → tx:confirmed → task:complete`. The `task:retry` and `tx:*` events come from `rpc_client.ts` through an `AsyncLocalStorage` task context, so they reach only the agent running that task.
 
 ### Error Serialisation
 
