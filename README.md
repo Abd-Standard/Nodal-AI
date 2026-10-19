@@ -121,11 +121,22 @@ docker-compose --profile test-only up --build --abort-on-container-exit --exit-c
 
 `--exit-code-from test-runner-only` makes the compose command exit with the test runner's exit code, so CI correctly detects test failures.
 
+### Storage Backends & Migrations
+
+State (spending window, x402 nonces, audit log, agent results) lives in SQLite at `DB_PATH` by default, which suits a single instance. To run several instances against one shared store, set `STORAGE_BACKEND=postgres` and `DATABASE_URL`. The `postgres` profile starts Postgres, a Postgres-backed agent on port 3001 and the shared storage test suite:
+
+```bash
+docker compose --profile postgres up --build agent-postgres
+docker compose --profile postgres run --rm test-runner-postgres
+```
+
+Schema changes are numbered SQL files in [`backend/db/migrations/`](./backend/db/migrations/) (`postgres/` holds the Postgres equivalents). Pending files are applied at startup inside a transaction and recorded in `schema_version`. To change the schema, add the next `NNN_<name>.sql` for both backends. Never edit a migration that has already shipped.
+
 ---
 
 ## Development Environment (Devcontainer & Codespaces)
 
-For zero-setup provisioning, Nodal AI ships a [VS Code Dev Container](https://containers.dev/) configuration in [`.devcontainer/`](./.devcontainer/devcontainer.json). It gives you Node 20, the Rust toolchain (with the `wasm32-unknown-unknown` target), and the Stellar CLI, pre-installed, with no local setup required.
+For zero-setup provisioning, Nodal AI ships a [VS Code Dev Container](https://containers.dev/) configuration in [`.devcontainer/`](./.devcontainer/devcontainer.json). It gives you Node 22 (LTS), the Rust toolchain (with the `wasm32-unknown-unknown` target), and the Stellar CLI, pre-installed, with no local setup required.
 
 **Using VS Code:**
 
@@ -225,6 +236,33 @@ Operators can freeze fund movement during an incident without stopping the proce
 ```bash
 curl -X POST -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:3000/admin/pause
 ```
+
+### Prometheus Metrics
+
+`GET /metrics` on the health server serves Prometheus text exposition (via `prom-client`, see `backend/metrics.ts`). It always requires `Authorization: Bearer <WEBHOOK_SECRET>` and returns `401` when `WEBHOOK_SECRET` is not configured. Send `Accept: application/json` to get the JSON LLM/spending snapshot instead.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `nodal_tasks_total` | counter | `type`, `status` (`success` \| `failure` \| `rejected`) | Tasks processed |
+| `nodal_task_duration_seconds` | histogram | `type` | Task execution latency |
+| `nodal_spending_window_total` | gauge | `asset` | Spend inside the rolling `SPENDING_WINDOW_MS` window |
+| `nodal_queue_depth` | gauge | — | Tasks waiting for a concurrency slot |
+| `nodal_rpc_breaker_state` | gauge | `circuit` | `0` closed, `1` half-open, `2` open |
+| `nodal_webhook_failures_total` | counter | — | Webhooks abandoned (non-retryable error or retries exhausted) |
+
+Process metrics (CPU, memory, event-loop lag) are exported with the `nodal_process_` prefix.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: nodal-agent
+    authorization:
+      credentials: <WEBHOOK_SECRET>
+    static_configs:
+      - targets: ['localhost:3000']
+```
+
+A ready-made Grafana dashboard lives in [`docs/grafana/nodal-dashboard.json`](docs/grafana/nodal-dashboard.json) — import it and pick your Prometheus data source.
 
 ### Mainnet Checklist
 
@@ -475,17 +513,17 @@ interface AgentTask {
 ```
 
 Input wrapper for task dispatch. The `payload` shape depends on `type`:
-- `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }`
+- `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }` (`destination` may be a G-address, a muxed M-address, or a federation address `name*domain.com`; a federation-required memo is attached automatically)
 - `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; simulateOnly?: boolean; ... }`
 - `x402_respond`: `{ resource: string; amount: string; assetCode?: string; assetIssuer?: string; payTo: string; nonce: string; expiresAt: string }`
 - `change_trust`: `{ assetCode: string; assetIssuer: string; action: "add" | "remove"; limit?: string }`
 - `batch_payment`: `{ payments: PaymentInput[] }` (max 100 payments; aggregate spending limit enforced)
 - `multisig_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string; additionalSigners: string[]; minSignatures: number; signatures?: string[] }`
 - `dex_offer`: `{ action: "create" | "update" | "delete"; selling: Asset; buying: Asset; amount: string; price: string; offerId?: string | number }`
-- `path_payment`: `{ destination: string; sendAsset: Asset; sendMax: string; destAsset: Asset; destAmount: string; ... }`
+- `path_payment`: `{ destination: string; sendAsset: Asset; sendAmount: string; destAsset: Asset; destMinAmount?: string; maxSlippageBps?: number; path?: Asset[]; ... }` (omit `path`/`destMinAmount` to discover the best path and derive `destMinAmount` from its quote less `maxSlippageBps`, 0–1000, default 50)
 - `fee_bump`: `{ innerTx: string; feeAccount: string; maxFee: string }`
 - `account_info`: `{ publicKey?: string }`
-- `inflation`: `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
+- `inflation` (**deprecated**, removed in the next minor release — inflation is disabled on Stellar since protocol 12; read the value from `account_info`'s `inflationDestination`): `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
 - `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
 - `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
 - `ledger_info`: `{ forceRefresh?: boolean }`
@@ -701,6 +739,49 @@ if (result.success) {
 ```
 
 See [`backend/agent.ts`](./backend/agent.ts) for task dispatch and the spending-limit guard, and [`backend/tools/X402PaymentTool.ts`](./backend/tools/X402PaymentTool.ts) for challenge validation and proof construction.
+
+### Discovery: publishing prices for paid endpoints
+
+A seller can publish what its paid endpoints cost so agents can read the price before calling them. [`backend/x402/middleware.ts`](./backend/x402/middleware.ts) builds an OpenAPI 3.1 document from the route config and serves it at `/.well-known/openapi.json`. Each paid operation gets a `402` response and an `x-payment-info.offers[]` entry with `amount` (stroops), `price` (decimal), `asset`, `currency`, CAIP-2 `network` and `payTo`:
+
+```typescript
+import { x402DiscoveryMiddleware, discoverPaymentOffers } from "./backend/x402/middleware";
+
+// Seller (Express or plain http)
+app.use(x402DiscoveryMiddleware({
+  title: "Paid Data API",
+  routes: [{ method: "get", path: "/data", price: "0.01", payTo: "G..." }],
+}));
+
+// Buyer: read the price without calling the route
+const [offer] = (await discoverPaymentOffers("https://api.example.com", "GET", "/data")) ?? [];
+```
+
+The document is advisory; the 402 challenge stays authoritative for what is actually charged.
+
+## MPP Charge (facilitator-free payments)
+
+[`backend/payments/mpp.ts`](./backend/payments/mpp.ts) implements the client side of [MPP](https://paymentauth.org/draft-stellar-charge-00) Charge (`protocol: 'mpp-charge'`): each paid request is settled by an on-chain SEP-41 `transfer` through a Stellar Asset Contract, with no facilitator. `MppChargeClient.fetch()` sends the request, answers a `402` `WWW-Authenticate: Payment … method="stellar", intent="charge"` challenge with a signed transfer in an `Authorization: Payment …` credential, and returns the paid response with an `MppChargePayment` record (protocol, amount, recipient, and the settlement hash from `Payment-Receipt`).
+
+```typescript
+import { MppChargeClient } from "./backend/payments/mpp";
+
+const { response, payment } = await new MppChargeClient().fetch("https://api.example.com/data");
+```
+
+It signs with the agent signer and applies the same spending policy as other value-moving tasks: the kill switch, `AGENT_SPENDING_LIMIT`, the mainnet cap, and a reservation in the rolling spending window. Before signing, it checks that the simulated transaction authorizes exactly the requested transfer and nothing else. The agent pays its own network fee; server-sponsored (`feePayer`) challenges are rejected.
+
+### x402 vs MPP Charge
+
+| | x402 (`x402_respond`) | MPP Charge (`MppChargeClient`) |
+|---|---|---|
+| Settlement | Classic Stellar payment operation, one per request | Soroban SEP-41 `transfer` through a SAC, one per request |
+| Facilitator / third party | Standard x402 uses a facilitator; this implementation pays `payTo` directly via Horizon | None. The resource server broadcasts the signed transfer itself |
+| Challenge | JSON body of the `402` response | `WWW-Authenticate: Payment` header (base64url request) |
+| Proof sent back | `X402PaymentProof` (tx hash, nonce-derived memo) | `Authorization: Payment` credential carrying the signed transaction XDR |
+| Agent needs XLM for fees | Yes | Yes (sponsored `feePayer` mode not supported here) |
+| Replay protection | Nonce store + memo binding | HMAC-bound challenge `id` verified by the server |
+| Best for | Servers that already speak x402 | Self-hosted deployments with no third-party dependency |
 
 ## Handsoff notes
 

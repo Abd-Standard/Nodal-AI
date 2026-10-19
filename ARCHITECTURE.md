@@ -208,7 +208,7 @@ Every `TaskType` value accepted by `PayFiAgent.run()` is listed below, together 
 | `sequence_number` | `SequenceNumberTool` | Fetch or bump the agent's current sequence number. |
 | `sponsored_account` | `SponsoredAccountTool` | Create a new Stellar account with sponsored reserves. |
 | `anchor_quote` | `AnchorQuoteTool` | Fetch an SEP-38 quote from an anchor for asset conversion. |
-| `inflation` | `InflationTool` | Set or query the account's inflation destination. |
+| `inflation` | `InflationTool` | **Deprecated** (removed next minor release; inflation is disabled on Stellar). Set or query the account's inflation destination. |
 | `soroban_deploy` | `SorobanDeployTool` | Upload WASM bytecode and instantiate Soroban smart contracts. |
 | `swap` | `SwapTool` | Perform atomic DEX asset swaps via strict-send path payments. |
 | `account_history` | `AccountHistoryTool` | Fetch paginated payment transaction history for a Stellar account. |
@@ -225,11 +225,28 @@ The following hooks fire in order around every task execution:
 1. **Draining check** — if `agent.drain()` has been called, new tasks are rejected immediately with `"Agent is shutting down — task rejected"`.
 2. **Concurrency gate** — tasks that arrive while `activeTasks >= MAX_CONCURRENT_TASKS` are either queued (bounded by `QUEUE_CAPACITY`) or rejected.
 3. **Middleware chain** — registered via `agent.use(fn)`. Runs in FIFO registration order; each middleware calls `next()` to continue. A middleware can short-circuit by returning a result without calling `next()`.
-4. **Tool lookup and validation** — the registered `AgentTool` for `task.type` is looked up and `task.payload` is parsed with its `inputSchema`. Unknown types and invalid payloads fail here.
-5. **Tool execution** — `tool.execute(input, ctx)` runs with the parsed input. Payment tools call `ctx.assertWithinSpendingLimit()` before moving funds; it throws synchronously on violation.
-6. **`task:complete` / `task:failed` event** — emitted on the `PayFiAgent` EventEmitter so external listeners can react without polling.
+4. **Spending limit guard** — called inside `executeTask()` for payment-bearing task types before the tool is invoked. Throws synchronously on violation.
+5. **Tool execution** — the matching tool's method is called with `task.payload`.
+6. **`task:complete` / `task:failed` event** — emitted on the `PayFiAgent` EventEmitter so external listeners can react without polling (see [Agent Events](#agent-events)).
 7. **`saveResult`** — persists the `AgentResult` (plus a `timestamp`) to the local DB via `backend/persistence.ts`.
 8. **`dispatchWebhook`** — fire-and-forget POST to `WEBHOOK_URL` (if configured) with the serialised `AgentResult`. Errors in webhook delivery are logged but do not affect the returned result.
+
+### Agent Events
+
+`PayFiAgent` is a typed `EventEmitter<AgentEvents>` (`backend/events.ts`). Every task-scoped payload carries `taskType` and `correlationId`.
+
+| Event | Payload | Emitted when |
+|---|---|---|
+| `task:queued` | `queueLength` | The agent is at capacity and the task joins the queue. |
+| `task:started` | — | A concurrency slot is taken and the task begins. |
+| `task:retry` | `attempt`, `maxRetries`, `error` | An RPC call failed with a retryable error and will be retried. |
+| `task:retry_exhausted` | `taskType`, `attempts` | A `StellarRPCError` ended the task after all retries. |
+| `tx:submitted` | `hash` | A transaction is sent to Horizon. |
+| `tx:confirmed` | `hash`, `ledger` | Horizon accepted the transaction into a ledger. |
+| `task:complete` / `task:failed` | `AgentResult` | The task finished. |
+| `error` | `Error` | Unhandled agent error. |
+
+A successful payment emits `task:started → tx:submitted → tx:confirmed → task:complete`. The `task:retry` and `tx:*` events come from `rpc_client.ts` through an `AsyncLocalStorage` task context, so they reach only the agent running that task.
 
 ### Error Serialisation
 
@@ -340,8 +357,9 @@ All tools live in `backend/tools/`. Each tool is a self-contained class responsi
 **Purpose:** Native XLM or custom asset payment via Horizon.
 
 Key design decisions:
-- Validates input with `PaymentInputSchema` (Zod) before touching the network. Amount must be a positive Stellar decimal (up to 7 decimal places); destination must be a 56-char G-address; memo capped at 28 bytes.
-- Rejects self-payments: the destination cannot equal the agent's own public key.
+- Validates input with `PaymentInputSchema` (Zod) before touching the network. Amount must be a positive Stellar decimal (up to 7 decimal places); destination may be a G-address, a muxed M-address, or a federation address (`name*domain.com`, resolved by `resolveDestination()` in `backend/utils/destination.ts` and cached for 5 minutes); memo capped at 28 bytes. A memo the federation server requires is attached automatically, and supplying a second memo is rejected.
+- Rejects self-payments: the destination (or a muxed address's base account) cannot equal the agent's own public key.
+- The fee is bid from Horizon `fee_stats` by `estimateFee()` (`backend/fees.ts`: p50/p90/p99 for low/medium/high priority, capped by `MAX_FEE_STROOPS`). A submission rejected with `tx_insufficient_fee` is resubmitted once inside a fee bump at the high estimate.
 - Non-XLM payments require an `assetIssuer`. The tool throws immediately if one is missing rather than producing an ambiguous network error.
 - **Simulation exemption:** Horizon has no simulation endpoint. The tool validates the transaction envelope locally, then signs and submits directly. There is no Soroban-style simulation pass on this path. See [The Mandatory Simulation Gate](#the-mandatory-simulation-gate) for why Soroban tools require simulation but Horizon tools do not.
 - Auto-retries once on `tx_bad_seq` by reloading the account's sequence number and rebuilding the transaction.
@@ -405,7 +423,8 @@ Key design decisions:
 
 Key design decisions:
 - `sendAmount` is the exact amount the agent sends. `destMinAmount` is the minimum the recipient must receive; the transaction fails on-chain if DEX slippage causes the output to fall below this floor.
-- `path` is an optional array of intermediate assets. If omitted, Horizon attempts to find a path automatically.
+- `path` is an optional array of intermediate assets. If `path` or `destMinAmount` is omitted, the tool queries Horizon's strict-send paths endpoint and uses the path that delivers the most; an omitted `destMinAmount` is that quote less `maxSlippageBps` (integer 0–1000, default 50 = 0.5%).
+- `destination` accepts the same G-, M- and federation forms as `StellarPaymentTool`.
 - **Simulation exemption:** Horizon-only, same rationale as `StellarPaymentTool`. Signs and submits directly.
 - Auto-retries once on `tx_bad_seq`, matching the pattern used by `StellarPaymentTool`.
 - Returns `{ txHash, ledger }` on success.

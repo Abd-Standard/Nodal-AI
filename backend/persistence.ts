@@ -9,13 +9,15 @@
 import { createHash } from 'crypto';
 import Database from 'better-sqlite3';
 import type { AgentResult } from './agent';
+import { migrateSqlite } from './db/migrate';
 
 export type PersistedResult = AgentResult & { timestamp: string };
 
 let _db: Database.Database | null = null;
 
 /**
- * Create every table this module owns, plus the idempotent migrations.
+ * Bring the schema up to date by applying the numbered migrations in
+ * `backend/db/migrations/` (#821).
  *
  * Applied both to the lazily opened connection and to any DB injected through
  * `_setDb()`, so a test database has the same shape as a real one and the two
@@ -53,6 +55,23 @@ function applySchema(db: Database.Database): void {
         value TEXT NOT NULL
       )
     `);
+  // Event-driven triggers for autonomous PayFi
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS triggers (
+        id          TEXT PRIMARY KEY,
+        source      TEXT NOT NULL,
+        filter      TEXT NOT NULL,
+        task        TEXT NOT NULL,
+        enabled     INTEGER NOT NULL DEFAULT 1,
+        created_at  TEXT NOT NULL,
+        last_fired_at TEXT
+      )
+    `);
+  // Trigger event dedupe - prevents double execution on stream replay
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS trigger_events (
+        key       TEXT PRIMARY KEY,
+        fired_at  TEXT NOT NULL
   // Value-moving tasks held for a human decision (#736).
   db.exec(`
       CREATE TABLE IF NOT EXISTS pending_approvals (
@@ -81,9 +100,37 @@ function applySchema(db: Database.Database): void {
   if (!cols.some((c) => c.name === 'correlationId')) {
     db.exec(`ALTER TABLE agent_results ADD COLUMN correlationId TEXT`);
   }
+  // Migration for errorType column
+  if (!cols.some((c) => c.name === 'errorType')) {
+    db.exec(`ALTER TABLE agent_results ADD COLUMN errorType TEXT`);
+  }
+  // Migration for durationMs column
+  if (!cols.some((c) => c.name === 'durationMs')) {
+    db.exec(`ALTER TABLE agent_results ADD COLUMN durationMs INTEGER`);
+  }
+  // Idempotency keys table (#payment-idempotency)
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS idempotency_keys (
+        key             TEXT PRIMARY KEY,
+        payloadHash     TEXT NOT NULL,
+        taskType        TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        result          TEXT NOT NULL,
+        createdAt       INTEGER NOT NULL,
+        expiresAt       INTEGER NOT NULL
+      )
+    `);
+  db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_idempotency_expires
+        ON idempotency_keys (expiresAt)
+    `);
 }
 
-function getDb(): Database.Database {
+/**
+ * The shared connection, opened (and migrated) on first use. Exposed so other
+ * SQLite-backed stores can reuse it instead of opening a second handle.
+ */
+export function getDb(): Database.Database {
   if (!_db) {
     // Lazy import of config so that tests can inject via _setDb() before any DB access
     // eslint-disable-next-line @typescript-eslint/no-var-requires
@@ -125,8 +172,8 @@ export function probeDb(): void {
 export function saveResult(result: PersistedResult): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_results (timestamp, taskType, success, data, error, correlationId)
-       VALUES (@timestamp, @taskType, @success, @data, @error, @correlationId)`
+      `INSERT INTO agent_results (timestamp, taskType, success, data, error, errorType, correlationId, durationMs)
+       VALUES (@timestamp, @taskType, @success, @data, @error, @errorType, @correlationId, @durationMs)`
     )
     .run({
       timestamp: result.timestamp,
@@ -134,24 +181,28 @@ export function saveResult(result: PersistedResult): void {
       success: result.success ? 1 : 0,
       data: result.data !== undefined ? JSON.stringify(result.data) : null,
       error: result.error ?? null,
+      errorType: result.errorType ?? null,
       correlationId: result.correlationId ?? null,
+      durationMs: result.durationMs ?? null,
     });
 }
 
 export function getResults(limit = 100, offset = 0): PersistedResult[] {
   const rows = getDb()
     .prepare(
-      `SELECT timestamp, taskType, success, data, error, correlationId
+      `SELECT timestamp, taskType, success, data, error, errorType, correlationId, durationMs
        FROM agent_results ORDER BY id DESC LIMIT ? OFFSET ?`
     )
     .all(limit, offset) as Array<{
-    timestamp: string;
-    taskType: string;
-    success: number;
-    data: string | null;
-    error: string | null;
-    correlationId: string | null;
-  }>;
+      timestamp: string;
+      taskType: string;
+      success: number;
+      data: string | null;
+      error: string | null;
+      errorType: string | null;
+      correlationId: string | null;
+      durationMs: number | null;
+    }>;
 
   return rows.map((r) => {
     const result: PersistedResult = {
@@ -161,7 +212,9 @@ export function getResults(limit = 100, offset = 0): PersistedResult[] {
       data: r.data !== null ? JSON.parse(r.data) : undefined,
     };
     if (r.error !== null) result.error = r.error;
+    if (r.errorType !== null) result.errorType = r.errorType;
     if (r.correlationId !== null) result.correlationId = r.correlationId;
+    if (r.durationMs !== null) result.durationMs = r.durationMs;
     return result;
   });
 }
@@ -318,6 +371,55 @@ export function clearSpendingRecords(): void {
   getDb().prepare(`DELETE FROM spending_records`).run();
 }
 
+/** A spend held against the persisted window by {@link reserveSpendingRecord}. */
+export interface SpendingReservation {
+  /** Row id; pass to {@link deleteSpendingRecord} to release the hold. */
+  id: number;
+  /** Cumulative total in the window, including this reservation. */
+  total: number;
+}
+
+/**
+ * Atomically check the window total and record `amount` against it (#822).
+ *
+ * The sum and the insert run in one IMMEDIATE transaction, which takes
+ * SQLite's write lock up front, so two connections can never both see room
+ * under `limit` and both insert.
+ *
+ * @throws if `amount` would push the total of records at or after `sinceMs`
+ *   past `limit`; nothing is written in that case.
+ */
+export function reserveSpendingRecord(
+  amount: number,
+  limit: number,
+  sinceMs: number,
+  now: number = Date.now()
+): SpendingReservation {
+  const db = getDb();
+  const reserve = db.transaction((): SpendingReservation => {
+    const row = db
+      .prepare(
+        `SELECT COALESCE(SUM(amount), 0) AS total FROM spending_records
+         WHERE timestamp >= ?`
+      )
+      .get(sinceMs) as { total: number };
+    const total = row.total + amount;
+    if (total > limit) {
+      throw new Error(`Cumulative spending ${total} exceeds limit ${limit}`);
+    }
+    const info = db
+      .prepare(`INSERT INTO spending_records (amount, timestamp) VALUES (?, ?)`)
+      .run(amount, now);
+    return { id: Number(info.lastInsertRowid), total };
+  });
+  return reserve.immediate();
+}
+
+/** Remove one spending record, e.g. to release a reservation whose submission failed. */
+export function deleteSpendingRecord(id: number): void {
+  getDb().prepare(`DELETE FROM spending_records WHERE id = ?`).run(id);
+}
+
 /** Persist a single agent-state value, replacing any previous one. */
 export function saveAgentState(key: string, value: string): void {
   getDb()
@@ -463,6 +565,117 @@ export function getApprovalAuditLog(): ApprovalAuditRow[] {
   return getDb()
     .prepare(`SELECT approvalId, decision, ts FROM approval_audit_log ORDER BY id ASC`)
     .all() as ApprovalAuditRow[];
+}
+
+/**
+ * Compute SHA-256 hash of the payload for idempotency comparison.
+ */
+function computePayloadHash(payload: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(payload))
+    .digest('hex');
+}
+
+/**
+ * Result status for idempotency tracking.
+ */
+type IdempotencyStatus = 'pending' | 'success' | 'failure';
+
+/**
+ * Stored idempotency record.
+ */
+interface IdempotencyRecord {
+  key: string;
+  payloadHash: string;
+  taskType: string;
+  status: IdempotencyStatus;
+  result: AgentResult;
+  createdAt: number;
+  expiresAt: number;
+}
+
+/**
+ * Check if an idempotency key exists and is valid (not expired).
+ * Returns the stored result if the key exists with the same payload hash.
+ * Returns { conflict: true } if the key exists but payload differs.
+ * Returns null if the key doesn't exist or has expired.
+ */
+export function getIdempotencyResult(
+  key: string,
+  payload: unknown
+): AgentResult | { conflict: true } | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT payloadHash, taskType, status, result, expiresAt
+       FROM idempotency_keys WHERE key = ?`
+    )
+    .get(key) as
+    | {
+        payloadHash: string;
+        taskType: string;
+        status: IdempotencyStatus;
+        result: string;
+        expiresAt: number;
+      }
+    | undefined;
+
+  if (!row) return null;
+
+  // Check if expired
+  if (Date.now() > row.expiresAt) {
+    // Clean up expired key
+    db.prepare(`DELETE FROM idempotency_keys WHERE key = ?`).run(key);
+    return null;
+  }
+
+  // Check payload hash match
+  const payloadHash = computePayloadHash(payload);
+  if (row.payloadHash !== payloadHash) {
+    return { conflict: true };
+  }
+
+  // Return stored result
+  return JSON.parse(row.result) as AgentResult;
+}
+
+/**
+ * Store an idempotency key with the result.
+ * Keys expire after 24 hours.
+ */
+export function saveIdempotencyResult(
+  key: string,
+  taskType: string,
+  payload: unknown,
+  result: AgentResult
+): void {
+  const db = getDb();
+  const now = Date.now();
+  const expiresAt = now + 24 * 60 * 60 * 1000; // 24 hours
+
+  db.prepare(
+    `INSERT OR REPLACE INTO idempotency_keys
+       (key, payloadHash, taskType, status, result, createdAt, expiresAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    key,
+    computePayloadHash(payload),
+    taskType,
+    result.success ? 'success' : 'failure',
+    JSON.stringify(result),
+    now,
+    expiresAt
+  );
+}
+
+/**
+ * Prune expired idempotency keys. Called periodically to clean up old entries.
+ */
+export function pruneIdempotencyKeys(): number {
+  const db = getDb();
+  const now = Date.now();
+  const result = db.prepare(`DELETE FROM idempotency_keys WHERE expiresAt < ?`).run(now);
+  return result.changes;
 }
 
 /** Replace the underlying DB instance — used in tests to inject an in-memory DB. */

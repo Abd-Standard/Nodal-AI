@@ -33,6 +33,7 @@ import {
 import axios from 'axios';
 import * as fs from 'fs';
 import * as path from 'path';
+import { escrowCall } from '../../backend/contracts/escrow';
 
 const SOROBAN_RPC_URL = process.env.SOROBAN_RPC_URL ?? 'https://soroban-testnet.stellar.org';
 const HORIZON_URL = process.env.HORIZON_URL ?? 'https://horizon-testnet.stellar.org';
@@ -236,10 +237,18 @@ describe.skipIf(process.env.RUN_E2E !== "true")("Escrow E2E — deploy → initi
     // by computing current unix time + EXPIRY_OFFSET_SECONDS.
     const expiryTimestamp = BigInt(Math.floor(Date.now() / 1000) + EXPIRY_OFFSET_SECONDS);
 
-    // The escrow contract's initialize() signature (7 args):
-    //   initialize(depositor, recipient, arbiter, token, amount, expiry)
+    // Arguments are encoded by the typed escrow client, so a wrong name, order
+    // or type is a compile error rather than a simulation failure.
     // amount is in stroops (1 XLM = 10_000_000 stroops), so 10 XLM = 100_000_000n
     const TEN_XLM_STROOPS = 100_000_000n;
+    const init = escrowCall.initialize({
+      depositor: deployerKp.publicKey(),
+      recipient: recipientKp.publicKey(),
+      arbiter: arbiterKp.publicKey(),
+      token: NATIVE_TOKEN_CONTRACT_ID, // XLM SAC
+      amount: TEN_XLM_STROOPS, // 10 XLM
+      expiry: expiryTimestamp, // 1 hour from now
+    });
 
     const account = await sorobanServer.getAccount(deployerKp.publicKey());
     const tx = new TransactionBuilder(account, {
@@ -247,15 +256,7 @@ describe.skipIf(process.env.RUN_E2E !== "true")("Escrow E2E — deploy → initi
       networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addOperation(
-        new Contract(contractId).call(
-          "initialize",
-          nativeToScVal(deployerKp.publicKey(), { type: "address" }),   // depositor
-          nativeToScVal(recipientKp.publicKey(), { type: "address" }),  // recipient
-          nativeToScVal(arbiterKp.publicKey(), { type: "address" }),    // arbiter
-          nativeToScVal(NATIVE_TOKEN_CONTRACT_ID, { type: "address" }), // token (XLM SAC)
-          nativeToScVal(TEN_XLM_STROOPS, { type: "i128" }),             // amount: 10 XLM
-          nativeToScVal(expiryTimestamp, { type: "u64" })               // expiry: 1 hour from now
-        )
+        new Contract(contractId).call(init.method, ...init.args)
       )
       .setTimeout(30)
       .build();
@@ -275,18 +276,15 @@ describe.skipIf(process.env.RUN_E2E !== "true")("Escrow E2E — deploy → initi
     // Snapshot recipient balance before the release
     const balanceBefore = await xlmBalance(recipientKp.publicKey());
 
-    // The release() function signature: release(arbiter)
-    // Only the stored arbiter can call this — signed by arbiterKp
+    // Only the stored arbiter can call release — signed by arbiterKp
+    const release = escrowCall.release({ arbiter: arbiterKp.publicKey() });
     const account = await sorobanServer.getAccount(arbiterKp.publicKey());
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
       networkPassphrase: NETWORK_PASSPHRASE,
     })
       .addOperation(
-        new Contract(contractId).call(
-          "release",
-          nativeToScVal(arbiterKp.publicKey(), { type: "address" }) // arbiter arg
-        )
+        new Contract(contractId).call(release.method, ...release.args)
       )
       .setTimeout(30)
       .build();

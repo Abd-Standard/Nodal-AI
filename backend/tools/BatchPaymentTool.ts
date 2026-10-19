@@ -20,6 +20,7 @@ import { ValidationError } from '../errors';
 import { loadAccount, resolveNetworkPassphrase, submitTransaction } from '../rpc_client';
 import { PaymentInputSchema, SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { resolveDestination } from '../utils/destination';
 
 export const BatchPaymentInputSchema = z.object({
   payments: z.array(PaymentInputSchema).min(1).max(100),
@@ -110,6 +111,21 @@ export class BatchPaymentTool {
       throw new BatchPreflightError(problems.join('; '), 0);
     }
 
+    // Federation addresses resolve to an account; one that also requires a memo
+    // cannot be batched, because a transaction carries a single memo.
+    const destinations = await Promise.all(
+      payments.map(async (p, i) => {
+        const { accountId, memo } = await resolveDestination(p.destination);
+        if (memo) {
+          throw new BatchPreflightError(
+            `payment ${i}: ${p.destination} requires a federation memo, which a batch cannot carry per payment; send it as a single payment`,
+            0
+          );
+        }
+        return accountId;
+      })
+    );
+
     const sourceAccount = await loadAccount(this.signer.publicKey());
 
     const builder = new TransactionBuilder(sourceAccount, {
@@ -117,12 +133,12 @@ export class BatchPaymentTool {
       networkPassphrase: this.networkPassphrase,
     });
 
-    for (const p of payments) {
+    payments.forEach((p, i) => {
       const asset = p.assetCode === 'XLM' ? Asset.native() : new Asset(p.assetCode, p.assetIssuer);
       builder.addOperation(
-        Operation.payment({ destination: p.destination, asset, amount: p.amount })
+        Operation.payment({ destination: destinations[i]!, asset, amount: p.amount })
       );
-    }
+    });
 
     const tx = builder.setTimeout(SOROBAN_TX_TIMEOUT).build();
     this.signer.signTransaction(tx);

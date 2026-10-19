@@ -256,11 +256,14 @@ export class ContractStorageWatcherTool extends EventEmitter {
 
       this.emit('poll', this.pollCount, currentEntries);
     } catch (err) {
-      logger.error('ContractStorageWatcherTool polling error', {
-        contractId: this.contractId,
-        pollCount: this.pollCount,
-        error: (err as Error).message,
-      });
+      logger.error(
+        {
+          contractId: this.contractId,
+          pollCount: this.pollCount,
+          error: (err as Error).message,
+        },
+        'ContractStorageWatcherTool polling error'
+      );
       this.emit('error', err);
     }
 

@@ -248,7 +248,8 @@ export function createBuiltinTools(): AgentTool<any, any>[] {
     }),
     defineTool({
       name: 'inflation',
-      description: "Set or query the account's inflation destination.",
+      description:
+        "Deprecated (inflation is disabled on Stellar; removed next minor release): set or query the account's inflation destination.",
       inputSchema: InflationInputSchema,
       valueMoving: false,
       execute: (input) => inflationTool.execute(input),

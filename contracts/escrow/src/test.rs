@@ -16,13 +16,17 @@
  *   Property tests  : conservation of funds — the sum of released/refunded
  *                     tokens equals the initialised amount over many random
  *                     amounts (proptest)
+ *   Stateful props  : random call sequences (release, release_partial,
+ *                     refund, cancel, arbiter rotation, impostor callers,
+ *                     time travel) checked against a reference model after
+ *                     every step — see "Invariants" in ../README.md
  */
 
 #[cfg(test)]
 mod tests {
     extern crate std;
 
-    use crate::{EscrowContract, EscrowContractClient, EscrowState, MIN_ROTATION_DELAY};
+    use crate::{EscrowContract, EscrowContractClient, EscrowError, EscrowState, MIN_ROTATION_DELAY};
     use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger},
@@ -1289,5 +1293,330 @@ mod tests {
             let state = client.get_state();
             prop_assert!(state.released, "escrow must be sealed after refund");
         });
+    }
+
+    // ── Stateful property tests: invariants over random call sequences ─────
+    // Each case initialises one escrow, then applies a random sequence of
+    // entry-point calls (valid and invalid) while a reference model predicts
+    // the outcome of every call. After every step the invariants listed in
+    // contracts/escrow/README.md ("Invariants") are asserted against the real
+    // token balances and contract state.
+
+    /// Default number of random sequences per run. CI's scheduled deep run
+    /// raises it through `ESCROW_INVARIANT_CASES`.
+    const DEFAULT_INVARIANT_CASES: u32 = 128;
+
+    /// Maximum number of calls in one generated sequence.
+    const MAX_SEQUENCE_LEN: usize = 24;
+
+    /// Extra balance minted to the depositor beyond the escrowed amount, so a
+    /// refund that over- or under-pays is distinguishable from the remainder.
+    const DEPOSITOR_SURPLUS: i128 = 1_000;
+
+    fn invariant_cases() -> u32 {
+        std::env::var("ESCROW_INVARIANT_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_INVARIANT_CASES)
+    }
+
+    /// One entry-point call (or a ledger clock change) in a generated sequence.
+    /// `impostor` flags make the call with an address that is not the stored
+    /// party, which the contract must reject without moving funds.
+    #[derive(Clone, Debug)]
+    enum Op {
+        Release { impostor: bool },
+        /// `selector` picks the partial amount: 0 → zero (invalid),
+        /// 255 → remaining + 1 (invalid), otherwise a fraction of remaining.
+        ReleasePartial { impostor: bool, selector: u8 },
+        Refund { impostor: bool },
+        Cancel {
+            depositor_impostor: bool,
+            arbiter_impostor: bool,
+        },
+        /// Depositor proposes candidate arbiter `candidate` (index into a pool).
+        ProposeArbiter { candidate: usize },
+        AcceptRotation,
+        AdvanceTime { seconds: u64 },
+    }
+
+    const ARBITER_CANDIDATES: usize = 3;
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            any::<bool>().prop_map(|impostor| Op::Release { impostor }),
+            3 => (any::<bool>(), any::<u8>())
+                .prop_map(|(impostor, selector)| Op::ReleasePartial { impostor, selector }),
+            any::<bool>().prop_map(|impostor| Op::Refund { impostor }),
+            (any::<bool>(), any::<bool>()).prop_map(|(depositor_impostor, arbiter_impostor)| {
+                Op::Cancel {
+                    depositor_impostor,
+                    arbiter_impostor,
+                }
+            }),
+            (0..ARBITER_CANDIDATES).prop_map(|candidate| Op::ProposeArbiter { candidate }),
+            Just(Op::AcceptRotation),
+            2 => (0..=2 * MIN_ROTATION_DELAY).prop_map(|seconds| Op::AdvanceTime { seconds }),
+        ]
+    }
+
+    fn sequence_strategy() -> impl Strategy<Value = (i128, Vec<Op>)> {
+        (
+            // Mix tiny amounts (edge cases for partial splits) with the full
+            // range accepted by the overflow guard.
+            prop_oneof![1i128..=10, 1i128..=1_000_000_000, amount_strategy()],
+            proptest::collection::vec(op_strategy(), 1..=MAX_SEQUENCE_LEN),
+        )
+    }
+
+    /// Collapse a generated `try_*` client result into the contract's own
+    /// error type. Anything other than a contract error (a host trap, a
+    /// conversion failure) is itself an invariant violation.
+    fn outcome<T, C: core::fmt::Debug, H: core::fmt::Debug>(
+        result: Result<Result<T, C>, Result<EscrowError, H>>,
+    ) -> Result<(), EscrowError> {
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => panic!("return value conversion failed: {:?}", e),
+            Err(Ok(e)) => Err(e),
+            Err(Err(e)) => panic!("contract trapped instead of returning an error: {:?}", e),
+        }
+    }
+
+    /// Reference model of the escrow, updated only by calls it predicts succeed.
+    struct Model {
+        deposited: i128,
+        remaining: i128,
+        released: i128,
+        refunded: i128,
+        sealed: bool,
+        expiry: u64,
+        now: u64,
+        arbiter: usize,
+        pending: Option<(usize, u64)>,
+    }
+
+    /// Assert every invariant from the README against real balances and state.
+    fn assert_invariants(
+        model: &Model,
+        client: &EscrowContractClient,
+        token: &TokenClient,
+        contract: &Address,
+        depositor: &Address,
+        recipient: &Address,
+        arbiters: &[Address],
+    ) -> Result<(), TestCaseError> {
+        let in_contract = token.balance(contract);
+        let to_recipient = token.balance(recipient);
+        let to_depositor = token.balance(depositor) - DEPOSITOR_SURPLUS;
+
+        // I1 — funds conservation: contract + released + refunded == deposited.
+        prop_assert_eq!(
+            in_contract + to_recipient + to_depositor,
+            model.deposited,
+            "funds conservation violated"
+        );
+        // I2 — balances match the model exactly (no over- or under-payment).
+        prop_assert_eq!(in_contract, model.remaining, "contract balance diverged");
+        prop_assert_eq!(to_recipient, model.released, "released total diverged");
+        prop_assert_eq!(to_depositor, model.refunded, "refunded total diverged");
+        // I3 — no balance is ever negative and nothing leaks to the arbiters.
+        prop_assert!(in_contract >= 0 && to_recipient >= 0 && to_depositor >= 0);
+        for arbiter in arbiters {
+            prop_assert_eq!(token.balance(arbiter), 0, "arbiter received funds");
+        }
+        // I4 — only one of release or refund/cancel can ever pay out.
+        prop_assert!(
+            model.released == 0 || model.refunded == 0,
+            "funds paid to both recipient and depositor"
+        );
+
+        let state = client.get_state();
+        // I5 — sealed flag matches the model; a sealed escrow holds nothing.
+        prop_assert_eq!(state.released, model.sealed, "released flag diverged");
+        if state.released {
+            prop_assert_eq!(in_contract, 0, "sealed escrow still holds funds");
+        } else {
+            // I6 — while active, stored amount equals the contract's balance.
+            prop_assert_eq!(state.amount, in_contract, "stored amount != balance");
+            prop_assert!(state.amount > 0, "active escrow with zero amount");
+        }
+        // I7 — immutable parties and expiry never change; arbiter only via rotation.
+        prop_assert_eq!(&state.depositor, depositor);
+        prop_assert_eq!(&state.recipient, recipient);
+        prop_assert_eq!(state.expiry, model.expiry);
+        prop_assert_eq!(&state.arbiter, &arbiters[model.arbiter]);
+        Ok(())
+    }
+
+    // 41. stateful property: invariants hold over random call sequences
+    #[test]
+    fn prop_random_call_sequences_preserve_invariants() {
+        proptest!(
+            ProptestConfig::with_cases(invariant_cases()),
+            |(case in sequence_strategy())| {
+                let (amount, ops) = case;
+                let env = Env::default();
+                env.mock_all_auths();
+                let depositor = Address::generate(&env);
+                let recipient = Address::generate(&env);
+                let impostor = Address::generate(&env);
+                // arbiters[0] is the initial arbiter; the rest are rotation
+                // candidates.
+                let arbiters: std::vec::Vec<Address> = (0..ARBITER_CANDIDATES)
+                    .map(|_| Address::generate(&env))
+                    .collect();
+                let (token_id, token) = create_token(&env, &depositor);
+                StellarAssetClient::new(&env, &token_id)
+                    .mint(&depositor, &(amount + DEPOSITOR_SURPLUS));
+                let contract_id = env.register_contract(None, EscrowContract);
+                let client = EscrowContractClient::new(&env, &contract_id);
+                let expiry = env.ledger().timestamp() + EXPIRY_OFFSET;
+                client.initialize(
+                    &depositor,
+                    &recipient,
+                    &arbiters[0],
+                    &token_id,
+                    &amount,
+                    &expiry,
+                );
+
+                let mut model = Model {
+                    deposited: amount,
+                    remaining: amount,
+                    released: 0,
+                    refunded: 0,
+                    sealed: false,
+                    expiry,
+                    now: env.ledger().timestamp(),
+                    arbiter: 0,
+                    pending: None,
+                };
+                assert_invariants(
+                    &model, &client, &token, &contract_id, &depositor, &recipient, &arbiters,
+                )?;
+
+                for op in ops {
+                    let arbiter = arbiters[model.arbiter].clone();
+                    match op {
+                        Op::Release { impostor: bad } => {
+                            let caller = if bad { &impostor } else { &arbiter };
+                            let expected = if bad {
+                                Err(EscrowError::NotArbiter)
+                            } else if model.sealed {
+                                Err(EscrowError::AlreadyReleased)
+                            } else {
+                                Ok(())
+                            };
+                            prop_assert_eq!(outcome(client.try_release(caller)), expected);
+                            if expected.is_ok() {
+                                model.released += model.remaining;
+                                model.remaining = 0;
+                                model.sealed = true;
+                            }
+                        }
+                        Op::ReleasePartial { impostor: bad, selector } => {
+                            let part = match selector {
+                                0 => 0,
+                                255 => model.remaining + 1,
+                                s => (model.remaining / 254 * i128::from(s)).max(1),
+                            };
+                            let caller = if bad { &impostor } else { &arbiter };
+                            let expected = if bad {
+                                Err(EscrowError::NotArbiter)
+                            } else if model.sealed {
+                                Err(EscrowError::AlreadyReleased)
+                            } else if part <= 0 || part > model.remaining {
+                                Err(EscrowError::InvalidAmount)
+                            } else {
+                                Ok(())
+                            };
+                            prop_assert_eq!(
+                                outcome(client.try_release_partial(caller, &part)),
+                                expected
+                            );
+                            if expected.is_ok() {
+                                model.released += part;
+                                model.remaining -= part;
+                                model.sealed = model.remaining == 0;
+                            }
+                        }
+                        Op::Refund { impostor: bad } => {
+                            let caller = if bad { &impostor } else { &depositor };
+                            let expected = if bad {
+                                Err(EscrowError::NotDepositor)
+                            } else if model.sealed {
+                                Err(EscrowError::AlreadyReleased)
+                            } else if model.now < model.expiry {
+                                Err(EscrowError::NotExpired)
+                            } else {
+                                Ok(())
+                            };
+                            prop_assert_eq!(outcome(client.try_refund(caller)), expected);
+                            if expected.is_ok() {
+                                model.refunded += model.remaining;
+                                model.remaining = 0;
+                                model.sealed = true;
+                            }
+                        }
+                        Op::Cancel { depositor_impostor, arbiter_impostor } => {
+                            let dep = if depositor_impostor { &impostor } else { &depositor };
+                            let arb = if arbiter_impostor { &impostor } else { &arbiter };
+                            let expected = if depositor_impostor {
+                                Err(EscrowError::NotDepositor)
+                            } else if arbiter_impostor {
+                                Err(EscrowError::NotArbiter)
+                            } else if model.sealed {
+                                Err(EscrowError::AlreadyReleased)
+                            } else {
+                                Ok(())
+                            };
+                            prop_assert_eq!(outcome(client.try_cancel(dep, arb)), expected);
+                            if expected.is_ok() {
+                                model.refunded += model.remaining;
+                                model.remaining = 0;
+                                model.sealed = true;
+                            }
+                        }
+                        Op::ProposeArbiter { candidate } => {
+                            prop_assert_eq!(
+                                outcome(
+                                    client.try_propose_new_arbiter(&depositor, &arbiters[candidate])
+                                ),
+                                Ok(())
+                            );
+                            model.pending = Some((candidate, model.now));
+                        }
+                        Op::AcceptRotation => {
+                            let expected = match model.pending {
+                                None => Err(EscrowError::NoPendingRotation),
+                                Some((_, proposed_at))
+                                    if model.now < proposed_at + MIN_ROTATION_DELAY =>
+                                {
+                                    Err(EscrowError::RotationLocked)
+                                }
+                                Some(_) => Ok(()),
+                            };
+                            prop_assert_eq!(
+                                outcome(client.try_accept_arbiter_rotation()),
+                                expected
+                            );
+                            if let (Ok(()), Some((candidate, _))) = (expected, model.pending) {
+                                model.arbiter = candidate;
+                                model.pending = None;
+                            }
+                        }
+                        Op::AdvanceTime { seconds } => {
+                            env.ledger().with_mut(|li| li.timestamp += seconds);
+                            model.now += seconds;
+                        }
+                    }
+
+                    assert_invariants(
+                        &model, &client, &token, &contract_id, &depositor, &recipient, &arbiters,
+                    )?;
+                }
+            }
+        );
     }
 }

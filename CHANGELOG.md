@@ -7,7 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed — BREAKING
+
+- **Node 22 LTS is now required** (`engines.node >=22.0.0`, `.nvmrc`). Node 20 reached end-of-life in April 2026; the Dockerfile, CI and devcontainer now run Node 22, and `@types/node` follows.
+- **`@stellar/stellar-sdk` upgraded from 13.3.0 to 15.1.0** (Protocol 23 and 26 XDR). Breaking changes that affect code built on this repo:
+  - `rpc.Api.EventResponse.pagingToken` was removed — use the event `id` (or the response's top-level `cursor`) to page `getEvents`. `ContractEventListener` now resumes from `event.id`.
+  - `rpc.Server.GetEventsRequest` is deprecated in favour of `rpc.Api.GetEventsRequest`, and `getEvents` now needs either a ledger range or a cursor.
+  - `getTransaction` / `getTransactions` no longer return `events.diagnosticEventsXdr`.
+  - Sized XDR integers now throw on overflow instead of silently clamping, and `TransactionBase.networkPassphrase` can no longer be reassigned.
+  - Horizon balance changes no longer carry `destination_muxed_id_type`.
+  - `rpc.Server.requestAirdrop` is deprecated in favour of `fundAddress`.
+- `balanceHelpers.ts` now reads Horizon balances through the SDK's `HorizonApi.BalanceLine` union instead of an untyped cast.
+
 ### Added
+
+- Numbered schema migrations (`backend/db/migrations/NNN_*.sql`) applied at startup inside a transaction and tracked in a `schema_version` table. Existing databases are adopted in place; tables are no longer created ad hoc in `persistence.ts` / `nonce_store.ts`. This also restores the `audit_log` table and its append-only triggers.
+- Postgres storage backend (`STORAGE_BACKEND=postgres`, `DATABASE_URL`) for multi-instance deployments, behind a `Storage` interface with SQLite as the default. Spending reservations lock a row with `SELECT … FOR UPDATE`; x402 nonces are shared across instances. A `postgres` docker-compose profile runs a Postgres-backed agent and the shared storage test suite.
 
 - CI job (`wasm-size-check`) that fails when the compiled contract WASM exceeds a size budget, detecting supply-chain bloat such as injected data segments before deployment — see `scripts/check_wasm_size.sh` and `contracts/escrow/WASM_SIZE_BUDGET.md`
 - Enhanced documentation for vitest configuration, including detailed explanation of `isolate: true` behavior and coverage thresholds
@@ -15,18 +30,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CHANGELOG.md following Keep a Changelog format for tracking releases and changes
 - `SorobanInvokeTool` now enforces the spending limit on contract invocations: simulated Stellar Asset Contract transfers that debit the agent are summed from the mandatory Soroban simulation and checked against `AGENT_SPENDING_LIMIT` (and the mainnet cap) before broadcast, and within-limit spends are recorded into the cumulative spending window
 
-- `cross_border_payment` task (`CrossBorderPaymentTool`, #784): SEP-31 payment as the sending anchor, with SEP-12 KYC submission (SEP-9 field validation plus the anchor's required fields, `KycValidationError`), an optional SEP-38 firm quote, SEP-31 transaction creation, and the on-chain payment with the anchor-provided memo
-- SEP-45 Web Auth for contract (`C…`) accounts in `stellar_identity_auth` (#785): the challenge's authorization entries are verified (web-auth contract, `web_auth_verify` args, server signature) and the contract account's entry is signed through the `Signer`
-- `toCaip2()` / `fromCaip2()` CAIP-2 network helpers in `backend/network.ts` (#775); x402 challenges may carry a CAIP-2 `network`, which must match the agent's network
-- `X402_ASSET_CONTRACT` (#776): the x402 asset's Stellar Asset Contract address (`C…`), derived from `X402_ASSET_CODE` + `X402_ASSET_ISSUER` and the network when unset, and validated against that derivation when set
+- Destination pre-flight checks before signing `stellar_payment` and `path_payment` (#788): a missing account raises `DestinationNotFoundError` (suggesting `createAccount` with at least 1 XLM for XLM payments), a missing trustline raises `MissingTrustlineError`, and a destination that sets SEP-29 `config.memo_required` with no memo attached raises `MemoRequiredError`
+- MPP Charge client (`backend/payments/mpp.ts`, `protocol: 'mpp-charge'`) for facilitator-free per-request payments through a SEP-41 `transfer`, using the agent signer and spending policy (#777)
+- OpenAPI discovery document for paid endpoints at `/.well-known/openapi.json`, generated from route config with `x-payment-info` price/asset/network offers (`backend/x402/middleware.ts`, #781)
+- `account_info` returns the read-only legacy `inflationDestination` (#782)
 
-### Changed
+### Deprecated
 
-- x402 payment proofs report `network` as a CAIP-2 ID (`stellar:testnet`, `stellar:pubnet`, `stellar:futurenet`) instead of `testnet` / `mainnet` / `futurenet` (#775). `verify()` rejects a proof for another network.
+- The `inflation` task type and `InflationTool` (#782). Inflation has been disabled on Stellar since protocol 12, so the tool has no effect; every execution now logs a deprecation warning. They will be removed in the next minor release (tracked in #874). Read an account's inflation destination from `account_info` instead.
 
 ### Fixed
 
 - Quick Start code blocks in README.md — commands are now properly enclosed in fenced code blocks
+- `prepareSorobanTx` no longer rejects source-account Soroban authorization entries as "Unexpected Soroban auth signer format"; only address credentials are checked against the agent key
 
 ---
 

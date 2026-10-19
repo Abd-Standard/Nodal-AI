@@ -18,6 +18,10 @@
  * the same "importable directly" pattern the README documents for
  * `BalanceCheckTool` / `SorobanQueryTool`.
  *
+ * Contract calls are built with the typed escrow client
+ * (`backend/contracts/escrow`), so method names and argument types are checked
+ * at compile time instead of failing at simulation.
+ *
  * Usage:
  *   npx ts-node scripts/examples/escrow_lifecycle.ts
  *
@@ -34,8 +38,9 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import * as fs from 'fs';
-import { Asset, Keypair, nativeToScVal } from '@stellar/stellar-sdk';
+import { Asset, Keypair } from '@stellar/stellar-sdk';
 import { PayFiAgent } from '../../backend/agent';
+import { EscrowClient, escrowCall } from '../../backend/contracts/escrow';
 import { SorobanInvokeTool } from '../../backend/tools/SorobanInvokeTool';
 import { KeypairSigner } from '../../backend/signer';
 import { FriendBotTool } from '../../backend/tools/FriendBotTool';
@@ -110,15 +115,14 @@ async function main(): Promise<void> {
       type: 'soroban_invoke',
       payload: {
         contractId,
-        method: 'initialize',
-        args: [
-          nativeToScVal(config.AGENT_PUBLIC_KEY, { type: 'address' }), // depositor
-          nativeToScVal(recipientKeypair.publicKey(), { type: 'address' }),
-          nativeToScVal(arbiterKeypair.publicKey(), { type: 'address' }),
-          nativeToScVal(nativeTokenContractId, { type: 'address' }),
-          nativeToScVal(ESCROW_AMOUNT_STROOPS, { type: 'i128' }),
-          nativeToScVal(BigInt(expiry), { type: 'u64' }),
-        ],
+        ...escrowCall.initialize({
+          depositor: config.AGENT_PUBLIC_KEY,
+          recipient: recipientKeypair.publicKey(),
+          arbiter: arbiterKeypair.publicKey(),
+          token: nativeTokenContractId,
+          amount: ESCROW_AMOUNT_STROOPS,
+          expiry: BigInt(expiry),
+        }),
         simulateOnly: false,
       },
     });
@@ -152,12 +156,8 @@ async function main(): Promise<void> {
     // PayFiAgent's tools always sign with the agent's single configured key,
     // so the arbiter's call has to go through its own tool instance.
     const arbiterInvokeTool = new SorobanInvokeTool(new KeypairSigner(arbiterKeypair));
-    const releaseResult = await arbiterInvokeTool.execute({
-      contractId,
-      method: 'release',
-      args: [nativeToScVal(arbiterKeypair.publicKey(), { type: 'address' })],
-      simulateOnly: false,
-    });
+    const arbiterEscrow = new EscrowClient(contractId, arbiterInvokeTool);
+    const releaseResult = await arbiterEscrow.release({ arbiter: arbiterKeypair.publicKey() });
     console.log('Release transaction submitted:', releaseResult);
 
     // ── 5. Confirm the listener observed the release ──────────────────────
