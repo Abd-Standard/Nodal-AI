@@ -70,7 +70,16 @@ function makeMockAccount(publicKey: string) {
     incrementedSequenceNumber: () => '101',
     thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
     flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
-    balances: [{ asset_type: 'native', balance: '10000.0000000' }],
+    // USDC trustline so the destination pre-flight (#788) accepts USDC path payments
+    balances: [
+      { asset_type: 'native', balance: '10000.0000000' },
+      {
+        asset_type: 'credit_alphanum4',
+        asset_code: 'USDC',
+        asset_issuer: USDC_ISSUER,
+        balance: '0',
+      },
+    ],
     signers: [],
     data_attr: {},
     subentry_count: 0,

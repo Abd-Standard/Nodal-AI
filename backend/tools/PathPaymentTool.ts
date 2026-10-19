@@ -24,9 +24,8 @@ import { ValidationError } from '../errors';
 import { createLogger } from '../utils/logger';
 import { SubmitResultSchema, buildMemo } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
-import { paymentDestinationSchema, resolveDestination } from '../utils/destination';
-import { baseAccountId } from '../utils/stellarSchemas';
-import { estimateFee, isInsufficientFeeError, submitFeeBumped } from '../fees';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
+import { assertDestinationReady } from '../utils/destinationPreflight';
 
 const log = createLogger('path-payment');
 
@@ -135,6 +134,13 @@ export class PathPaymentTool {
 
     const sendAsset = toAsset(input.sendAsset);
     const destAsset = toAsset(input.destAsset);
+
+    // Pre-flight: destination exists, trusts destAsset, and gets any SEP-29 required memo
+    await assertDestinationReady({
+      destination: input.destination,
+      asset: destAsset,
+      hasMemo: input.memo !== undefined,
+    });
     let pathAssets = input.path.map(toAsset);
     let destMin = input.destMinAmount;
 
@@ -195,15 +201,17 @@ export class PathPaymentTool {
       return builder.setTimeout(SOROBAN_TX_TIMEOUT).build();
     };
 
-    logger.info('Executing path payment', {
-      source: this.signer.publicKey(),
-      destination,
-      sendAmount: input.sendAmount,
-      sendAsset: input.sendAsset.code,
-      destAsset: input.destAsset.code,
-      destMinAmount,
-      maxSlippageBps: input.destMinAmount === undefined ? input.maxSlippageBps : undefined,
-    });
+    logger.info(
+      {
+        source: this.signer.publicKey(),
+        destination: input.destination,
+        sendAmount: input.sendAmount,
+        sendAsset: input.sendAsset.code,
+        destAsset: input.destAsset.code,
+        destMinAmount: input.destMinAmount,
+      },
+      'Executing path payment'
+    );
 
     let tx = buildTx();
     this.signer.signTransaction(tx);
@@ -219,9 +227,12 @@ export class PathPaymentTool {
         return { txHash: result.hash, ledger: result.ledger };
       }
       if (err instanceof Error && err.message.includes('tx_bad_seq')) {
-        logger.warn('tx_bad_seq detected, reloading account and retrying once', {
-          source: this.signer.publicKey(),
-        });
+        logger.warn(
+          {
+            source: this.signer.publicKey(),
+          },
+          'tx_bad_seq detected, reloading account and retrying once'
+        );
         // Bypass the account cache: the whole point of this retry is that the
         // sequence we used was wrong, so a cached record must not be reused.
         sourceAccount = await loadAccount(this.signer.publicKey(), { forceRefresh: true });

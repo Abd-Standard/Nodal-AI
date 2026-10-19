@@ -27,10 +27,10 @@ vi.mock('../backend/logger', () => ({
 
 const VALID_CONTRACT = 'CDPVBHPSVYKWSI5ECEA4DASBG3RBNU5EHEE3DHNFX7RMBCZV66CSC7NH';
 
-function makeEvent(topicStr: string, pagingToken: string) {
+function makeEvent(topicStr: string, id: string) {
   return {
     topic: [{ toString: () => topicStr }],
-    pagingToken,
+    id,
   } as any;
 }
 

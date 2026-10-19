@@ -23,6 +23,9 @@ import {
   listPendingApprovals,
   decideApproval,
   expirePendingApprovals,
+  getIdempotencyResult,
+  saveIdempotencyResult,
+  pruneIdempotencyKeys,
   PendingApproval,
 } from './persistence';
 import {
@@ -73,10 +76,12 @@ import { spendingTracker } from './spending_tracker';
 import { dispatchWebhook } from './webhook';
 import { createAgentSigner, Signer } from './signer';
 import { isPaused } from './kill_switch';
+import { taskContext, type AgentEvents } from './events';
 
 // Re-exported so existing importers (`server.ts`, tests) keep working after the
 // singleton moved to spending_tracker.ts.
 export { spendingTracker };
+export type { AgentEvents };
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
@@ -209,6 +214,7 @@ export type BuiltinTaskType =
   | 'sequence_number'
   | 'sponsored_account'
   | 'anchor_quote'
+  /** @deprecated Inflation is disabled on Stellar; removed in the next minor release (#782). */
   | 'inflation'
   | 'soroban_deploy'
   | 'swap'
@@ -238,7 +244,90 @@ export interface AgentTask {
    * one so every task execution is traceable end-to-end.
    */
   correlationId?: string;
+  /**
+   * Optional idempotency key for preventing duplicate executions.
+   * If a task with the same idempotencyKey and payload hash has already been
+   * executed, the stored result is returned without re-execution.
+   * Keys expire after 24 hours.
+   */
+  idempotencyKey?: string;
 }
+
+// ─── Type-safe payloads and results (#type-safe-tasks) ────────────────────────
+
+/**
+ * Payload types for each task type. Use with `AgentTask` for full type inference.
+ */
+export type TaskPayloadMap = {
+  stellar_payment: { destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string };
+  soroban_invoke: { contractId: string; method: string; args?: unknown[] };
+  x402_respond: { challenge: unknown };
+  account_info: { accountId?: string };
+  change_trust: { assetCode: string; assetIssuer: string; limit?: string };
+  multisig_payment: { destination: string; amount: string; signatures: string[]; minSignatures?: number };
+  batch_payment: { payments: Array<{ destination: string; amount: string }> };
+  balance_check: { accountId: string; assetCode?: string; assetIssuer?: string };
+  path_payment: { destination: string; sendAsset: string; sendAmount: string; destAsset: string; destAmount?: string };
+  fee_bump: { innerTransactionXdr: string; feeAccount: string; baseFeeMultiplier?: number };
+  dex_offer: { selling: string; buying: string; amount: string; price: number; action: 'create' | 'update' | 'delete' };
+  liquidity_pool: { liquidityProviderAccount: string; reserveA: string; reserveB: string; amountA: string; amountB: string };
+  stellar_toml: { domain: string };
+  data_entry: { key: string; value: string; contractId?: string };
+  sequence_number: { accountId: string };
+  sponsored_account: { sponsoredAccountId: string; sponsorSigner: string };
+  anchor_quote: { sourceAsset: string; destAsset: string; amount: string };
+  inflation: { destination?: string };
+  soroban_deploy: { wasmHash: string; salt?: string };
+  swap: { sourceAsset: string; destAsset: string; amount: string };
+  account_history: { accountId: string; limit?: number };
+  set_options: { accountId: string; thresholds?: { lowThreshold?: number; medThreshold?: number; highThreshold?: number }; homeDomain?: string };
+  soroban_event_query: { contractId: string; startLedger?: number; eventTypes?: string[] };
+  stellar_identity_auth: { accountId: string; callback?: string };
+  friendbot: { accountId: string };
+  soroban_query: { contractId: string; key: string };
+  network_status: Record<string, never>;
+  ledger_info: Record<string, never>;
+  offer_book: { base: string; counter: string; limit?: number };
+  soroban_storage: { contractId: string; key: string };
+  transaction_build: { operations: unknown[]; fee?: string };
+};
+
+/**
+ * Result data types for each task type. Use with `AgentResult` for full type inference.
+ */
+export type TaskResultMap = {
+  stellar_payment: { txHash: string; ledger: number; network: string };
+  soroban_invoke: { simulationResult: unknown };
+  x402_respond: { txHash: string; nonce: string; payer: string; signedAt: string };
+  account_info: unknown;
+  change_trust: { txHash: string; ledger: number };
+  multisig_payment: { txHash: string; ledger: number };
+  batch_payment: { txHashes: string[]; ledger: number };
+  balance_check: { balances: Record<string, string> };
+  path_payment: { txHash: string; ledger: number; sourceBalanceDelta?: string; destBalanceDelta?: string };
+  fee_bump: { txHash: string; ledger: number };
+  dex_offer: { offerId: string; txHash: string };
+  liquidity_pool: { liquidityPoolId: string; txHash: string };
+  stellar_toml: { fields: Record<string, string> };
+  data_entry: { key: string; value: string; contractId?: string };
+  sequence_number: { sequenceNumber: string };
+  sponsored_account: { txHash: string; sponsoredAccountId: string };
+  anchor_quote: { sourceAmount: string; destAmount: string; price: string };
+  inflation: { txHash: string; ledger: number };
+  soroban_deploy: { contractId: string; txHash: string };
+  swap: { txHash: string; sourceAmount: string; destAmount: string };
+  account_history: { operations: unknown[] };
+  set_options: { txHash: string; ledger: number };
+  soroban_event_query: { events: unknown[] };
+  stellar_identity_auth: { token: string };
+  friendbot: { txHash: string; accountId: string };
+  soroban_query: { value: unknown };
+  network_status: { buildNumber: string; currentProtocolVersion: number; currentLedger: number };
+  ledger_info: { sequence: number; totalCoins: string; baseFee: number };
+  offer_book: { bids: unknown[]; asks: unknown[] };
+  soroban_storage: { value: unknown };
+  transaction_build: { envelopeXdr: string };
+};
 
 export interface AgentResultData {
   txHash?: string;
@@ -419,7 +508,7 @@ function buildAuditEntry(
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
-export class PayFiAgent extends EventEmitter {
+export class PayFiAgent extends EventEmitter<AgentEvents> {
   private readonly signer: Signer;
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
@@ -461,7 +550,7 @@ export class PayFiAgent extends EventEmitter {
 
   // Bound handler references kept so destroy() can call .off() with the exact same function
   // reference — EventEmitter requires identity equality for removal.
-  private readonly _boundHandlers = new Map<string, (...args: unknown[]) => void>();
+  private readonly _boundHandlers = new Map<keyof AgentEvents, (...args: unknown[]) => void>();
 
   // Middleware array for pre/post task execution hooks
   private middlewares: TaskMiddleware[] = [];
@@ -507,13 +596,13 @@ export class PayFiAgent extends EventEmitter {
     // ── Register event listeners — every registration is mirrored in destroy() ──
     const onError = (err: Error) => {
       const safe = err.message.replace(/S[A-Z2-7]{55}/g, '[REDACTED]');
-      logger.error('Unhandled agent error', { error: safe });
+      logger.error({ error: safe }, 'Unhandled agent error');
     };
     const onTaskComplete = (result: AgentResult) => {
-      logger.info('Task complete', { taskType: result.taskType });
+      logger.info({ taskType: result.taskType }, 'Task complete');
     };
     const onTaskFailed = (result: AgentResult) => {
-      logger.warn('Task failed', { taskType: result.taskType, error: result.error });
+      logger.warn({ taskType: result.taskType, error: result.error }, 'Task failed');
     };
 
     this.on('error', onError);
@@ -525,14 +614,17 @@ export class PayFiAgent extends EventEmitter {
     this._boundHandlers.set('task:failed', onTaskFailed as (...args: unknown[]) => void);
 
     // Log only safe fields — public key is derived, not the secret
-    logger.info('PayFiAgent initialised', {
-      network: config.STELLAR_NETWORK,
-      horizon: config.HORIZON_URL,
-      soroban: config.SOROBAN_RPC_URL,
-      agentPubkey: config.AGENT_PUBLIC_KEY,
-      spendingLimit: config.AGENT_SPENDING_LIMIT,
-      assetCode: config.X402_ASSET_CODE,
-    });
+    logger.info(
+      {
+        network: config.STELLAR_NETWORK,
+        horizon: config.HORIZON_URL,
+        soroban: config.SOROBAN_RPC_URL,
+        agentPubkey: config.AGENT_PUBLIC_KEY,
+        spendingLimit: config.AGENT_SPENDING_LIMIT,
+        assetCode: config.X402_ASSET_CODE,
+      },
+      'PayFiAgent initialised'
+    );
   }
 
   /**
@@ -558,13 +650,16 @@ export class PayFiAgent extends EventEmitter {
             // forwarding to onChallenge (or letting Zod's error surface
             // deep inside respond(), where it can't be attributed to the
             // stream that produced it).
-            logger.warn('Dropped invalid x402 challenge memo', {
-              error: err instanceof Error ? err.message : String(err),
-            });
+            logger.warn(
+              {
+                error: err instanceof Error ? err.message : String(err),
+              },
+              'Dropped invalid x402 challenge memo'
+            );
           }
         },
         onerror: (event: MessageEvent) => {
-          logger.warn('Payment stream error', { error: String(event) });
+          logger.warn({ error: String(event) }, 'Payment stream error');
           // The underlying connection is dead — tear it down so `_streamStop`
           // doesn't keep pointing at a broken stream forever, which would
           // otherwise permanently block a future startListening() call (its
@@ -574,7 +669,7 @@ export class PayFiAgent extends EventEmitter {
       });
 
     this._streamStop = closeStream as unknown as () => void;
-    logger.info('Payment stream started', { resourceUrl });
+    logger.info({ resourceUrl }, 'Payment stream started');
   }
 
   /** Stop the active Horizon payment stream subscription. */
@@ -604,7 +699,7 @@ export class PayFiAgent extends EventEmitter {
       this._contractListenerStop();
     }
     this._contractListenerStop = listenContractEvents(contractId, eventTypes, onEvent);
-    logger.info('Contract event listener started', { contractId });
+    logger.info({ contractId }, 'Contract event listener started');
   }
 
   /** Stop the active contract event listener. */
@@ -630,7 +725,7 @@ export class PayFiAgent extends EventEmitter {
     const handle = watchContractStorage(options);
     handle.on('change', onChange);
     this._storageWatcherStop = handle.stop;
-    logger.info('Contract storage watcher started', { contractId: options.contractId });
+    logger.info({ contractId: options.contractId }, 'Contract storage watcher started');
   }
 
   /** Stop the active contract storage watcher. */
@@ -670,7 +765,23 @@ export class PayFiAgent extends EventEmitter {
 
   drain(): void {
     this.isDraining = true;
-    logger.info('Agent draining — rejecting new tasks');
+    // Queued tasks have not started, so settle them now rather than letting
+    // them race the hard-kill timer — otherwise their callers hang forever.
+    const queued = this.taskQueue.splice(0);
+    for (const { task, correlationId, resolve } of queued) {
+      resolve(this.shuttingDownResult(task, correlationId));
+    }
+    logger.info('Agent draining — rejecting new tasks', { rejectedQueuedTasks: queued.length });
+  }
+
+  private shuttingDownResult(task: AgentTask, correlationId: string): AgentResult {
+    return {
+      success: false,
+      taskType: task.type,
+      error: new AgentShuttingDownError().message,
+      errorType: ErrorType.AgentShuttingDown,
+      correlationId,
+    };
   }
 
   /**
@@ -686,7 +797,7 @@ export class PayFiAgent extends EventEmitter {
    */
   use(middleware: TaskMiddleware): void {
     this.middlewares.push(middleware);
-    logger.info('Middleware registered', { totalMiddlewares: this.middlewares.length });
+    logger.info({ totalMiddlewares: this.middlewares.length }, 'Middleware registered');
   }
 
   /**
@@ -836,14 +947,27 @@ export class PayFiAgent extends EventEmitter {
     logger.info('Waiting for pending tasks to finish', {
       activeTasks: this.activeTasks,
       queuedTasks: this.taskQueue.length,
+      timeoutMs,
     });
-    return new Promise<void>((resolve) => {
+    return new Promise<boolean>((resolve) => {
+      let timer: ReturnType<typeof setTimeout> | undefined;
       const interval = setInterval(() => {
-        if (this.activeTasks === 0 && this.taskQueue.length === 0) {
+        if (idle()) {
           clearInterval(interval);
-          resolve();
+          clearTimeout(timer);
+          resolve(true);
         }
       }, 100);
+      if (timeoutMs !== undefined) {
+        timer = setTimeout(() => {
+          clearInterval(interval);
+          logger.warn('Timed out waiting for pending tasks', {
+            activeTasks: this.activeTasks,
+            queuedTasks: this.taskQueue.length,
+          });
+          resolve(false);
+        }, timeoutMs);
+      }
     });
   }
 
@@ -878,12 +1002,28 @@ export class PayFiAgent extends EventEmitter {
     const taskLog = createLogger('orchestrator', correlationId);
 
     if (this.isDraining) {
-      return {
-        success: false,
-        taskType: task.type,
-        error: 'Agent is shutting down — task rejected',
-        correlationId,
-      };
+      return this.shuttingDownResult(task, correlationId);
+    }
+
+    // ── Idempotency check (#payment-idempotency) ─────────────────────────────
+    if (task.idempotencyKey) {
+      const existing = getIdempotencyResult(task.idempotencyKey, task.payload);
+      if (existing === { conflict: true }) {
+        return {
+          success: false,
+          taskType: task.type,
+          error: `Idempotency key "${task.idempotencyKey}" already used with a different payload`,
+          errorType: 'IdempotencyConflict',
+          correlationId,
+        };
+      }
+      if (existing) {
+        taskLog.info(
+          { idempotencyKey: task.idempotencyKey },
+          'Returning cached result for idempotent request'
+        );
+        return { ...existing, correlationId };
+      }
     }
 
     // ── Concurrency rate limit — queue when saturated if queueCapacity allows,
@@ -898,8 +1038,14 @@ export class PayFiAgent extends EventEmitter {
           },
           'Agent at capacity — task queued'
         );
+        this.emit('task:queued', {
+          taskType: task.type,
+          correlationId,
+          queueLength: this.taskQueue.length + 1,
+        });
         return new Promise<AgentResult>((resolve) => {
           this.taskQueue.push({ task, correlationId, resolve });
+          queueDepth.set(this.taskQueue.length);
         });
       }
 
@@ -911,6 +1057,7 @@ export class PayFiAgent extends EventEmitter {
         },
         'Task rejected — max concurrent tasks reached'
       );
+      recordTask(task.type, 'rejected');
       return {
         success: false,
         taskType: task.type,
@@ -921,7 +1068,24 @@ export class PayFiAgent extends EventEmitter {
       };
     }
 
-    return this.executeTask(task, correlationId, taskLog);
+    return this.executeInstrumented(task, correlationId, taskLog);
+  }
+
+  /**
+   * Run executeTask() and record its outcome and latency in the Prometheus
+   * metrics (backend/metrics.ts). Kept outside executeTask() so every exit
+   * path — success, tool failure, middleware throw — is counted exactly once.
+   */
+  private async executeInstrumented(
+    task: AgentTask,
+    correlationId: string,
+    taskLog: ReturnType<typeof createLogger>
+  ): Promise<AgentResult> {
+    const startedAt = process.hrtime.bigint();
+    const result = await this.executeTask(task, correlationId, taskLog);
+    const durationSeconds = Number(process.hrtime.bigint() - startedAt) / 1e9;
+    recordTask(task.type, result.success ? 'success' : 'failure', durationSeconds);
+    return result;
   }
 
   /**
@@ -932,8 +1096,9 @@ export class PayFiAgent extends EventEmitter {
     if (this.taskQueue.length === 0) return;
     if (this.activeTasks >= config.MAX_CONCURRENT_TASKS) return;
     const next = this.taskQueue.shift();
+    queueDepth.set(this.taskQueue.length);
     if (!next) return;
-    void this.executeTask(
+    void this.executeInstrumented(
       next.task,
       next.correlationId,
       createLogger('orchestrator', next.correlationId)
@@ -947,6 +1112,7 @@ export class PayFiAgent extends EventEmitter {
     taskLog: ReturnType<typeof createLogger>
   ): Promise<AgentResult> {
     this.activeTasks++;
+    this.emit('task:started', { taskType: task.type, correlationId });
     taskLog.info({ taskType: task.type }, "Running task");
     try {
       let data: unknown;
@@ -966,6 +1132,7 @@ export class PayFiAgent extends EventEmitter {
           break;
         }
     const startMs = Date.now();
+
     taskLog.info({ taskType: task.type }, 'Running task');
 
     // ── Compose middleware chain ────────────────────────────────────────────────
@@ -1009,19 +1176,6 @@ export class PayFiAgent extends EventEmitter {
             data = await this.sorobanQueryTool.query(task.payload);
             break;
 
-        case "x402_respond": {
-          // issue #729 — reserve before submit, commit/release after
-          const p = task.payload as Record<string, unknown>;
-          const reservationId = reserveSpendingLimit(p?.amount);
-          try {
-            data = await this.x402Tool.respond(task.payload);
-            if (reservationId !== null) spendingTracker.commit(reservationId);
-          } catch (toolErr) {
-            if (reservationId !== null) spendingTracker.release(reservationId);
-            throw toolErr;
-          }
-          break;
-        }
           case 'x402_respond': {
             const p = task.payload as Record<string, unknown>;
             assertWithinSpendingLimit(p?.amount);
@@ -1037,13 +1191,27 @@ export class PayFiAgent extends EventEmitter {
             data = await this.trustlineTool.execute(task.payload);
             break;
 
-          case 'multisig_payment':
+          case 'multisig_payment': {
+            const p = task.payload as Record<string, unknown>;
+            const sigs = Array.isArray(p?.signatures) ? p.signatures : [];
+            const minSig = typeof p?.minSignatures === 'number' ? p.minSignatures : 1;
+            const willSubmit = sigs.length >= minSig;
+            if (willSubmit) assertWithinSpendingLimit(p?.amount);
             data = await this.multiSigTool.execute(task.payload);
             break;
+          }
 
-          case 'batch_payment':
+          case 'batch_payment': {
+            const p = task.payload as Record<string, unknown>;
+            const payments = Array.isArray(p?.payments) ? p.payments : [];
+            const batchTotal = payments.reduce((sum: number, pay: unknown) => {
+              const amt = parseFloat((pay as Record<string, unknown>)?.amount as string);
+              return sum + (isNaN(amt) ? 0 : amt);
+            }, 0);
+            assertWithinSpendingLimit(String(batchTotal));
             data = await this.batchPaymentTool.execute(task.payload);
             break;
+          }
 
           case 'balance_check': {
             const balanceCheckTool = this.balanceCheckTool as {
@@ -1060,57 +1228,26 @@ export class PayFiAgent extends EventEmitter {
             break;
           }
 
-          case 'path_payment':
+          case 'path_payment': {
+            const p = task.payload as Record<string, unknown>;
+            assertWithinSpendingLimit(p?.sendAmount);
             data = await this.pathPaymentTool.execute(task.payload);
             break;
-
-        case "multisig_payment": {
-          // issue #728 — multisig_payment was unguarded; apply spending limit
-          // Only guard when enough signatures are present (i.e., the tx will be submitted).
-          // When returning unsignedXDR no funds move, so no reservation needed.
-          const p = task.payload as Record<string, unknown>;
-          const sigs = Array.isArray(p?.signatures) ? p.signatures : [];
-          const minSig = typeof p?.minSignatures === "number" ? p.minSignatures : 1;
-          const willSubmit = sigs.length >= minSig;
-          const reservationId = willSubmit ? reserveSpendingLimit(p?.amount) : null;
-          try {
-            data = await this.multiSigTool.execute(task.payload);
-            if (reservationId !== null) spendingTracker.commit(reservationId);
-          } catch (toolErr) {
-            if (reservationId !== null) spendingTracker.release(reservationId);
-            throw toolErr;
           }
-          break;
-        }
 
-        case "batch_payment": {
-          // issue #728 — batch_payment had its own aggregate check but never
-          // recorded into the rolling window. Compute total, reserve it, then
-          // commit/release based on submission outcome.
-          const p = task.payload as Record<string, unknown>;
-          const payments = Array.isArray(p?.payments) ? p.payments : [];
-          const batchTotal = payments.reduce((sum: number, pay: unknown) => {
-            const amt = parseFloat((pay as Record<string, unknown>)?.amount as string);
-            return sum + (isNaN(amt) ? 0 : amt);
-          }, 0);
-          const batchTotalStr = String(batchTotal);
-          const reservationId = reserveSpendingLimit(batchTotalStr);
-          try {
-            data = await this.batchPaymentTool.execute(task.payload);
-            if (reservationId !== null) spendingTracker.commit(reservationId);
-          } catch (toolErr) {
-            if (reservationId !== null) spendingTracker.release(reservationId);
-            throw toolErr;
-          }
-          break;
-        }
           case 'fee_bump':
             data = await this.feeBumpTool.execute(task.payload);
             break;
 
-          case 'dex_offer':
+          case 'dex_offer': {
+            const p = task.payload as Record<string, unknown>;
+            // Only guard non-zero amounts (delete action sets amount to "0")
+            if (p?.amount && p.amount !== '0') {
+              assertWithinSpendingLimit(p?.amount);
+            }
             data = await this.dexOfferTool.execute(task.payload);
             break;
+          }
 
           case 'swap':
             data = await this.swapTool.execute(task.payload);
@@ -1118,53 +1255,6 @@ export class PayFiAgent extends EventEmitter {
 
           case 'account_history':
             data = await this.accountHistoryTool.fetch(task.payload);
-            break;
-
-        case "path_payment": {
-          // issue #728 — path_payment was entirely unguarded; sendAmount is the
-          // field that moves funds.
-          const p = task.payload as Record<string, unknown>;
-          const reservationId = reserveSpendingLimit(p?.sendAmount);
-          try {
-            data = await this.pathPaymentTool.execute(task.payload);
-            if (reservationId !== null) spendingTracker.commit(reservationId);
-          } catch (toolErr) {
-            if (reservationId !== null) spendingTracker.release(reservationId);
-            throw toolErr;
-          }
-          break;
-        }
-
-        case "fee_bump": {
-          // issue #728 — fee_bump pays fees on behalf of the inner tx; the fee
-          // is not a user-specified numeric field, so we guard the baseFeeMultiplier
-          // signal by checking against a sentinel value.  The inner-tx fee is
-          // typically < 1 XLM and not tracked; this guard prevents runaway
-          // fee-bump usage from bypassing the window entirely.
-          // We skip the spending-limit guard for fee_bump because its cost is
-          // denominated in stroops (fractions of XLM) and the tool validates
-          // the multiplier itself.  The task type is included in the window
-          // audit log via taskLog below.
-          data = await this.feeBumpTool.execute(task.payload);
-          break;
-        }
-
-        case "dex_offer": {
-          // issue #728 — dex_offer sell-amount moves funds; guard the amount field.
-          // delete actions set amount to "0" internally so they pass through.
-          const p = task.payload as Record<string, unknown>;
-          const reservationId = reserveSpendingLimit(p?.amount);
-          try {
-            data = await this.dexOfferTool.execute(task.payload);
-            if (reservationId !== null) spendingTracker.commit(reservationId);
-          } catch (toolErr) {
-            if (reservationId !== null) spendingTracker.release(reservationId);
-            throw toolErr;
-          }
-          break;
-        }
-          case 'transaction_build':
-            data = await this.transactionBuilderTool.execute(task.payload);
             break;
 
           case 'soroban_deploy':
@@ -1219,21 +1309,26 @@ export class PayFiAgent extends EventEmitter {
             throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
         }
 
-        const ctx: ToolContext = {
+        // ── Persist successful result with duration ───────────────────────────────
+        const durationMs = Date.now() - startMs;
+        taskLog.info({ taskType: task.type, durationMs }, 'Task completed');
+        const result: AgentResult = {
+          success: true,
+          taskType: task.type,
+          data,
           correlationId,
-          logger: taskLog,
-          network: config.STELLAR_NETWORK,
-          assertWithinSpendingLimit,
+          durationMs,
         };
-        const input = tool.inputSchema.parse(task.payload);
-        const data: unknown = await tool.execute(input, ctx);
-
-        taskLog.info({ taskType: task.type }, 'Task completed');
-        const result: AgentResult = { success: true, taskType: task.type, data, correlationId };
         this.emit('task:complete', result);
 
+        // Persist result for all paths (#failed-results-persistence)
         const timestamp = new Date().toISOString();
         saveResult({ ...result, timestamp });
+
+        // Store idempotency result if key provided (#payment-idempotency)
+        if (task.idempotencyKey) {
+          saveIdempotencyResult(task.idempotencyKey, task.type, task.payload, result);
+        }
 
         // The transaction is already on-chain at this point, so an audit-log
         // failure is logged loudly rather than reported as a task failure that
@@ -1261,14 +1356,26 @@ export class PayFiAgent extends EventEmitter {
           { taskType: task.type, error: safe, sanitizedPayload: sanitized },
           'Task failed'
         );
+        const durationMs = Date.now() - startMs;
         const result: AgentResult = {
           success: false,
           taskType: task.type,
           error: safe,
           errorType: getErrorType(err),
           correlationId,
+          durationMs,
         };
         this.emit('task:failed', result);
+
+        // Persist failed result (#failed-results-persistence)
+        const timestamp = new Date().toISOString();
+        saveResult({ ...result, timestamp });
+
+        // Store idempotency result for failures too (#payment-idempotency)
+        if (task.idempotencyKey) {
+          saveIdempotencyResult(task.idempotencyKey, task.type, task.payload, result);
+        }
+
         void dispatchWebhook(result);
         return result;
       }
@@ -1284,7 +1391,11 @@ export class PayFiAgent extends EventEmitter {
     }
 
     try {
-      return await chain();
+      // Lets rpc_client emit task:retry / tx:* on this agent for this task.
+      return await taskContext.run(
+        { taskType: task.type, correlationId, emit: this.emit.bind(this) },
+        chain
+      );
     } catch (err) {
       const durationMs = Date.now() - startMs;
       const safe = redactSecretString(describeError(err));
@@ -1304,16 +1415,32 @@ export class PayFiAgent extends EventEmitter {
         error: safe,
         errorType: getErrorType(err),
         correlationId,
-      };
-      this.emit("task:failed", result);
         durationMs,
       };
       this.emit('task:failed', result);
-      void dispatchWebhook(result);
-      return result;
-    } finally {
-      this.activeTasks--;
-      this.dispatchQueued();
-    }
+
+        // Persist middleware failure result (#failed-results-persistence)
+        const timestamp = new Date().toISOString();
+        saveResult({ ...result, timestamp });
+
+        // Store idempotency result for middleware failures too (#payment-idempotency)
+        if (task.idempotencyKey) {
+          saveIdempotencyResult(task.idempotencyKey, task.type, task.payload, result);
+        }
+
+        void dispatchWebhook(result);
+        return result;
+      } finally {
+        this.activeTasks--;
+        this.dispatchQueued();
+        // Periodically prune expired idempotency keys
+        if (Math.random() < 0.01) {
+          try {
+            pruneIdempotencyKeys();
+          } catch {
+            // Ignore pruning errors - it's a cleanup operation
+          }
+        }
+      }
   }
 }

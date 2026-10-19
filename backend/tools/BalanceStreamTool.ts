@@ -114,12 +114,15 @@ export class BalanceStreamTool {
     this.reconnectAttempts++;
     const maxReconnectAttempts = this.options.maxReconnectAttempts ?? 5;
 
-    logger.warn('BalanceStreamTool stream error, attempting reconnect', {
-      publicKey,
-      reconnectAttempts: this.reconnectAttempts,
-      maxReconnectAttempts,
-      error: error?.message ?? String(error),
-    });
+    logger.warn(
+      {
+        publicKey,
+        reconnectAttempts: this.reconnectAttempts,
+        maxReconnectAttempts,
+        error: error?.message ?? String(error),
+      },
+      'BalanceStreamTool stream error, attempting reconnect'
+    );
 
     if (this.reconnectAttempts >= maxReconnectAttempts) {
       // All reconnect attempts exhausted
@@ -134,10 +137,13 @@ export class BalanceStreamTool {
         try {
           this.options.onError(err);
         } catch (callbackErr) {
-          logger.error('BalanceStreamTool onError callback threw', {
-            publicKey,
-            error: (callbackErr as Error).message,
-          });
+          logger.error(
+            {
+              publicKey,
+              error: (callbackErr as Error).message,
+            },
+            'BalanceStreamTool onError callback threw'
+          );
         }
       }
 

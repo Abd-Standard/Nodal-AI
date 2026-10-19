@@ -5,7 +5,7 @@
 #   1. rust-builder   — compiles Soroban contract → .wasm
 #   2. node-builder   — installs deps + compiles TypeScript → dist/
 #   3. prod-deps      — installs production-only node_modules on Alpine/musl
-#   4. production     — node:20-alpine runtime with compiled artefacts only
+#   4. production     — node:22-alpine runtime with compiled artefacts only
 # =============================================================================
 
 # ─── Stage 1: Soroban / Rust contract build ───────────────────────────────────
@@ -56,7 +56,7 @@ RUN WASM=contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_es
     fi
 
 # ─── Stage 2: Node.js / TypeScript build ──────────────────────────────────────
-FROM node:20-slim AS node-builder
+FROM node:22-slim AS node-builder
 
 WORKDIR /build
 
@@ -76,7 +76,7 @@ RUN npm run build
 # Installed on the same musl base as the final image so native modules
 # (e.g. better-sqlite3) resolve/link correctly; kept out of the final stage
 # so no compiler toolchain ships in the production image.
-FROM node:20-alpine AS prod-deps
+FROM node:22-alpine AS prod-deps
 
 WORKDIR /build
 
@@ -91,7 +91,7 @@ RUN npm ci --omit=dev --ignore-scripts && \
     npm cache clean --force
 
 # ─── Stage 4: Production image ────────────────────────────────────────────────
-FROM node:20-alpine AS production
+FROM node:22-alpine AS production
 
 LABEL org.opencontainers.image.title="Nodal AI Agent"
 LABEL org.opencontainers.image.description="Stellar PayFi Agent Kit"

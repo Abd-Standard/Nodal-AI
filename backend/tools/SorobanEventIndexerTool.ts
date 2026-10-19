@@ -67,7 +67,7 @@ export class SorobanEventIndexerTool {
             startLedger: input.fromLedger,
             endLedger: input.toLedger,
             filters,
-          } as rpc.Server.GetEventsRequest),
+          } as rpc.Api.GetEventsRequest),
         config.MAX_RETRIES,
         config.RETRY_DELAY_MS
       )
