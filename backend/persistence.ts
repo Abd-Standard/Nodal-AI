@@ -100,6 +100,30 @@ function applySchema(db: Database.Database): void {
   if (!cols.some((c) => c.name === 'correlationId')) {
     db.exec(`ALTER TABLE agent_results ADD COLUMN correlationId TEXT`);
   }
+  // Migration for errorType column
+  if (!cols.some((c) => c.name === 'errorType')) {
+    db.exec(`ALTER TABLE agent_results ADD COLUMN errorType TEXT`);
+  }
+  // Migration for durationMs column
+  if (!cols.some((c) => c.name === 'durationMs')) {
+    db.exec(`ALTER TABLE agent_results ADD COLUMN durationMs INTEGER`);
+  }
+  // Idempotency keys table (#payment-idempotency)
+  db.exec(`
+      CREATE TABLE IF NOT EXISTS idempotency_keys (
+        key             TEXT PRIMARY KEY,
+        payloadHash     TEXT NOT NULL,
+        taskType        TEXT NOT NULL,
+        status          TEXT NOT NULL,
+        result          TEXT NOT NULL,
+        createdAt       INTEGER NOT NULL,
+        expiresAt       INTEGER NOT NULL
+      )
+    `);
+  db.exec(`
+      CREATE INDEX IF NOT EXISTS idx_idempotency_expires
+        ON idempotency_keys (expiresAt)
+    `);
 }
 
 /**
@@ -148,8 +172,8 @@ export function probeDb(): void {
 export function saveResult(result: PersistedResult): void {
   getDb()
     .prepare(
-      `INSERT INTO agent_results (timestamp, taskType, success, data, error, correlationId)
-       VALUES (@timestamp, @taskType, @success, @data, @error, @correlationId)`
+      `INSERT INTO agent_results (timestamp, taskType, success, data, error, errorType, correlationId, durationMs)
+       VALUES (@timestamp, @taskType, @success, @data, @error, @errorType, @correlationId, @durationMs)`
     )
     .run({
       timestamp: result.timestamp,
@@ -157,24 +181,28 @@ export function saveResult(result: PersistedResult): void {
       success: result.success ? 1 : 0,
       data: result.data !== undefined ? JSON.stringify(result.data) : null,
       error: result.error ?? null,
+      errorType: result.errorType ?? null,
       correlationId: result.correlationId ?? null,
+      durationMs: result.durationMs ?? null,
     });
 }
 
 export function getResults(limit = 100, offset = 0): PersistedResult[] {
   const rows = getDb()
     .prepare(
-      `SELECT timestamp, taskType, success, data, error, correlationId
+      `SELECT timestamp, taskType, success, data, error, errorType, correlationId, durationMs
        FROM agent_results ORDER BY id DESC LIMIT ? OFFSET ?`
     )
     .all(limit, offset) as Array<{
-    timestamp: string;
-    taskType: string;
-    success: number;
-    data: string | null;
-    error: string | null;
-    correlationId: string | null;
-  }>;
+      timestamp: string;
+      taskType: string;
+      success: number;
+      data: string | null;
+      error: string | null;
+      errorType: string | null;
+      correlationId: string | null;
+      durationMs: number | null;
+    }>;
 
   return rows.map((r) => {
     const result: PersistedResult = {
@@ -184,7 +212,9 @@ export function getResults(limit = 100, offset = 0): PersistedResult[] {
       data: r.data !== null ? JSON.parse(r.data) : undefined,
     };
     if (r.error !== null) result.error = r.error;
+    if (r.errorType !== null) result.errorType = r.errorType;
     if (r.correlationId !== null) result.correlationId = r.correlationId;
+    if (r.durationMs !== null) result.durationMs = r.durationMs;
     return result;
   });
 }
@@ -535,6 +565,117 @@ export function getApprovalAuditLog(): ApprovalAuditRow[] {
   return getDb()
     .prepare(`SELECT approvalId, decision, ts FROM approval_audit_log ORDER BY id ASC`)
     .all() as ApprovalAuditRow[];
+}
+
+/**
+ * Compute SHA-256 hash of the payload for idempotency comparison.
+ */
+function computePayloadHash(payload: unknown): string {
+  return createHash('sha256')
+    .update(JSON.stringify(payload))
+    .digest('hex');
+}
+
+/**
+ * Result status for idempotency tracking.
+ */
+type IdempotencyStatus = 'pending' | 'success' | 'failure';
+
+/**
+ * Stored idempotency record.
+ */
+interface IdempotencyRecord {
+  key: string;
+  payloadHash: string;
+  taskType: string;
+  status: IdempotencyStatus;
+  result: AgentResult;
+  createdAt: number;
+  expiresAt: number;
+}
+
+/**
+ * Check if an idempotency key exists and is valid (not expired).
+ * Returns the stored result if the key exists with the same payload hash.
+ * Returns { conflict: true } if the key exists but payload differs.
+ * Returns null if the key doesn't exist or has expired.
+ */
+export function getIdempotencyResult(
+  key: string,
+  payload: unknown
+): AgentResult | { conflict: true } | null {
+  const db = getDb();
+  const row = db
+    .prepare(
+      `SELECT payloadHash, taskType, status, result, expiresAt
+       FROM idempotency_keys WHERE key = ?`
+    )
+    .get(key) as
+    | {
+        payloadHash: string;
+        taskType: string;
+        status: IdempotencyStatus;
+        result: string;
+        expiresAt: number;
+      }
+    | undefined;
+
+  if (!row) return null;
+
+  // Check if expired
+  if (Date.now() > row.expiresAt) {
+    // Clean up expired key
+    db.prepare(`DELETE FROM idempotency_keys WHERE key = ?`).run(key);
+    return null;
+  }
+
+  // Check payload hash match
+  const payloadHash = computePayloadHash(payload);
+  if (row.payloadHash !== payloadHash) {
+    return { conflict: true };
+  }
+
+  // Return stored result
+  return JSON.parse(row.result) as AgentResult;
+}
+
+/**
+ * Store an idempotency key with the result.
+ * Keys expire after 24 hours.
+ */
+export function saveIdempotencyResult(
+  key: string,
+  taskType: string,
+  payload: unknown,
+  result: AgentResult
+): void {
+  const db = getDb();
+  const now = Date.now();
+  const expiresAt = now + 24 * 60 * 60 * 1000; // 24 hours
+
+  db.prepare(
+    `INSERT OR REPLACE INTO idempotency_keys
+       (key, payloadHash, taskType, status, result, createdAt, expiresAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?)`
+  ).run(
+    key,
+    computePayloadHash(payload),
+    taskType,
+    result.success ? 'success' : 'failure',
+    JSON.stringify(result),
+    now,
+    expiresAt
+  );
+}
+
+/**
+ * Prune expired idempotency keys. Called periodically to clean up old entries.
+ */
+export function pruneIdempotencyKeys(): number {
+  const db = getDb();
+  const now = Date.now();
+  const result = db.prepare(`DELETE FROM idempotency_keys WHERE expiresAt < ?`).run(now);
+  return result.changes;
 }
 
 /** Replace the underlying DB instance — used in tests to inject an in-memory DB. */

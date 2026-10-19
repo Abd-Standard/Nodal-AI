@@ -30,6 +30,8 @@ export enum ErrorType {
   PendingApproval = 'PENDING_APPROVAL',
   /** The payment destination is not permitted by PAYMENT_DESTINATION_POLICY. */
   PolicyViolation = 'POLICY_VIOLATION',
+  /** An idempotency key was reused with a different payload. */
+  IdempotencyConflict = 'IDEMPOTENCY_CONFLICT',
   UnknownError = 'UNKNOWN_ERROR',
 }
 
