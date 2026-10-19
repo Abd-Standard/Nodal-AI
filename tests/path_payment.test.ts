@@ -327,3 +327,78 @@ describe('PathPaymentTool', () => {
     agent.destroy();
   });
 });
+
+// ─── Auto path discovery + slippage protection (#789) ────────────────────────
+
+describe('PathPaymentTool auto path and slippage', () => {
+  let tool: PathPaymentTool;
+
+  const pathRecords = [
+    { destination_amount: '9.0000000', path: [] },
+    {
+      destination_amount: '10.0000000',
+      path: [{ asset_type: 'credit_alphanum4', asset_code: 'USD', asset_issuer: USDC_ISSUER }],
+    },
+  ];
+
+  function submittedOp(): any {
+    return vi.mocked(rpcClient.submitTransaction).mock.calls[0]![0].operations[0];
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tool = new PathPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
+    vi.mocked(rpcClient.submitTransaction).mockResolvedValue({ hash: 'h', ledger: 1 } as any);
+    vi.mocked(rpcClient.horizonServer.strictSendPaths as any).mockReturnValue({
+      call: vi.fn().mockResolvedValue({ records: pathRecords }),
+    });
+  });
+
+  const baseInput = {
+    destination: VALID_DEST,
+    sendAsset: { code: 'XLM' },
+    sendAmount: '10',
+    destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+  };
+
+  it('picks the best path and derives destMin with the default 50 bps', async () => {
+    await tool.execute(baseInput);
+
+    const op = submittedOp();
+    expect(op.type).toBe('pathPaymentStrictSend');
+    expect(op.destMin).toBe('9.9500000');
+    expect(op.path).toHaveLength(1);
+    expect(op.path[0].code).toBe('USD');
+  });
+
+  it('applies a caller-supplied maxSlippageBps', async () => {
+    await tool.execute({ ...baseInput, maxSlippageBps: 100 });
+    expect(submittedOp().destMin).toBe('9.9000000');
+  });
+
+  it('keeps an explicit destMinAmount and path without querying Horizon', async () => {
+    await tool.execute({
+      ...baseInput,
+      destMinAmount: '8',
+      path: [{ code: 'USD', issuer: USDC_ISSUER }],
+    });
+
+    expect(rpcClient.horizonServer.strictSendPaths).not.toHaveBeenCalled();
+    expect(submittedOp().destMin).toBe('8.0000000');
+  });
+
+  it.each([-1, 1001, 2.5])('rejects maxSlippageBps %s', async (maxSlippageBps) => {
+    await expect(tool.execute({ ...baseInput, maxSlippageBps })).rejects.toThrow(/maxSlippageBps/);
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts the 0 and 1000 bps bounds', async () => {
+    await tool.execute({ ...baseInput, maxSlippageBps: 0 });
+    expect(submittedOp().destMin).toBe('10.0000000');
+
+    vi.mocked(rpcClient.submitTransaction).mockClear();
+    await tool.execute({ ...baseInput, maxSlippageBps: 1000 });
+    expect(submittedOp().destMin).toBe('9.0000000');
+  });
+});

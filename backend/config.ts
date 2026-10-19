@@ -516,6 +516,12 @@ export interface AgentConfig {
   readonly MAX_SOROBAN_FEE_STROOPS: number;
 
   /**
+   * Maximum per-operation inclusion fee in stroops that estimateFee() will
+   * bid, including on a fee-bump surge retry. Defaults to 100_000 (0.01 XLM).
+   */
+  readonly MAX_FEE_STROOPS: number;
+
+  /**
    * Maximum number of tasks allowed to execute concurrently in agent.run().
    * Additional tasks submitted while this many are in flight are rejected.
    * Defaults to 10.

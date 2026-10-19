@@ -6,14 +6,7 @@
  * Never broadcasts without a prior simulation pass.
  */
 
-import {
-  Horizon,
-  TransactionBuilder,
-  Operation,
-  Asset,
-  BASE_FEE,
-  Memo,
-  } from '@stellar/stellar-sdk';
+import { Horizon, TransactionBuilder, Operation, Asset, Memo } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
 import { createAgentSigner, Signer } from '../signer';
@@ -39,7 +32,9 @@ export type SubmitResult = z.infer<typeof SubmitResultSchema>;
 /**
  * Zod schema for payment input validation.
  *
- * @property destination - 56-character Stellar public key (G...) of the recipient
+ * @property destination - Recipient: a Stellar public key (G...), a muxed account (M...),
+ *   or a federation address (name*domain.com). A memo required by the federation
+ *   server is attached automatically.
  * @property amount - Positive decimal string with up to 7 decimal places (Stellar network limit)
  * @property assetCode - Asset code (default: "XLM")
  * @property assetIssuer - Asset issuer public key (required for non-XLM assets)
@@ -48,7 +43,7 @@ export type SubmitResult = z.infer<typeof SubmitResultSchema>;
  */
 export const PaymentInputSchema = z
   .object({
-    destination: stellarPublicKeySchema('Destination'),
+    destination: paymentDestinationSchema('Destination'),
     amount: z
       .string()
       // Negative-lookahead rejects "0" and all zero-value decimals ("0.0", "0.0000000")
@@ -192,8 +187,18 @@ export class StellarPaymentTool {
     // 1. Validate input
     const input = PaymentInputSchema.parse(rawInput);
 
+    // Resolve federation addresses to an account and the memo the receiver requires
+    const { accountId: destination, memo: federationMemo } = await resolveDestination(
+      input.destination
+    );
+    if (federationMemo && input.memo !== undefined) {
+      throw new ValidationError(
+        `${input.destination} requires a federation memo; do not also supply a memo`
+      );
+    }
+
     // Self-payment guard
-    if (input.destination === this.signer.publicKey()) {
+    if (baseAccountId(destination) === this.signer.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 
@@ -214,21 +219,24 @@ export class StellarPaymentTool {
 
     // 3. Load source account (latest sequence number)
     let sourceAccount = await loadAccount(this.signer.publicKey());
+    const fee = await estimateFee();
 
     // 4. Build transaction
     const buildTx = () => {
       const builder = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE, // BASE_FEE (100 stroops) is the actual fee for classic Stellar payments — not overwritten
+        fee,
         networkPassphrase: this.networkPassphrase,
       }).addOperation(
         Operation.payment({
-          destination: input.destination,
+          destination,
           asset,
           amount: input.amount,
         })
       );
 
-      if (input.memo !== undefined) {
+      if (federationMemo) {
+        builder.addMemo(federationMemo);
+      } else if (input.memo !== undefined) {
         const memo = buildMemo(input.memoType, input.memo);
         if (memo) {
           builder.addMemo(memo);
@@ -256,11 +264,17 @@ export class StellarPaymentTool {
     // 6. Sign
     this.signer.signTransaction(tx);
 
-    // 7. Submit (with auto-retry on tx_bad_seq)
+    // 7. Submit (with auto-retry on tx_bad_seq, fee-bump retry on tx_insufficient_fee)
     try {
       const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
+      if (isInsufficientFeeError(err)) {
+        const result = SubmitResultSchema.parse(
+          await submitFeeBumped(tx, this.signer, this.networkPassphrase)
+        );
+        return { txHash: result.hash, ledger: result.ledger };
+      }
       if (err instanceof Error && err.message.includes('tx_bad_seq')) {
         logger.warn(
           {

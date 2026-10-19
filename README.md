@@ -511,14 +511,14 @@ interface AgentTask {
 ```
 
 Input wrapper for task dispatch. The `payload` shape depends on `type`:
-- `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }`
+- `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }` (`destination` may be a G-address, a muxed M-address, or a federation address `name*domain.com`; a federation-required memo is attached automatically)
 - `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; simulateOnly?: boolean; ... }`
 - `x402_respond`: `{ resource: string; amount: string; assetCode?: string; assetIssuer?: string; payTo: string; nonce: string; expiresAt: string }`
 - `change_trust`: `{ assetCode: string; assetIssuer: string; action: "add" | "remove"; limit?: string }`
 - `batch_payment`: `{ payments: PaymentInput[] }` (max 100 payments; aggregate spending limit enforced)
 - `multisig_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string; additionalSigners: string[]; minSignatures: number; signatures?: string[] }`
 - `dex_offer`: `{ action: "create" | "update" | "delete"; selling: Asset; buying: Asset; amount: string; price: string; offerId?: string | number }`
-- `path_payment`: `{ destination: string; sendAsset: Asset; sendMax: string; destAsset: Asset; destAmount: string; ... }`
+- `path_payment`: `{ destination: string; sendAsset: Asset; sendAmount: string; destAsset: Asset; destMinAmount?: string; maxSlippageBps?: number; path?: Asset[]; ... }` (omit `path`/`destMinAmount` to discover the best path and derive `destMinAmount` from its quote less `maxSlippageBps`, 0–1000, default 50)
 - `fee_bump`: `{ innerTx: string; feeAccount: string; maxFee: string }`
 - `account_info`: `{ publicKey?: string }`
 - `inflation` (**deprecated**, removed in the next minor release — inflation is disabled on Stellar since protocol 12; read the value from `account_info`'s `inflationDestination`): `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
