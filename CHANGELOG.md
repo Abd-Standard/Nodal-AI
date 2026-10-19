@@ -15,6 +15,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - CHANGELOG.md following Keep a Changelog format for tracking releases and changes
 - `SorobanInvokeTool` now enforces the spending limit on contract invocations: simulated Stellar Asset Contract transfers that debit the agent are summed from the mandatory Soroban simulation and checked against `AGENT_SPENDING_LIMIT` (and the mainnet cap) before broadcast, and within-limit spends are recorded into the cumulative spending window
 
+- `cross_border_payment` task (`CrossBorderPaymentTool`, #784): SEP-31 payment as the sending anchor, with SEP-12 KYC submission (SEP-9 field validation plus the anchor's required fields, `KycValidationError`), an optional SEP-38 firm quote, SEP-31 transaction creation, and the on-chain payment with the anchor-provided memo
+- SEP-45 Web Auth for contract (`C…`) accounts in `stellar_identity_auth` (#785): the challenge's authorization entries are verified (web-auth contract, `web_auth_verify` args, server signature) and the contract account's entry is signed through the `Signer`
+- `toCaip2()` / `fromCaip2()` CAIP-2 network helpers in `backend/network.ts` (#775); x402 challenges may carry a CAIP-2 `network`, which must match the agent's network
+- `X402_ASSET_CONTRACT` (#776): the x402 asset's Stellar Asset Contract address (`C…`), derived from `X402_ASSET_CODE` + `X402_ASSET_ISSUER` and the network when unset, and validated against that derivation when set
+
+### Changed
+
+- x402 payment proofs report `network` as a CAIP-2 ID (`stellar:testnet`, `stellar:pubnet`, `stellar:futurenet`) instead of `testnet` / `mainnet` / `futurenet` (#775). `verify()` rejects a proof for another network.
+
 ### Fixed
 
 - Quick Start code blocks in README.md — commands are now properly enclosed in fenced code blocks

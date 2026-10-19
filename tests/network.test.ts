@@ -6,6 +6,8 @@ import {
   handleRateLimitResponse,
   getBackoffStatus,
   withBackoffGuard,
+  toCaip2,
+  fromCaip2,
 } from '../backend/network';
 
 describe('Network Rate Limiting', () => {
@@ -150,5 +152,22 @@ describe('withBackoffGuard queuing behaviour', () => {
     await expect(resultPromise).rejects.toThrow(/superseded/i);
     expect(fn).not.toHaveBeenCalled();
     expect(getBackoffStatus().queueSize).toBe(0);
+  });
+});
+
+describe('CAIP-2 network identifiers (#775)', () => {
+  it.each([
+    ['testnet', 'stellar:testnet'],
+    ['mainnet', 'stellar:pubnet'],
+    ['futurenet', 'stellar:futurenet'],
+  ])('maps %s <-> %s', (network, caip2) => {
+    expect(toCaip2(network)).toBe(caip2);
+    expect(fromCaip2(caip2)).toBe(network);
+  });
+
+  it('rejects unknown networks and identifiers', () => {
+    expect(() => toCaip2('pubnet')).toThrow(/Unknown Stellar network/);
+    expect(() => fromCaip2('testnet')).toThrow(/Unknown Stellar CAIP-2/);
+    expect(() => fromCaip2('eip155:1')).toThrow(/Unknown Stellar CAIP-2/);
   });
 });

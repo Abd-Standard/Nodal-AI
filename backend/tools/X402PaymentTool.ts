@@ -10,7 +10,7 @@ import Database from 'better-sqlite3';
 import { config } from '../config';
 import { createAgentSigner, Signer } from '../signer';
 import { horizonServer, withRetry } from '../rpc_client';
-import { withBackoffGuard } from '../network';
+import { Caip2NetworkId, fromCaip2, toCaip2, withBackoffGuard } from '../network';
 import { StellarPaymentTool } from './StellarPaymentTool';
 import { buildMemo } from './MemoAttachmentTool';
 import { logger } from '../logger';
@@ -52,6 +52,8 @@ export const X402ChallengeSchema = z
     payTo: stellarPublicKeySchema('payTo'),
     nonce: z.string().uuid('Nonce must be a UUID v4'),
     expiresAt: z.string().datetime(),
+    /** CAIP-2 network the payment must settle on, e.g. `stellar:testnet` (x402 v2). */
+    network: z.string().optional(),
   })
   .refine((data) => data.assetCode === 'XLM' || !!data.assetIssuer, {
     message: 'assetIssuer is required for non-XLM payments',
@@ -62,7 +64,8 @@ export type X402Challenge = z.infer<typeof X402ChallengeSchema>;
 
 export interface X402PaymentProof {
   protocol: 'x402';
-  network: string;
+  /** CAIP-2 network the payment settled on, e.g. `stellar:testnet`. */
+  network: Caip2NetworkId;
   txHash: string;
   nonce: string;
   payer: string;
@@ -162,7 +165,8 @@ export class X402PaymentTool {
    *    known asset codes, and amounts above `X402_MAX_PRICE`.
    * 4. If `ALLOWED_X402_ORIGINS` is configured, verify the challenge resource
    *    hostname is in the allow-list.
-   * 5. Reject expired challenges (`expiresAt` < now).
+   * 5. Reject expired challenges (`expiresAt` < now), and challenges whose
+   *    CAIP-2 `network` (when present) is not the agent's network.
    * 6. Delegate to {@link StellarPaymentTool.execute} to sign and submit
    *    the payment, using `SHA-256(nonce)[0:28 hex]` as the transaction memo.
    * 7. Return an {@link X402PaymentProof} with the settled `txHash`.
@@ -196,6 +200,20 @@ export class X402PaymentTool {
     }
 
     assertAcceptableChallengeTerms(challenge);
+
+    if (challenge.network !== undefined) {
+      let challengeNetwork: string;
+      try {
+        challengeNetwork = fromCaip2(challenge.network);
+      } catch {
+        throw new Error(`x402: unsupported network ${challenge.network}`);
+      }
+      if (challengeNetwork !== config.STELLAR_NETWORK) {
+        throw new Error(
+          `x402: challenge is for ${challenge.network}, but the agent is on ${toCaip2(config.STELLAR_NETWORK)}`
+        );
+      }
+    }
 
     if (config.ALLOWED_X402_ORIGINS) {
       const allowedOrigins = config.ALLOWED_X402_ORIGINS.split(',').map((o) => o.trim());
@@ -262,7 +280,7 @@ export class X402PaymentTool {
 
     return {
       protocol: 'x402',
-      network: config.STELLAR_NETWORK,
+      network: toCaip2(config.STELLAR_NETWORK),
       txHash,
       nonce: challenge.nonce,
       payer: this.signer.publicKey(),
@@ -275,6 +293,7 @@ export class X402PaymentTool {
    * transaction that satisfies the original challenge's requirements.
    *
    * Fetches the transaction and its first operation from Horizon and checks:
+   * - `proof.network` is the agent's network as a CAIP-2 ID
    * - destination matches `originalChallenge.payTo`
    * - amount matches `originalChallenge.amount`
    * - asset code matches `originalChallenge.assetCode`
@@ -290,6 +309,10 @@ export class X402PaymentTool {
    *   checks (destination, amount, asset, memo, payer) fail.
    */
   async verify(proof: X402PaymentProof, originalChallenge: X402Challenge): Promise<void> {
+    if (proof.network !== toCaip2(config.STELLAR_NETWORK)) {
+      throw new Error('x402 verification failed: network mismatch');
+    }
+
     const tx = await withBackoffGuard(() =>
       withRetry(
         () => this.horizonServer.transactions().transaction(proof.txHash).call(),

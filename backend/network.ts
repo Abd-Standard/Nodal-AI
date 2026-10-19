@@ -115,6 +115,44 @@ export function getBackoffStatus(): {
   };
 }
 
+// ─── CAIP-2 network identifiers (#775) ─────────────────────────────
+
+/** Network names as configured in STELLAR_NETWORK. */
+export type StellarNetworkName = 'testnet' | 'mainnet' | 'futurenet';
+
+const CAIP2_BY_NETWORK = {
+  testnet: 'stellar:testnet',
+  mainnet: 'stellar:pubnet',
+  futurenet: 'stellar:futurenet',
+} as const satisfies Record<StellarNetworkName, string>;
+
+/** CAIP-2 chain identifier for a Stellar network, as used by x402 v2. */
+export type Caip2NetworkId = (typeof CAIP2_BY_NETWORK)[StellarNetworkName];
+
+/**
+ * CAIP-2 identifier for a configured network name: `testnet` → `stellar:testnet`,
+ * `mainnet` → `stellar:pubnet`, `futurenet` → `stellar:futurenet`.
+ *
+ * @throws Error for an unknown network name.
+ */
+export function toCaip2(network: string): Caip2NetworkId {
+  const id = CAIP2_BY_NETWORK[network as StellarNetworkName];
+  if (!id) throw new Error(`Unknown Stellar network: ${network}`);
+  return id;
+}
+
+/**
+ * Configured network name for a CAIP-2 identifier — the inverse of {@link toCaip2}.
+ *
+ * @throws Error for an identifier that is not a known Stellar CAIP-2 chain ID.
+ */
+export function fromCaip2(id: string): StellarNetworkName {
+  for (const [network, caip2] of Object.entries(CAIP2_BY_NETWORK)) {
+    if (caip2 === id) return network as StellarNetworkName;
+  }
+  throw new Error(`Unknown Stellar CAIP-2 network identifier: ${id}`);
+}
+
 // ─── Internal ──────────────────────────────────────────────────────
 
 function clearBackoff(generation?: number): void {

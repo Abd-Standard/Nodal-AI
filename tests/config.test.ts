@@ -3,7 +3,7 @@ import { execSync } from 'child_process';
 import { mkdtempSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Asset, Keypair, Networks } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 
 // mockSend is declared at file scope so each test can prime it with
@@ -538,5 +538,86 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     }).rejects.toThrow(/process\.exit: 1/);
 
     expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("not-an-address"));
+  });
+});
+
+describe('X402_ASSET_CONTRACT (#776)', () => {
+  let originalEnv: NodeJS.ProcessEnv;
+  let stderrSpy: any;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doMock('@aws-sdk/client-secrets-manager', () => ({
+      SecretsManagerClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
+      GetSecretValueCommand: vi.fn().mockImplementation((args: any) => args),
+    }));
+    originalEnv = { ...process.env };
+    vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+      throw new Error(`process.exit: ${code}`);
+    });
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    process.env.STELLAR_NETWORK = 'testnet';
+    process.env.HORIZON_URL = 'https://horizon-testnet.stellar.org';
+    process.env.SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+    process.env.X402_ASSET_CODE = 'USDC';
+    process.env.X402_ASSET_ISSUER = VALID_ISSUER;
+    process.env.AGENT_SECRET_KEY = VALID_SECRET;
+    delete process.env.AGENT_SECRET_KEY_ARN;
+    delete process.env.X402_ASSET_CONTRACT;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+  });
+
+  const usdcSac = () => new Asset('USDC', VALID_ISSUER).contractId(Networks.TESTNET);
+
+  async function load() {
+    const { configPromise } = await import('../backend/config');
+    return configPromise;
+  }
+
+  it('derives the SAC contract from code + issuer when unset', async () => {
+    const config = await load();
+    expect(config.X402_ASSET_CONTRACT).toBe(usdcSac());
+    expect(config.X402_ASSET_CONTRACT).toMatch(/^C/);
+    expect(config.X402_ASSET_ISSUER).toBe(VALID_ISSUER);
+  });
+
+  it('derives the native XLM SAC when the asset is XLM', async () => {
+    process.env.X402_ASSET_CODE = 'XLM';
+    const config = await load();
+    expect(config.X402_ASSET_CONTRACT).toBe(Asset.native().contractId(Networks.TESTNET));
+  });
+
+  it('derives a different contract per network', async () => {
+    process.env.STELLAR_NETWORK = 'futurenet';
+    const config = await load();
+    expect(config.X402_ASSET_CONTRACT).toBe(
+      new Asset('USDC', VALID_ISSUER).contractId(Networks.FUTURENET)
+    );
+  });
+
+  it('accepts an explicit contract that matches the derivation', async () => {
+    process.env.X402_ASSET_CONTRACT = usdcSac();
+    const config = await load();
+    expect(config.X402_ASSET_CONTRACT).toBe(usdcSac());
+  });
+
+  it('rejects a G-address given as the contract', async () => {
+    process.env.X402_ASSET_CONTRACT = VALID_ISSUER;
+    await expect(load()).rejects.toThrow('process.exit: 1');
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('X402_ASSET_CONTRACT'));
+  });
+
+  it('rejects a contract that is not the SAC for the configured asset and network', async () => {
+    process.env.X402_ASSET_CONTRACT = new Asset('USDC', VALID_ISSUER).contractId(Networks.PUBLIC);
+    await expect(load()).rejects.toThrow('process.exit: 1');
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining('X402_ASSET_CONTRACT is not the Stellar Asset Contract')
+    );
   });
 });
