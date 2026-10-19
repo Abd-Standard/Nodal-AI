@@ -8,20 +8,18 @@
  *
  * Architecture: poll getEvents() → filter by eventTypes → invoke onEvent → repeat
  *
- * IMPORTANT ERROR HANDLING CONTRACT:
- * ----------------------------------
- * This listener emits a 'connectionError' event (not Node's built-in 'error' event)
- * when polling fails after maxReconnectAttempts. This is intentional:
- *
- * 1. Node's EventEmitter emits 'error' with no listener will throw and crash the process
- * 2. We cannot guarantee callers attach an 'error' listener before calling listen()
- * 3. Therefore we emit 'connectionError' as a safe custom event that won't crash
- *
- * Callers SHOULD listen on the returned handle for:
- *   - 'connectionError': Emitted when all reconnect attempts are exhausted
- *   - 'error': Standard EventEmitter error (if you register a listener)
- *
- * Alternatively, pass an onError callback in options to be notified of failures.
+ * API CONTRACT & RETURN VALUE:
+ * ----------------------------
+ * `listen()` returns a `ContractEventListenerHandle` which extends `EventEmitter`
+ * and is also callable as a stop function:
+ * 1. Callable stop function: Calling `handle()` directly stops polling (used by
+ *    callers treating the return value as a cleanup callback, e.g., agent.ts).
+ * 2. Method `handle.stop()`: Explicit stop method.
+ * 3. EventEmitter events:
+ *    - 'error': Emitted when reconnect retries are exhausted (if an 'error' listener is registered).
+ *    - 'connectionError': Emitted when reconnect retries are exhausted.
+ * 4. Callback:
+ *    - Pass an `onError` callback in `options` to be notified of exhaustion directly.
  */
 
 import { EventEmitter } from 'events';
@@ -144,9 +142,16 @@ export function listen(
           timerId = undefined;
         }
 
-        // Use safe custom event instead of Node's 'error' to prevent process crash
-        // when no listener is attached. Callers can also use the onError callback.
         const error = err instanceof Error ? err : new Error(String(err));
+
+        // Emit 'error' event on handle if listeners are registered.
+        // Node's EventEmitter throws unhandled exception if 'error' is emitted with no listener,
+        // so checking listenerCount protects callers that treat handle as a pure stop function.
+        if (handle.listenerCount('error') > 0) {
+          handle.emit('error', error);
+        }
+
+        // Also emit safe custom event 'connectionError'
         handle.emit('connectionError', error);
 
         // Also call the optional onError callback if provided (preferred approach)

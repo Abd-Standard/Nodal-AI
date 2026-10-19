@@ -21,6 +21,7 @@ import { loadAccount, resolveNetworkPassphrase, submitTransaction } from '../rpc
 import { PaymentInputSchema, SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 import { resolveDestination } from '../utils/destination';
+import { toStroops, fromStroops } from '../utils/amount';
 
 export const BatchPaymentInputSchema = z.object({
   payments: z.array(PaymentInputSchema).min(1).max(100),
@@ -37,18 +38,6 @@ export type BatchPaymentInput = z.infer<typeof BatchPaymentInputSchema>;
 // the network's 7-decimal-place amount precision. Summing in stroops (BigInt)
 // instead of parseFloat avoids floating-point rounding error accumulating
 // across up to 100 payment amounts.
-const STROOP_SCALE = 10_000_000n;
-
-function toStroops(decimal: string): bigint {
-  const [whole, fraction = ''] = decimal.split('.');
-  return BigInt(whole) * STROOP_SCALE + BigInt(fraction.padEnd(7, '0'));
-}
-
-function fromStroops(stroops: bigint): string {
-  const whole = stroops / STROOP_SCALE;
-  const fraction = stroops % STROOP_SCALE;
-  return `${whole}.${fraction.toString().padStart(7, '0')}`;
-}
 
 export interface BatchPaymentResult {
   txHash: string;
