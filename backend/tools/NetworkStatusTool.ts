@@ -82,13 +82,16 @@ export class NetworkStatusTool {
       };
     }
 
-    logger.info('Network status queried', {
-      horizonHealthy: horizonHealth.healthy,
-      horizonLatencyMs: horizonHealth.latencyMs,
-      sorobanHealthy: sorobanHealth.healthy,
-      sorobanLatencyMs: sorobanHealth.latencyMs,
-      network: this.network,
-    });
+    logger.info(
+      {
+        horizonHealthy: horizonHealth.healthy,
+        horizonLatencyMs: horizonHealth.latencyMs,
+        sorobanHealthy: sorobanHealth.healthy,
+        sorobanLatencyMs: sorobanHealth.latencyMs,
+        network: this.network,
+      },
+      'Network status queried'
+    );
 
     return {
       horizon: horizonHealth,

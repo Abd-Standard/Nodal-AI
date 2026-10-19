@@ -32,6 +32,7 @@ import { handleError } from './middleware/error_handler';
 import { createLogger } from './utils/logger';
 import { spendingTracker, type PayFiAgent } from './agent';
 import { llmUsage } from './ai/llm';
+import { metricsRegistry, renderMetrics, spendingWindowTotal } from './metrics';
 
 const log = createLogger('health-server');
 
@@ -210,9 +211,16 @@ export function createHealthServer(agent?: PayFiAgent): http.Server {
 
     // ── GET /metrics ───────────────────────────────────────────────────────
     if (req.method === 'GET' && req.url === METRICS_PATH) {
-      if (!isAuthenticated(req)) {
+      if (!isStrictlyAuthenticated(req)) {
         res.writeHead(401, { 'Content-Type': 'application/json' });
         res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+
+      // Prometheus scrapers send `text/plain` / OpenMetrics Accept headers;
+      // only an explicit JSON request gets the legacy JSON snapshot.
+      if (!req.headers['accept']?.includes('application/json')) {
+        void handlePrometheusMetrics(res);
         return;
       }
 
@@ -288,7 +296,8 @@ export function startHealthServer(agent?: PayFiAgent): http.Server {
     process.stdout.write(`✅ [HealthServer] Listening on port ${port}\n`);
     process.stdout.write(
       `   GET /health → { status, components }\n` +
-        `   GET /status → { results: AgentResult[] }\n`
+        `   GET /status → { results: AgentResult[] }\n` +
+        `   GET /metrics → Prometheus text exposition (Bearer auth)\n`
     );
   });
 
@@ -324,6 +333,36 @@ async function handleHealth(_req: http.IncomingMessage, res: http.ServerResponse
     const errorResponse = handleError(err);
     log.error({
       msg: 'Unhandled request error',
+      status: errorResponse.status,
+      type: errorResponse.type,
+    });
+    const body = JSON.stringify(errorResponse);
+    res.writeHead(errorResponse.status, {
+      'Content-Type': 'application/json',
+      'Content-Length': Buffer.byteLength(body),
+      ...errorResponse.headers,
+    });
+    res.end(body);
+  }
+}
+
+/** GET /metrics — Prometheus text exposition of the nodal_* metrics. */
+async function handlePrometheusMetrics(res: http.ServerResponse): Promise<void> {
+  try {
+    // Gauges derived from live state are refreshed at scrape time rather than
+    // on every mutation, so the value is never staler than the scrape itself.
+    spendingWindowTotal.set({ asset: config.X402_ASSET_CODE }, spendingTracker.total());
+
+    const body = await renderMetrics();
+    res.writeHead(200, {
+      'Content-Type': metricsRegistry.contentType,
+      'Content-Length': Buffer.byteLength(body),
+    });
+    res.end(body);
+  } catch (err) {
+    const errorResponse = handleError(err);
+    log.error({
+      msg: 'Failed to render Prometheus metrics',
       status: errorResponse.status,
       type: errorResponse.type,
     });

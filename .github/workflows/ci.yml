@@ -96,6 +96,25 @@ jobs:
       - name: Run Rust tests
         run: cargo test --locked --manifest-path contracts/escrow/Cargo.toml
 
+  # Deep run of the escrow's stateful invariant suite (#815). The regular
+  # test-rust job already runs it with 128 random call sequences per push;
+  # the weekly schedule explores far more sequences.
+  escrow-invariants-deep:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # See test-rust's "Install Rust" step for why this isn't the action.
+      - name: Install Rust
+        run: rustup show
+
+      - name: Run escrow invariant suite (deep)
+        env:
+          ESCROW_INVARIANT_CASES: '4096'
+        run: cargo test --locked --manifest-path contracts/escrow/Cargo.toml prop_
+
   lint-rust:
     runs-on: ubuntu-latest
 

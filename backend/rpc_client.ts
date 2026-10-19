@@ -26,6 +26,7 @@ import {
 import { logger } from './logger';
 import { validateXDR } from './types/xdr';
 import { createLogger } from './utils/logger';
+import { BREAKER_STATE, rpcBreakerState } from './metrics';
 import { isThrottled, handleRateLimitResponse, withBackoffGuard } from './network';
 export { withBackoffGuard } from './network';
 import { withSpan } from './telemetry';
@@ -104,7 +105,10 @@ export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   breaker: CircuitBreaker<TArgs, TResult>,
   name: string
 ): CircuitBreaker<TArgs, TResult> {
+  rpcBreakerState.set({ circuit: name }, BREAKER_STATE.closed);
+
   breaker.on('open', () => {
+    rpcBreakerState.set({ circuit: name }, BREAKER_STATE.open);
     log.warn(
       {
         circuit: name,
@@ -118,6 +122,7 @@ export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
   });
 
   breaker.on('halfOpen', () => {
+    rpcBreakerState.set({ circuit: name }, BREAKER_STATE.halfOpen);
     log.info(
       {
         circuit: name,
@@ -128,6 +133,7 @@ export function attachBreakerTelemetry<TArgs extends unknown[], TResult>(
 
   breaker.on('close', () => {
     resetBreakerStats(breaker);
+    rpcBreakerState.set({ circuit: name }, BREAKER_STATE.closed);
     log.info(
       {
         circuit: name,
@@ -240,11 +246,14 @@ export async function withRetry<T>(
             throw err;
           }
 
-          logger.warn('Retry attempt failed', {
-            attempt,
-            maxRetries: retries,
-            error: (err as Error).message,
-          });
+          logger.warn(
+            {
+              attempt,
+              maxRetries: retries,
+              error: (err as Error).message,
+            },
+            'Retry attempt failed'
+          );
 
           if (attempt < retries) {
             emitTaskEvent('task:retry', {

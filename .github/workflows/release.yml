@@ -26,10 +26,21 @@ jobs:
       - name: Generate changelog
         run: npx conventional-changelog -p angular -i CHANGELOG.md -s
 
+      # Reproducible escrow build (#816). The attached .sha256 is the pinned
+      # hash scripts/deploy_escrow.ts verifies before and after deploying.
+      - name: Install Rust
+        run: rustup show
+
+      - name: Build escrow WASM (reproducible)
+        run: bash scripts/build_escrow_wasm.sh
+
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v2
         with:
           generate_release_notes: true
+          files: |
+            contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm
+            contracts/escrow/target/wasm32-unknown-unknown/release/stellar_payfi_escrow.wasm.sha256
 
       - name: Commit updated CHANGELOG.md to main
         run: |

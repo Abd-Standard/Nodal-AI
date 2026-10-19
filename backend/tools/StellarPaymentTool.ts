@@ -243,12 +243,15 @@ export class StellarPaymentTool {
     // 5. Fee estimation / simulation via Horizon dry-run
     //    (Horizon doesn't expose simulation like Soroban, so we validate
     //     the transaction envelope locally before submission)
-    logger.info('Validating payment envelope', {
-      source: this.signer.publicKey(),
-      destination: input.destination,
-      amount: input.amount,
-      assetCode: input.assetCode,
-    });
+    logger.info(
+      {
+        source: this.signer.publicKey(),
+        destination: input.destination,
+        amount: input.amount,
+        assetCode: input.assetCode,
+      },
+      'Validating payment envelope'
+    );
 
     // 6. Sign
     this.signer.signTransaction(tx);
@@ -259,9 +262,12 @@ export class StellarPaymentTool {
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
       if (err instanceof Error && err.message.includes('tx_bad_seq')) {
-        logger.warn('tx_bad_seq detected, reloading account and retrying once', {
-          source: this.signer.publicKey(),
-        });
+        logger.warn(
+          {
+            source: this.signer.publicKey(),
+          },
+          'tx_bad_seq detected, reloading account and retrying once'
+        );
         // Bypass the account cache: the whole point of this retry is that the
         // sequence we used was wrong, so a cached record must not be reused.
         sourceAccount = await loadAccount(this.signer.publicKey(), { forceRefresh: true });
