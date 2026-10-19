@@ -26,6 +26,7 @@ import { createLogger } from '../utils/logger';
 import { SubmitResultSchema, buildMemo } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
+import { assertDestinationReady } from '../utils/destinationPreflight';
 
 const log = createLogger('path-payment');
 
@@ -90,6 +91,13 @@ export class PathPaymentTool {
 
     const sendAsset = toAsset(input.sendAsset);
     const destAsset = toAsset(input.destAsset);
+
+    // Pre-flight: destination exists, trusts destAsset, and gets any SEP-29 required memo
+    await assertDestinationReady({
+      destination: input.destination,
+      asset: destAsset,
+      hasMemo: input.memo !== undefined,
+    });
     let pathAssets = input.path.map(toAsset);
 
     if (pathAssets.length === 0 && typeof (horizonServer as any)?.strictSendPaths === 'function') {

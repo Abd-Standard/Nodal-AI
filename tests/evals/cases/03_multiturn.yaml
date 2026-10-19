@@ -1,0 +1,137 @@
+---
+# Multi-turn / session context cases (21–30)
+
+id: multiturn-001
+description: Referencing last recipient ("same recipient")
+prompt: "Send the same amount to Bob again"
+expectedTaskTypes:
+  - stellar_payment
+expectedPayloadFields:
+  destination: GBOB123
+recordedOutput:
+  tasks:
+    - type: stellar_payment
+      payload:
+        destination: GBOB123
+        amount: "10"
+        asset: XLM
+---
+id: multiturn-002
+description: Referencing last amount ("same amount")
+prompt: "Send the same amount to Alice"
+expectedTaskTypes:
+  - stellar_payment
+expectedPayloadFields:
+  amount: "10"
+recordedOutput:
+  tasks:
+    - type: stellar_payment
+      payload:
+        destination: GALICE
+        amount: "10"
+        asset: XLM
+---
+id: multiturn-003
+description: Multi-step plan: trustline then payment
+prompt: "Add a trustline to USDC then send 50 USDC to Bob"
+expectedTaskTypes:
+  - change_trust
+  - stellar_payment
+recordedOutput:
+  tasks:
+    - type: change_trust
+      payload:
+        asset: USDC
+    - type: stellar_payment
+      payload:
+        amount: "50"
+        asset: USDC
+---
+id: multiturn-004
+description: Check balance before sending
+prompt: "Check my balance, then send 5 XLM to GDAVE if I have enough"
+expectedTaskTypes:
+  - balance_check
+  - stellar_payment
+recordedOutput:
+  tasks:
+    - type: balance_check
+      payload:
+        asset: XLM
+    - type: stellar_payment
+      payload:
+        amount: "5"
+        destination: GDAVE
+---
+id: multiturn-005
+description: Deploy contract then invoke it
+prompt: "Deploy my token contract and then call its init function"
+expectedTaskTypes:
+  - soroban_deploy
+  - soroban_invoke
+recordedOutput:
+  tasks:
+    - type: soroban_deploy
+      payload: {}
+    - type: soroban_invoke
+      payload:
+        method: init
+---
+id: multiturn-006
+description: Sponsor a new account
+prompt: "Sponsor a new account for Alice"
+expectedTaskTypes:
+  - sponsored_account
+recordedOutput:
+  tasks:
+    - type: sponsored_account
+      payload:
+        newAccountId: GALICE
+---
+id: multiturn-007
+description: Inflation vote
+prompt: "Set my inflation destination to GINFLATION"
+expectedTaskTypes:
+  - inflation
+recordedOutput:
+  tasks:
+    - type: inflation
+      payload:
+        destination: GINFLATION
+---
+id: multiturn-008
+description: Data entry on account
+prompt: "Store key 'version' with value '1.0' in account data"
+expectedTaskTypes:
+  - data_entry
+expectedPayloadFields:
+  key: version
+  value: "1.0"
+recordedOutput:
+  tasks:
+    - type: data_entry
+      payload:
+        key: version
+        value: "1.0"
+---
+id: multiturn-009
+description: Fetch Stellar TOML for a domain
+prompt: "Fetch the stellar.toml for example.com"
+expectedTaskTypes:
+  - stellar_toml
+recordedOutput:
+  tasks:
+    - type: stellar_toml
+      payload:
+        domain: example.com
+---
+id: multiturn-010
+description: Sequence number lookup
+prompt: "What is the current sequence number for GAAA?"
+expectedTaskTypes:
+  - sequence_number
+recordedOutput:
+  tasks:
+    - type: sequence_number
+      payload:
+        accountId: GAAA
