@@ -20,8 +20,4 @@ This glossary keeps the Stellar- and PayFi-specific terms used in the repo in on
 | [SEP-0038](https://developers.stellar.org/docs/build/apps/wallet/sep38) | Quote, the standard for requesting indicative or firm exchange quotes between Stellar and off-chain assets. |
 | [Soroban](https://developers.stellar.org/docs/learn/fundamentals/stellar-data-structures/contracts) | Stellar's smart-contract platform and runtime for on-chain logic compiled to Wasm. |
 | [Spending limit](./backend/spending_tracker.ts) | The cumulative cap (`AGENT_SPENDING_LIMIT`) on how much the agent may spend within a rolling window (`SPENDING_WINDOW_MS`); payments that would exceed it are rejected. |
-| [Strict-send path payment](./backend/tools/PathPaymentTool.ts) | A cross-asset payment (`pathPaymentStrictSend`) that sends an exact amount of one asset and delivers at least a minimum amount of another, converting through DEX paths. |
-| [trustline](https://developers.stellar.org/docs/build/guides/basics/verify-trustlines) | An opt-in ledger relationship that lets an account hold or send a non-XLM asset issued by another account. |
-| [WASM](https://developers.stellar.org/docs/learn/fundamentals/contract-development/environment-concepts) | WebAssembly, the portable binary format used to compile Soroban contracts for on-chain execution. |
-| [x402](https://github.com/x402-foundation/x402/blob/main/specs/x402-specification-v2.md) | An HTTP 402-based payment standard for machine-to-machine payment of gated resources. |
-| [XDR](https://developers.stellar.org/docs/learn/fundamentals/data-format/xdr) | External Data Representation, Stellar's binary serialization format for transactions, ledger data, and smart-contract metadata. |
+
