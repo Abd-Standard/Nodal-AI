@@ -25,3 +25,20 @@ This glossary keeps the Stellar- and PayFi-specific terms used in the repo in on
 | [WASM](https://developers.stellar.org/docs/learn/fundamentals/contract-development/environment-concepts) | WebAssembly, the portable binary format used to compile Soroban contracts for on-chain execution. |
 | [x402](https://github.com/x402-foundation/x402/blob/main/specs/x402-specification-v2.md) | An HTTP 402-based payment standard for machine-to-machine payment of gated resources. |
 | [XDR](https://developers.stellar.org/docs/learn/fundamentals/data-format/xdr) | External Data Representation, Stellar's binary serialization format for transactions, ledger data, and smart-contract metadata. |
+
+/
+├── backend/            # Pillar 1: Agent Orchestration (TypeScript/Node.js)
+│   ├── db/             # Local database layers / state tracking
+│   ├── middleware/     # HTTP middleware (centralised error handling in error_handler.ts)
+│   ├── tools/          # Individual agent tools (StellarPaymentTool, SorobanInvokeTool, X402PaymentTool)
+│   ├── types/          # Domain-specific type and schema validation definitions
+│   ├── utils/          # Shared helpers (logger.ts, stellarSchemas.ts)
+│   ├── agent.ts        # The main orchestrator class (PayFiAgent)
+│   ├── config.ts       # Secure configuration layer and environment schema validations
+│   └── rpc_client.ts   # Central network gateway with observability, retries, and simulation gates
+├── contracts/          # Pillar 2: Soroban Smart Contracts (Rust)
+│   └── escrow/         # Production-grade Soroban escrow contract (src/lib.rs, src/test.rs)
+└── tests/              # Pillar 3: Integration & E2E Tests (Vitest & TypeScript)
+    ├── payment.test.ts # Stellar native/asset payment verification tests
+    ├── x402.test.ts    # E2E x402 protocol integration tests
+    └── soroban_invoke.test.ts # Smart contract invocation tests
