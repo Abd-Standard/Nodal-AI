@@ -19,6 +19,7 @@ import { getStorage } from '../db/storage';
 import { TransactionFailureError } from '../errors';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
+
 /**
  * Best-effort recovery of a transaction hash from a submission error.
  *

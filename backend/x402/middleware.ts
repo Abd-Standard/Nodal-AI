@@ -1,27 +1,203 @@
 /**
  * backend/x402/middleware.ts
- * OpenAPI discovery document for paid endpoints (Issue #781).
  *
- * Agents need to know what a paid API costs before calling it. A seller lists
- * its paid routes once; this module turns that route config into an OpenAPI
- * 3.1 document served at `/.well-known/openapi.json`, where every paid
- * operation carries an `x-payment-info` extension with its price, asset and
- * network, and declares the `402 Payment Required` response.
+ * Two related facilities for Nodal API sellers:
  *
- * The extension follows the shape registries and `mppx discover validate`
- * expect: `x-payment-info: { offers: [{ amount, currency, intent, method, ... }] }`
- * with `amount` in base units (stroops). The human-readable decimal `price`,
- * the `asset`, the CAIP-2 `network` and `payTo` ride along as extra offer
- * fields.
+ * ## 1. `nodalPaywall(options)` — Express payment-gating middleware
  *
- * The document is advisory: the 402 challenge a paid route returns remains
- * authoritative for the terms actually charged.
+ * Wraps `paymentMiddlewareFromConfig` from `@x402/express` to provide a
+ * single, ergonomic entry point that follows the official x402 v2 spec:
+ *
+ * ```typescript
+ * import { nodalPaywall } from './backend/x402/middleware';
+ *
+ * app.get(
+ *   '/data',
+ *   nodalPaywall({ price: '0.01', asset: 'USDC' }),
+ *   handler,
+ * );
+ * ```
+ *
+ * On an unpaid request the middleware returns 402 with a spec-compliant
+ * `PAYMENT-REQUIRED` header.  A compliant client (e.g. the agent's `fetchPaid`
+ * or any @x402/fetch consumer) signs the SAC auth entry, retries with the
+ * `PAYMENT` header, and the facilitator verifies + settles on-chain before the
+ * request reaches `handler`.
+ *
+ * The facilitator URL and API key default to `config.X402_FACILITATOR_URL` and
+ * `config.X402_FACILITATOR_API_KEY` but can be overridden per-middleware.
+ *
+ * ## 2. OpenAPI discovery document
+ *
+ * `x402DiscoveryMiddleware(options)` serves `/.well-known/openapi.json` so
+ * agents can read prices before calling paid routes.  `discoverPaymentOffers`
+ * is the buyer-side helper that fetches and parses that document.
  */
 
+import type { Request, Response, NextFunction } from 'express';
 import type { IncomingMessage, ServerResponse } from 'http';
 import { z } from 'zod';
+import {
+  paymentMiddlewareFromConfig,
+  type SchemeRegistration,
+} from '@x402/express';
+import { HTTPFacilitatorClient } from '@x402/core/server';
+import { ExactStellarScheme } from '@x402/stellar/exact/server';
 import { config } from '../config';
+import { toCaip2 } from '../network';
+import { createLogger } from '../utils/logger';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
+
+const log = createLogger('x402-middleware');
+
+// ─── nodalPaywall ─────────────────────────────────────────────────────────────
+
+/**
+ * Options for {@link nodalPaywall}.
+ *
+ * @example
+ * ```typescript
+ * // Minimal — uses config.X402_ASSET_CODE and config.X402_ASSET_ISSUER
+ * nodalPaywall({ price: '0.01', payTo: 'G...' })
+ *
+ * // Explicit asset
+ * nodalPaywall({ price: '0.05', asset: 'USDC', payTo: 'G...' })
+ *
+ * // Override facilitator per-endpoint
+ * nodalPaywall({
+ *   price: '0.01',
+ *   payTo: 'G...',
+ *   facilitatorUrl: 'https://facilitator.openzeppelin.com',
+ *   facilitatorApiKey: process.env.OZ_API_KEY,
+ * })
+ * ```
+ */
+export interface NodalPaywallOptions {
+  /**
+   * Price per request as a human-readable decimal, e.g. `"0.01"` for one cent
+   * of USDC.  The server scheme converts this to the SAC token amount using
+   * the asset's decimal precision (7 for USDC).
+   */
+  price: string;
+  /**
+   * Asset code to charge in — e.g. `"USDC"`.
+   * Defaults to `config.X402_ASSET_CODE`.
+   */
+  asset?: string;
+  /**
+   * G-address of the account that should receive payments.
+   * Defaults to `config.AGENT_PUBLIC_KEY` (the agent's own account).
+   *
+   * Override when the resource server is not the same process as the agent,
+   * or when routing funds to a dedicated collection account.
+   */
+  payTo?: string;
+  /**
+   * x402 facilitator URL.  Defaults to `config.X402_FACILITATOR_URL`.
+   * Use `"https://x402.org/facilitator"` for the Coinbase testnet facilitator,
+   * or `"https://facilitator.openzeppelin.com"` for the OpenZeppelin Relayer
+   * plugin.
+   */
+  facilitatorUrl?: string;
+  /**
+   * API key for the facilitator.  Defaults to `config.X402_FACILITATOR_API_KEY`.
+   * Sent as `Authorization: Bearer <key>` on every facilitator request.
+   */
+  facilitatorApiKey?: string;
+  /** Optional human-readable description of what the payment unlocks. */
+  description?: string;
+}
+
+const PaywallOptionsSchema = z.object({
+  price: z
+    .string()
+    .regex(/^(?!0(\.0+)?$)\d+(\.\d{1,7})?$/, 'price must be a positive Stellar decimal'),
+  asset: z.string().min(1).max(12).optional(),
+  payTo: stellarPublicKeySchema('payTo').optional(),
+  facilitatorUrl: z.string().url().optional(),
+  facilitatorApiKey: z.string().min(1).optional(),
+  description: z.string().optional(),
+});
+
+/**
+ * Create Express payment-gating middleware for a single route.
+ *
+ * Mount it before your route handler.  Every request without a valid
+ * `PAYMENT` header receives a 402 with a spec-compliant `PAYMENT-REQUIRED`
+ * header; a paid retry is verified and settled by the facilitator before
+ * reaching your handler.
+ *
+ * The middleware is stateless and safe to reuse across route registrations.
+ *
+ * @throws {z.ZodError} if `options.price` is not a positive Stellar decimal.
+ * @throws {Error} if neither `options.facilitatorUrl` nor
+ *   `config.X402_FACILITATOR_URL` is set (a facilitator is required for the
+ *   seller to settle payments on-chain).
+ */
+export function nodalPaywall(
+  options: NodalPaywallOptions
+): (req: Request, res: Response, next: NextFunction) => Promise<void> {
+  const opts = PaywallOptionsSchema.parse(options);
+
+  const facilitatorUrl = opts.facilitatorUrl ?? config.X402_FACILITATOR_URL;
+  if (!facilitatorUrl) {
+    throw new Error(
+      'nodalPaywall: a facilitator URL is required. ' +
+        'Set X402_FACILITATOR_URL in your environment or pass facilitatorUrl in options. ' +
+        'Use "https://x402.org/facilitator" for the Coinbase testnet facilitator.'
+    );
+  }
+
+  const apiKey = opts.facilitatorApiKey ?? config.X402_FACILITATOR_API_KEY;
+  const network = toCaip2(config.STELLAR_NETWORK);
+  const payTo = opts.payTo ?? config.AGENT_PUBLIC_KEY;
+
+  // Build the facilitator client.  When an API key is configured we pass a
+  // createAuthHeaders factory; the path argument lets us return per-endpoint
+  // headers in the future (e.g. different keys for /verify vs /settle).
+  const facilitatorClient = new HTTPFacilitatorClient({
+    url: facilitatorUrl,
+    ...(apiKey
+      ? {
+          createAuthHeaders: (_path: string) =>
+            Promise.resolve({ headers: { Authorization: `Bearer ${apiKey}` } }),
+        }
+      : {}),
+  });
+
+  // The server-side ExactStellarScheme converts decimal prices into SAC
+  // token amounts and builds the payment requirements that appear in the
+  // PAYMENT-REQUIRED header.
+  const stellarScheme = new ExactStellarScheme();
+  const schemes: SchemeRegistration[] = [{ network, server: stellarScheme }];
+
+  // Route key is a wildcard so the same middleware instance works regardless
+  // of the path it is mounted at.  The facilitator sees the full URL from the
+  // request, which uniquely identifies the resource.
+  const routes = {
+    'GET *': {
+      accepts: {
+        scheme: 'exact' as const,
+        network,
+        payTo,
+        price: opts.price,
+        ...(opts.description ? {} : {}), // description goes in RouteConfig, not PaymentOption
+      },
+      ...(opts.description ? { description: opts.description } : {}),
+    },
+  };
+
+  log.info(
+    { network, payTo, price: opts.price, asset: opts.asset ?? config.X402_ASSET_CODE, facilitatorUrl },
+    'nodalPaywall middleware created'
+  );
+
+  return paymentMiddlewareFromConfig(routes, facilitatorClient, schemes);
+}
+
+// ─── OpenAPI discovery document (Issue #781) ──────────────────────────────────
+
+import type { IncomingMessage, ServerResponse } from 'http';
 
 /** Where the discovery document is served. */
 export const OPENAPI_DISCOVERY_PATH = '/.well-known/openapi.json';

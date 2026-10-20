@@ -380,6 +380,27 @@ Responds to a sample x402 payment challenge and prints the resulting `X402Paymen
 npx ts-node scripts/examples/respond_x402.ts
 ```
 
+### `ai_x402_agent.ts` — Full Autonomous AI x402 Payment Flow
+
+A flagship example demonstrating the full value of Nodal AI:
+
+1. **Discovery** — The agent requests data from a paywalled endpoint and discovers it costs money (receives 402 Payment Required)
+2. **Planning** — The agent autonomously analyzes the request and plans the payment
+3. **Payment** — The agent pays via x402
+4. **Data retrieval** — The agent retrieves the paid data
+
+This example demonstrates the complete end-to-end flow:
+
+- Starts a local Express server with a gated `/api/premium-data` endpoint that requires payment
+- Agent attempts to access the resource, receives the 402 challenge
+- Agent autonomously pays the challenge via `x402_respond`
+- Agent accesses the unlocked premium data
+- Runs OFFLINE with mocks (no network required) or ONLINE on testnet (with valid `.env` configuration)
+
+```bash
+npx ts-node scripts/examples/ai_x402_agent.ts
+```
+
 ### `x402_full_flow.ts` — Full Autonomous x402 Payment Flow
 
 Demonstrates the complete x402 flow end-to-end: starts a local Express server with a gated `/resource` endpoint, handles the initial request that triggers a `402 Payment Required` challenge, runs the agent to autonomously pay the challenge, and accesses the unlocked resource using the resulting payment proof. Operates offline without live network access using `mockHorizonServer`.
@@ -442,6 +463,78 @@ Tested against the [Stellar Demo Anchor](https://testanchor.stellar.org) on test
 ```bash
 npx ts-node scripts/examples/anchor_deposit.ts
 ```
+
+---
+
+## x402 v2 Interoperability
+
+Nodal AI supports both the official x402 v2 protocol and the legacy JSON-based flow via the `X402_USE_LEGACY` environment variable.
+
+### Enabling x402 v2 (default)
+
+x402 v2 uses the official @x402/stellar package with SEP-41 token transfers, exact scheme, and optional facilitator support:
+
+```bash
+# Default: v2 enabled (X402_USE_LEGACY=0 or unset)
+X402_FACILITATOR_URL=https://facilitator.example.com  # Optional
+```
+
+**Buyer (client) usage**:
+```typescript
+import { X402PaymentTool } from './backend/tools/X402PaymentTool';
+
+const tool = new X402PaymentTool();
+// v2 challenges include x402Version or accepts with exact scheme
+const proof = await tool.respond({
+  resource: 'https://api.example.com/data',
+  amount: '1.5',
+  assetCode: 'USDC',
+  assetIssuer: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
+  payTo: 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5',
+  nonce: '550e8400-e29b-41d4-a716-446655440000',
+  expiresAt: '2024-12-31T23:59:59Z',
+  x402Version: '2.0',  // v2 indicator
+  network: 'stellar:testnet',
+});
+```
+
+**Seller (server) usage** (Express.js):
+```typescript
+import express from 'express';
+import { createX402Middleware } from './backend/x402/server';
+
+const app = express();
+
+app.get('/api/premium-data', createX402Middleware());
+
+app.get('/api/premium-data', (req, res) => {
+  // After successful payment, serve the premium content
+  res.json({ data: 'Premium content here' });
+});
+```
+
+### Legacy mode
+
+Set `X402_USE_LEGACY=1` to use the legacy JSON challenge format with SHA-256(nonce)[0:28] memo:
+
+```bash
+X402_USE_LEGACY=1
+```
+
+### Environment Variables
+
+| Variable | Description | Default |
+|---|---|---|
+| `X402_USE_LEGACY` | Use legacy flow (`1`) or v2 (`0`) | `0` (v2) |
+| `X402_FACILITATOR_URL` | Optional facilitator URL for verification/settlement | — |
+
+### Version detection
+
+**v2 challenges** contain:
+- `x402Version: '2.0'` field, **or**
+- `accepts: [{ scheme: 'exact', ... }]` array
+
+**Legacy challenges** are plain JSON objects without these fields.
 
 ---
 
