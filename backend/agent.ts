@@ -69,6 +69,7 @@ import {
   ContractStorageWatcherOptions,
   StorageChangeEvent,
 } from './tools/ContractStorageWatcherTool';
+import { X402FetchClient, type X402FetchResult } from './x402/client';
 
 import { horizonServer } from './rpc_client';
 import * as rpcClient from './rpc_client';
@@ -521,6 +522,8 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
   private sorobanTool: SorobanInvokeTool;
   private sorobanQueryTool: SorobanQueryTool;
   private x402Tool: X402PaymentTool;
+  /** x402 v2 fetch client — created lazily on first fetchPaid() call. */
+  private _x402FetchClient: X402FetchClient | null = null;
   private accountInfoTool: AccountInfoTool;
   private trustlineTool: TrustlineTool;
   private multiSigTool: MultiSigPaymentTool;
@@ -747,7 +750,37 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
   }
 
   /**
-   * Detach all registered event listeners and release internal resources.
+   * Fetch a URL with automatic x402 v2 payment handling.
+   *
+   * If the server returns `402 Payment Required` with a Stellar-compatible
+   * `PAYMENT-REQUIRED` header, the agent:
+   *   1. Selects a matching `PaymentRequirements` from `accepts[]` — must use
+   *      the `"exact"` scheme, the agent's CAIP-2 network, and an asset the
+   *      agent is configured to pay.
+   *   2. Runs all guards (asset allow-list, `X402_MAX_PRICE`, spending limit,
+   *      destination policy) **before** touching the signer.
+   *   3. Reserves the spend against the rolling window.
+   *   4. Signs the SAC auth entry via the agent's `Signer` and retries.
+   *   5. Commits the reservation on confirmed settlement (200 + PAYMENT-RESPONSE);
+   *      releases it on any failure so the spend is never double-counted.
+   *
+   * Requirements with an unknown network or asset are rejected with a clear
+   * error before any money moves.
+   *
+   * Non-402 responses are returned as-is without payment.
+   *
+   * @param url - The resource URL.
+   * @param init - Optional `RequestInit` forwarded to both probe and paid requests.
+   * @returns Response and optional `SettleResponse` from the PAYMENT-RESPONSE header.
+   */
+  async fetchPaid(url: string | URL, init?: RequestInit): Promise<X402FetchResult> {
+    if (!this._x402FetchClient) {
+      this._x402FetchClient = new X402FetchClient(this.signer);
+    }
+    return this._x402FetchClient.fetch(url, init);
+  }
+
+  /**
    *
    * Must be called by the lifecycle manager when an agent instance is
    * decommissioned or stopped. Failure to call destroy() prevents the garbage
@@ -1414,28 +1447,28 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
       };
       this.emit('task:failed', result);
 
-        // Persist middleware failure result (#failed-results-persistence)
-        const timestamp = new Date().toISOString();
-        saveResult({ ...result, timestamp });
+      // Persist middleware failure result
+      const timestamp = new Date().toISOString();
+      saveResult({ ...result, timestamp });
 
-        // Store idempotency result for middleware failures too (#payment-idempotency)
-        if (task.idempotencyKey) {
-          saveIdempotencyResult(task.idempotencyKey, task.type, task.payload, result);
-        }
+      // Store idempotency result for middleware failures too
+      if (task.idempotencyKey) {
+        saveIdempotencyResult(task.idempotencyKey, task.type, task.payload, result);
+      }
 
-        void dispatchWebhook(result);
-        return result;
-      } finally {
-        this.activeTasks--;
-        this.dispatchQueued();
-        // Periodically prune expired idempotency keys
-        if (Math.random() < 0.01) {
-          try {
-            pruneIdempotencyKeys();
-          } catch {
-            // Ignore pruning errors - it's a cleanup operation
-          }
+      void dispatchWebhook(result);
+      return result;
+    } finally {
+      this.activeTasks--;
+      this.dispatchQueued();
+      // Periodically prune expired idempotency keys
+      if (Math.random() < 0.01) {
+        try {
+          pruneIdempotencyKeys();
+        } catch {
+          // Ignore pruning errors - it's a cleanup operation
         }
       }
+    }
   }
 }

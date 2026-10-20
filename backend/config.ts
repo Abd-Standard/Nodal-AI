@@ -284,6 +284,15 @@ const EnvSchema = z.object({
     .default('false')
     .transform((v) => v === 'true'),
 
+  // x402 v2 interoperability
+  X402_USE_LEGACY: z
+    .enum(['0', '1'])
+    .default('0')
+    .transform((v) => v === '1'),
+  X402_FACILITATOR_URL: z.string().url().optional(),
+  /** Optional API key for the x402 facilitator (Bearer token or header value). */
+  X402_FACILITATOR_API_KEY: z.string().min(1).optional(),
+
   // ─── LLM Provider Configuration ─────────────────────────────────────────
   // AI layer: LLM provider for the planner (optional - disabled if not set)
 
@@ -467,6 +476,22 @@ export interface AgentConfig {
    */
   readonly X402_ALLOWED_ASSETS?: string | undefined;
   readonly AGENT_SECRET_KEY_ARN?: string;
+
+  /**
+   * When true, use the legacy x402 payment flow (SHA-256(nonce)[0:28] memo).
+   * When false (default), use x402 v2 with official @x402/stellar package and SEP-41.
+   */
+  readonly X402_USE_LEGACY: boolean;
+  /**
+   * Optional facilitator URL for x402 v2 verification/settlement.
+   * When set, the buyer and seller flows use this facilitator.
+   */
+  readonly X402_FACILITATOR_URL?: string;
+  /**
+   * Optional API key for the x402 facilitator.
+   * Sent as `Authorization: Bearer <key>` on every facilitator request.
+   */
+  readonly X402_FACILITATOR_API_KEY?: string;
 
   /**
    * Which signing backend `createSigner()` returns.

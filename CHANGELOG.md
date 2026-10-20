@@ -7,42 +7,76 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed — BREAKING
-
-- **Node 22 LTS is now required** (`engines.node >=22.0.0`, `.nvmrc`). Node 20 reached end-of-life in April 2026; the Dockerfile, CI and devcontainer now run Node 22, and `@types/node` follows.
-- **`@stellar/stellar-sdk` upgraded from 13.3.0 to 15.1.0** (Protocol 23 and 26 XDR). Breaking changes that affect code built on this repo:
-  - `rpc.Api.EventResponse.pagingToken` was removed — use the event `id` (or the response's top-level `cursor`) to page `getEvents`. `ContractEventListener` now resumes from `event.id`.
-  - `rpc.Server.GetEventsRequest` is deprecated in favour of `rpc.Api.GetEventsRequest`, and `getEvents` now needs either a ledger range or a cursor.
-  - `getTransaction` / `getTransactions` no longer return `events.diagnosticEventsXdr`.
-  - Sized XDR integers now throw on overflow instead of silently clamping, and `TransactionBase.networkPassphrase` can no longer be reassigned.
-  - Horizon balance changes no longer carry `destination_muxed_id_type`.
-  - `rpc.Server.requestAirdrop` is deprecated in favour of `fundAddress`.
-- `balanceHelpers.ts` now reads Horizon balances through the SDK's `HorizonApi.BalanceLine` union instead of an untyped cast.
-
 ### Added
 
-- Numbered schema migrations (`backend/db/migrations/NNN_*.sql`) applied at startup inside a transaction and tracked in a `schema_version` table. Existing databases are adopted in place; tables are no longer created ad hoc in `persistence.ts` / `nonce_store.ts`. This also restores the `audit_log` table and its append-only triggers.
-- Postgres storage backend (`STORAGE_BACKEND=postgres`, `DATABASE_URL`) for multi-instance deployments, behind a `Storage` interface with SQLite as the default. Spending reservations lock a row with `SELECT … FOR UPDATE`; x402 nonces are shared across instances. A `postgres` docker-compose profile runs a Postgres-backed agent and the shared storage test suite.
+- **x402 v2 interoperability** with official @x402/* packages (@x402/stellar, @x402/fetch, @x402/express, @x402/core)
+  - V2 buyer path using SEP-41 token transfers and exact scheme
+  - V2 seller middleware using @x402/express for Express.js applications
+  - Optional facilitator support for verification/settlement via `/verify`, `/settle`, `/supported` endpoints
+  - CAIP-2 network ID support (`stellar:testnet`, `stellar:pubnet`)
 
-- CI job (`wasm-size-check`) that fails when the compiled contract WASM exceeds a size budget, detecting supply-chain bloat such as injected data segments before deployment — see `scripts/check_wasm_size.sh` and `contracts/escrow/WASM_SIZE_BUDGET.md`
-- Enhanced documentation for vitest configuration, including detailed explanation of `isolate: true` behavior and coverage thresholds
-- Inline comments in `tests/soroban_invoke.test.ts` explaining mock architecture and test isolation patterns
-- CHANGELOG.md following Keep a Changelog format for tracking releases and changes
-- `SorobanInvokeTool` now enforces the spending limit on contract invocations: simulated Stellar Asset Contract transfers that debit the agent are summed from the mandatory Soroban simulation and checked against `AGENT_SPENDING_LIMIT` (and the mainnet cap) before broadcast, and within-limit spends are recorded into the cumulative spending window
+- **`X402_USE_LEGACY` env var** — when `true` (default: `0` = `false`), uses legacy SHA-256(nonce)[0:28] memo flow; when `false`, uses x402 v2 with SEP-41
 
-- Destination pre-flight checks before signing `stellar_payment` and `path_payment` (#788): a missing account raises `DestinationNotFoundError` (suggesting `createAccount` with at least 1 XLM for XLM payments), a missing trustline raises `MissingTrustlineError`, and a destination that sets SEP-29 `config.memo_required` with no memo attached raises `MemoRequiredError`
-- MPP Charge client (`backend/payments/mpp.ts`, `protocol: 'mpp-charge'`) for facilitator-free per-request payments through a SEP-41 `transfer`, using the agent signer and spending policy (#777)
-- OpenAPI discovery document for paid endpoints at `/.well-known/openapi.json`, generated from route config with `x-payment-info` price/asset/network offers (`backend/x402/middleware.ts`, #781)
-- `account_info` returns the read-only legacy `inflationDestination` (#782)
+- **`X402_FACILITATOR_URL` env var** — optional facilitator URL for x402 v2 verification/settlement
+
+- `X402PaymentTool.respondV2()` — v2 buyer implementation with automatic dispatch based on `X402_USE_LEGACY` flag
+
+- `createX402Middleware()` in `backend/x402/server.ts` — Express middleware factory supporting both v2 (official @x402/express) and legacy JSON challenge formats
+
+- **x402 v2 interoperability test suite** (`tests/x402_interop.test.ts`) covering legacy path, v2 buyer, v2 seller middleware, flag isolation, and facilitator validation
+
+### Changed
+
+- **`X402_USE_LEGACY` flag default** — now defaults to `0` (false), enabling x402 v2 by default. Set to `1` to use legacy flow for backward compatibility.
+
+- `X402PaymentTool.respond()` now automatically dispatches to `respondV2()` when `X402_USE_LEGACY === false`, else uses legacy SHA-256 memo flow.
 
 ### Deprecated
 
-- The `inflation` task type and `InflationTool` (#782). Inflation has been disabled on Stellar since protocol 12, so the tool has no effect; every execution now logs a deprecation warning. They will be removed in the next minor release (tracked in #874). Read an account's inflation destination from `account_info` instead.
+- Legacy JSON challenge format with SHA-256(nonce)[0:28] memo — will be removed in next major release. Set `X402_USE_LEGACY=1` to continue using legacy flow during migration.
+
+### Removed
+
+- None
 
 ### Fixed
 
-- Quick Start code blocks in README.md — commands are now properly enclosed in fenced code blocks
-- `prepareSorobanTx` no longer rejects source-account Soroban authorization entries as "Unexpected Soroban auth signer format"; only address credentials are checked against the agent key
+- None
+
+### Security
+
+- None
+
+### Migration Notes
+
+#### Upgrading to x402 v2
+
+**Default behavior change**: x402 v2 is now enabled by default (`X402_USE_LEGACY=0`). To continue using the legacy flow during migration, set:
+
+```bash
+X402_USE_LEGACY=1
+```
+
+**For x402 buyers (clients)**:
+- v2 challenges include `x402Version: '2.0'` or `accepts: [{ scheme: 'exact', ... }]`
+- Legacy challenges are plain JSON objects without these fields
+- The agent's `X402PaymentTool.respond()` automatically detects the version and routes appropriately
+
+**For x402 sellers (servers)**:
+- Use `createX402Middleware()` from `backend/x402/server.ts`
+- When `X402_USE_LEGACY=true`, returns JSON challenges (compatible with older clients)
+- When `X402_USE_LEGACY=false` (default), returns x402 v2 challenges with header-based protocol
+
+**Facilitator integration** (optional):
+- Set `X402_FACILITATOR_URL=https://facilitator.example.com` to enable facilitator-based verification/settlement
+- When unset, SEP-41 payments are still supported but facilitator calls are skipped
+
+**Testing migration**:
+1. Set `X402_USE_LEGACY=1` to test legacy flow
+2. Verify all existing clients/servers work correctly
+3. Set `X402_USE_LEGACY=0` and test v2 flow
+4. Gradually migrate clients/servers to v2
+5. Remove `X402_USE_LEGACY=1` once all integrations are on v2
 
 ---
 
