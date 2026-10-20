@@ -16,6 +16,7 @@ import * as dotenv from 'dotenv';
 dotenv.config();
 
 import { PayFiAgent } from '../../backend/agent';
+import { escrowCall } from '../../backend/contracts/escrow';
 
 const CONTRACT_ID = process.env.CONTRACT_ID;
 
@@ -31,8 +32,7 @@ const result = await agent.run({
   type: 'soroban_query',
   payload: {
     contractId: CONTRACT_ID,
-    method: 'get_state',
-    args: [],
+    ...escrowCall.get_state(),
   },
 });
 

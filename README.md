@@ -121,11 +121,22 @@ docker-compose --profile test-only up --build --abort-on-container-exit --exit-c
 
 `--exit-code-from test-runner-only` makes the compose command exit with the test runner's exit code, so CI correctly detects test failures.
 
+### Storage Backends & Migrations
+
+State (spending window, x402 nonces, audit log, agent results) lives in SQLite at `DB_PATH` by default, which suits a single instance. To run several instances against one shared store, set `STORAGE_BACKEND=postgres` and `DATABASE_URL`. The `postgres` profile starts Postgres, a Postgres-backed agent on port 3001 and the shared storage test suite:
+
+```bash
+docker compose --profile postgres up --build agent-postgres
+docker compose --profile postgres run --rm test-runner-postgres
+```
+
+Schema changes are numbered SQL files in [`backend/db/migrations/`](./backend/db/migrations/) (`postgres/` holds the Postgres equivalents). Pending files are applied at startup inside a transaction and recorded in `schema_version`. To change the schema, add the next `NNN_<name>.sql` for both backends. Never edit a migration that has already shipped.
+
 ---
 
 ## Development Environment (Devcontainer & Codespaces)
 
-For zero-setup provisioning, Nodal AI ships a [VS Code Dev Container](https://containers.dev/) configuration in [`.devcontainer/`](./.devcontainer/devcontainer.json). It gives you Node 20, the Rust toolchain (with the `wasm32-unknown-unknown` target), and the Stellar CLI, pre-installed, with no local setup required.
+For zero-setup provisioning, Nodal AI ships a [VS Code Dev Container](https://containers.dev/) configuration in [`.devcontainer/`](./.devcontainer/devcontainer.json). It gives you Node 22 (LTS), the Rust toolchain (with the `wasm32-unknown-unknown` target), and the Stellar CLI, pre-installed, with no local setup required.
 
 **Using VS Code:**
 
@@ -226,6 +237,33 @@ Operators can freeze fund movement during an incident without stopping the proce
 curl -X POST -H "Authorization: Bearer $WEBHOOK_SECRET" http://localhost:3000/admin/pause
 ```
 
+### Prometheus Metrics
+
+`GET /metrics` on the health server serves Prometheus text exposition (via `prom-client`, see `backend/metrics.ts`). It always requires `Authorization: Bearer <WEBHOOK_SECRET>` and returns `401` when `WEBHOOK_SECRET` is not configured. Send `Accept: application/json` to get the JSON LLM/spending snapshot instead.
+
+| Metric | Type | Labels | Meaning |
+| --- | --- | --- | --- |
+| `nodal_tasks_total` | counter | `type`, `status` (`success` \| `failure` \| `rejected`) | Tasks processed |
+| `nodal_task_duration_seconds` | histogram | `type` | Task execution latency |
+| `nodal_spending_window_total` | gauge | `asset` | Spend inside the rolling `SPENDING_WINDOW_MS` window |
+| `nodal_queue_depth` | gauge | — | Tasks waiting for a concurrency slot |
+| `nodal_rpc_breaker_state` | gauge | `circuit` | `0` closed, `1` half-open, `2` open |
+| `nodal_webhook_failures_total` | counter | — | Webhooks abandoned (non-retryable error or retries exhausted) |
+
+Process metrics (CPU, memory, event-loop lag) are exported with the `nodal_process_` prefix.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: nodal-agent
+    authorization:
+      credentials: <WEBHOOK_SECRET>
+    static_configs:
+      - targets: ['localhost:3000']
+```
+
+A ready-made Grafana dashboard lives in [`docs/grafana/nodal-dashboard.json`](docs/grafana/nodal-dashboard.json) — import it and pick your Prometheus data source.
+
 ### Mainnet Checklist
 
 Before deploying to **Stellar mainnet**, verify the following:
@@ -233,6 +271,7 @@ Before deploying to **Stellar mainnet**, verify the following:
 - [ ] **Set `STELLAR_NETWORK=mainnet`** — This enables the mainnet spending cap and enforces HTTPS-only RPC connections.
 - [ ] **Set `AGENT_SPENDING_LIMIT` below 10,000** — The limit should reflect your acceptable per-transaction maximum (e.g., `1000` for USD denominations). Values above 10,000 will be rejected on mainnet.
 - [ ] **Verify `X402_ASSET_ISSUER`** — Confirm this is the canonical USDC anchor account on mainnet. Misconfiguration sends payments to the wrong issuer.
+- [ ] **Leave `X402_ASSET_CONTRACT` unset or check it** — `X402_ASSET_ISSUER` is the classic issuer (`G…`, used for trustlines and classic payments); `X402_ASSET_CONTRACT` is the asset's Stellar Asset Contract (`C…`, used by Soroban transfers and x402 payment requirements). It is derived from the code, issuer and network when unset, and startup fails if an explicit value doesn't match.
 - [ ] **Test with `simulateOnly: true` first** — For `soroban_invoke` tasks, set `simulateOnly: true` to dry-run contract logic without broadcasting. This validates gas estimation and state changes in a safe sandbox.
 
 All four checks are enforced at startup via `backend/config.ts` validation and at task dispatch time via `backend/agent.ts` guards.
@@ -459,6 +498,7 @@ Each value below is wired into `PayFiAgent.run()` in `backend/agent.ts`. Any unr
 | `ledger_info` | `LedgerInfoTool` | Fetch the latest ledger sequence and protocol version from Soroban RPC. Cached for 6 seconds unless `forceRefresh: true`. Read-only. |
 | `network_status` | `NetworkStatusTool` | Check health and latency of the configured Horizon and Soroban RPC endpoints. Read-only. |
 | `offer_book` | `OfferBookTool` | Query the Stellar DEX order book for an asset pair and return bids, asks, and the top-of-book spread. Read-only. |
+| `cross_border_payment` | `CrossBorderPaymentTool` | SEP-31 payment as the sending anchor: SEP-12 KYC for sender and receiver, optional SEP-38 firm quote, SEP-31 transaction, then the on-chain payment with the anchor's memo. Spending limit enforced. |
 | `soroban_storage` | `SorobanStorageTool` | Read a Soroban contract's storage entry (`persistent`, `temporary`, or `instance`) and return the decoded value. Read-only. |
 
 > **Standalone utilities:** `BalanceCheckTool` (`backend/tools/BalanceCheckTool.ts`) and `SorobanQueryTool` (`backend/tools/SorobanQueryTool.ts`) are importable directly and are not dispatched through `PayFiAgent.run()`. Use them outside the agent task loop when you only need a read-only query.
@@ -473,17 +513,17 @@ interface AgentTask {
 ```
 
 Input wrapper for task dispatch. The `payload` shape depends on `type`:
-- `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }`
+- `stellar_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string }` (`destination` may be a G-address, a muxed M-address, or a federation address `name*domain.com`; a federation-required memo is attached automatically)
 - `soroban_invoke`: `{ contractId: string; method: string; args: SorobanValue[]; simulateOnly?: boolean; ... }`
 - `x402_respond`: `{ resource: string; amount: string; assetCode?: string; assetIssuer?: string; payTo: string; nonce: string; expiresAt: string }`
 - `change_trust`: `{ assetCode: string; assetIssuer: string; action: "add" | "remove"; limit?: string }`
 - `batch_payment`: `{ payments: PaymentInput[] }` (max 100 payments; aggregate spending limit enforced)
 - `multisig_payment`: `{ destination: string; amount: string; assetCode?: string; assetIssuer?: string; memo?: string; additionalSigners: string[]; minSignatures: number; signatures?: string[] }`
 - `dex_offer`: `{ action: "create" | "update" | "delete"; selling: Asset; buying: Asset; amount: string; price: string; offerId?: string | number }`
-- `path_payment`: `{ destination: string; sendAsset: Asset; sendMax: string; destAsset: Asset; destAmount: string; ... }`
+- `path_payment`: `{ destination: string; sendAsset: Asset; sendAmount: string; destAsset: Asset; destMinAmount?: string; maxSlippageBps?: number; path?: Asset[]; ... }` (omit `path`/`destMinAmount` to discover the best path and derive `destMinAmount` from its quote less `maxSlippageBps`, 0–1000, default 50)
 - `fee_bump`: `{ innerTx: string; feeAccount: string; maxFee: string }`
 - `account_info`: `{ publicKey?: string }`
-- `inflation`: `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
+- `inflation` (**deprecated**, removed in the next minor release — inflation is disabled on Stellar since protocol 12; read the value from `account_info`'s `inflationDestination`): `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
 - `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
 - `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
 - `ledger_info`: `{ forceRefresh?: boolean }`
@@ -498,6 +538,8 @@ Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `data_entry`: `{ action: "set"; name: string; value: string }` or `{ action: "delete"; name: string }` or `{ action: "get"; name: string; accountId?: string }` (`name` and `value` are at most 64 bytes)
 - `sequence_number`: `{ action: "get"; accountId?: string }` or `{ action: "bump"; bumpTo: string | number | bigint }`
 - `sponsored_account`: `{ newAccountPublicKey: string; startingBalance?: string; newAccountSignature?: string; newAccountSecret?: string }` (`startingBalance` defaults to `"0"`; supply `newAccountSecret` or a base64 `newAccountSignature` so the new account co-signs the `endSponsoringFutureReserves` operation, which the network requires)
+- `cross_border_payment`: `{ anchorDomain: string; amount: string; assetCode: string; assetIssuer: string; sender: Party; receiver: Party; destinationAsset?: string; fundingMethod?: string; jwt?: string }` where `Party` is `{ customerId: string }` or `{ kyc: KycFields; type?: string }`. See [Cross-border payments (SEP-31)](#cross-border-payments-sep-31).
+- `stellar_identity_auth`: `{ anchorUrl: string; publicKey?: string }` for SEP-10, or `{ homeDomain: string; contractAccount: string }` (a `C…` address) for SEP-45. Returns `{ token }`.
 - `anchor_quote`: `{ anchorQuoteUrl: string; sellAsset: string; buyAsset: string; sellAmount?: string; buyAmount?: string; context?: "sep6" | "sep31"; jwtToken?: string }` (at least one of `sellAmount` / `buyAmount` is required)
 - `set_options`: `{ homeDomain?: string; masterWeight?: number; lowThreshold?: number; medThreshold?: number; highThreshold?: number; setFlags?: number; clearFlags?: number; confirmLockoutRisk?: boolean; confirmAuthImmutable?: boolean }` (weights and thresholds are 0–255; `homeDomain` is at most 32 characters)
   > ⚠️ **Irreversible changes are guarded.** `masterWeight: 0` is rejected unless the account's other ed25519 signers can still meet the high threshold (pre-auth and hash-x signers don't count). Otherwise the agent would be permanently locked out of its account. `setFlags` including `AuthImmutableFlag` (`4`) is rejected because it permanently freezes the account's auth flags and blocks merging. Pass `confirmLockoutRisk: true` or `confirmAuthImmutable: true` only when you intend the irreversible outcome.
@@ -560,6 +602,37 @@ agent.destroy();
 
 ---
 
+## Cross-border payments (SEP-31)
+
+The `cross_border_payment` task sends a payment through a SEP-31 Receiving Anchor, with the agent acting as the Sending Anchor ([`backend/tools/CrossBorderPaymentTool.ts`](./backend/tools/CrossBorderPaymentTool.ts)):
+
+1. **SEP-1:** read the anchor's `stellar.toml` (`DIRECT_PAYMENT_SERVER`, `KYC_SERVER`, `ANCHOR_QUOTE_SERVER`, `WEB_AUTH_ENDPOINT`).
+2. **SEP-10:** authenticate the agent account, unless a `jwt` is supplied.
+3. **SEP-31 `GET /info`:** check that the anchor receives `assetCode`, the amount is within `min_amount`/`max_amount`, and whether a quote is required. Pick the funding method and SEP-12 customer types (explicit values are required when the anchor offers several).
+4. **SEP-12:** for each party given as `kyc`, the fields are validated locally against SEP-9 formats. Examples: ISO 3166-1 alpha-3 country codes, E.164 phone numbers, `YYYY-MM-DD` dates in the past, valid email and IP addresses. Unknown field names are rejected. The tool then reads the anchor's requirements with `GET /customer` and fails with `KycValidationError` (listing `missingFields` / `invalidFields`) before anything is submitted. Valid fields are registered with `PUT /customer`. A party given as `customerId` skips this step.
+5. **SEP-38:** when `destinationAsset` is set (e.g. `iso4217:BRL`), request a firm quote (`context: "sep31"`) and attach it.
+6. **SEP-31 `POST /transactions`:** create the transaction, then poll `GET /transactions/:id` until the anchor reports `pending_sender` with its Stellar account and memo.
+7. **Payment:** pay the anchor's account with `StellarPaymentTool`, using the anchor-provided memo (`id`, `text`, or base64 `hash`).
+
+Writes (`PUT /customer`, `POST /quote`, `POST /transactions`) are never retried, so a network retry cannot create a duplicate transaction. The task is value-moving: `AGENT_SPENDING_LIMIT` is enforced on `amount`, and the kill switch halts it.
+
+```typescript
+await agent.run({
+  type: "cross_border_payment",
+  payload: {
+    anchorDomain: "anchor.example.com",
+    amount: "100",
+    assetCode: "USDC",
+    assetIssuer: "G...",
+    destinationAsset: "iso4217:BRL",
+    sender: { kyc: { first_name: "Ada", last_name: "Lovelace", email_address: "ada@example.com" } },
+    receiver: { kyc: { first_name: "Grace", last_name: "Hopper", bank_account_number: "123456789", bank_number: "021000021" } },
+  },
+});
+```
+
+`tests/e2e/cross_border_payment.test.ts` runs the full flow against the SDF test anchor (`RUN_E2E=true`). It skips with the reason when the anchor's SEP-31 `/info` does not currently list the asset.
+
 ## x402 Payment Flow
 
 Nodal AI implements the [x402](https://github.com/x402-foundation/x402) protocol so the agent can pay for gated resources autonomously. The verified flow below covers what happens once `PayFiAgent.run()` is dispatched an `x402_respond` task — the upstream step of a resource server actually issuing the 402 challenge happens outside this codebase (in whatever client first calls `PayFiAgent.run()`), so it's described in prose rather than diagrammed.
@@ -605,6 +678,7 @@ Once past the spending check, `X402PaymentTool.respond()` validates the challeng
 | `payTo`       | `string`                | The recipient Stellar account. Must be exactly 56 characters (a valid Stellar public key).                               |
 | `nonce`       | `string` (UUID v4)      | A unique identifier for this challenge, used to correlate the resulting payment with the original request.               |
 | `expiresAt`   | `string` (ISO datetime) | The deadline after which the challenge is no longer valid. Checked against `new Date()` before any payment is attempted. |
+| `network`     | `string` (optional)     | CAIP-2 network the payment must settle on (`stellar:testnet`, `stellar:pubnet`, `stellar:futurenet`). When present it must match the agent's network, or the challenge is rejected before payment. |
 
 If `rawChallenge` doesn't conform to this shape, `X402ChallengeSchema.parse()` throws and no payment is attempted.
 
@@ -633,7 +707,7 @@ Once `StellarPaymentTool.execute()` returns a settled `txHash`, `respond()` buil
 ```typescript
 interface X402PaymentProof {
   protocol: "x402"; // protocol tag, always "x402"
-  network: string; // config.STELLAR_NETWORK
+  network: string; // CAIP-2 ID of config.STELLAR_NETWORK, e.g. "stellar:testnet" (toCaip2 in backend/network.ts)
   txHash: string; // settled Stellar transaction hash
   nonce: string; // the original challenge nonce, in full
   payer: string; // the agent's Stellar public key
@@ -665,6 +739,49 @@ if (result.success) {
 ```
 
 See [`backend/agent.ts`](./backend/agent.ts) for task dispatch and the spending-limit guard, and [`backend/tools/X402PaymentTool.ts`](./backend/tools/X402PaymentTool.ts) for challenge validation and proof construction.
+
+### Discovery: publishing prices for paid endpoints
+
+A seller can publish what its paid endpoints cost so agents can read the price before calling them. [`backend/x402/middleware.ts`](./backend/x402/middleware.ts) builds an OpenAPI 3.1 document from the route config and serves it at `/.well-known/openapi.json`. Each paid operation gets a `402` response and an `x-payment-info.offers[]` entry with `amount` (stroops), `price` (decimal), `asset`, `currency`, CAIP-2 `network` and `payTo`:
+
+```typescript
+import { x402DiscoveryMiddleware, discoverPaymentOffers } from "./backend/x402/middleware";
+
+// Seller (Express or plain http)
+app.use(x402DiscoveryMiddleware({
+  title: "Paid Data API",
+  routes: [{ method: "get", path: "/data", price: "0.01", payTo: "G..." }],
+}));
+
+// Buyer: read the price without calling the route
+const [offer] = (await discoverPaymentOffers("https://api.example.com", "GET", "/data")) ?? [];
+```
+
+The document is advisory; the 402 challenge stays authoritative for what is actually charged.
+
+## MPP Charge (facilitator-free payments)
+
+[`backend/payments/mpp.ts`](./backend/payments/mpp.ts) implements the client side of [MPP](https://paymentauth.org/draft-stellar-charge-00) Charge (`protocol: 'mpp-charge'`): each paid request is settled by an on-chain SEP-41 `transfer` through a Stellar Asset Contract, with no facilitator. `MppChargeClient.fetch()` sends the request, answers a `402` `WWW-Authenticate: Payment … method="stellar", intent="charge"` challenge with a signed transfer in an `Authorization: Payment …` credential, and returns the paid response with an `MppChargePayment` record (protocol, amount, recipient, and the settlement hash from `Payment-Receipt`).
+
+```typescript
+import { MppChargeClient } from "./backend/payments/mpp";
+
+const { response, payment } = await new MppChargeClient().fetch("https://api.example.com/data");
+```
+
+It signs with the agent signer and applies the same spending policy as other value-moving tasks: the kill switch, `AGENT_SPENDING_LIMIT`, the mainnet cap, and a reservation in the rolling spending window. Before signing, it checks that the simulated transaction authorizes exactly the requested transfer and nothing else. The agent pays its own network fee; server-sponsored (`feePayer`) challenges are rejected.
+
+### x402 vs MPP Charge
+
+| | x402 (`x402_respond`) | MPP Charge (`MppChargeClient`) |
+|---|---|---|
+| Settlement | Classic Stellar payment operation, one per request | Soroban SEP-41 `transfer` through a SAC, one per request |
+| Facilitator / third party | Standard x402 uses a facilitator; this implementation pays `payTo` directly via Horizon | None. The resource server broadcasts the signed transfer itself |
+| Challenge | JSON body of the `402` response | `WWW-Authenticate: Payment` header (base64url request) |
+| Proof sent back | `X402PaymentProof` (tx hash, nonce-derived memo) | `Authorization: Payment` credential carrying the signed transaction XDR |
+| Agent needs XLM for fees | Yes | Yes (sponsored `feePayer` mode not supported here) |
+| Replay protection | Nonce store + memo binding | HMAC-bound challenge `id` verified by the server |
+| Best for | Servers that already speak x402 | Self-hosted deployments with no third-party dependency |
 
 ## Handsoff notes
 

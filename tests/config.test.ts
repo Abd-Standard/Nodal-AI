@@ -1,6 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execSync } from 'child_process';
-import { Keypair } from '@stellar/stellar-sdk';
+import { mkdtempSync, writeFileSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
+import { Asset, Keypair, Networks } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 
 // mockSend is declared at file scope so each test can prime it with
@@ -425,6 +428,7 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     process.env.HORIZON_URL = "https://horizon.stellar.org";
     process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
     process.env.AGENT_SPENDING_LIMIT = "9999";
+    process.env.WEBHOOK_SECRET = "mainnet-api-token";
 
     const { configPromise } = await import("../backend/config");
     const cfg = await configPromise;
@@ -432,5 +436,188 @@ describe("config.ts — comprehensive env-var validation (issue #444)", () => {
     expect(cfg.STELLAR_NETWORK).toBe("mainnet");
     expect(cfg.AGENT_SPENDING_LIMIT).toBe("9999");
     expect(exitSpy).not.toHaveBeenCalled();
+  });
+
+  // ── HTTP API auth guard (#738) ──────────────────────────────────────────────
+  it("fails on mainnet when no API token is configured", async () => {
+    setMinimalValidEnv();
+    process.env.STELLAR_NETWORK = "mainnet";
+    process.env.HORIZON_URL = "https://horizon.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
+    process.env.AGENT_SPENDING_LIMIT = "100";
+    delete process.env.WEBHOOK_SECRET;
+    delete process.env.ADMIN_API_TOKEN;
+
+    await expect(async () => {
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
+    }).rejects.toThrow(/process\.exit: 1/);
+
+    expect(exitSpy).toHaveBeenCalledWith(1);
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("ADMIN_API_TOKEN is required on mainnet")
+    );
+  });
+
+  it("warns once on testnet when no API token is configured", async () => {
+    setMinimalValidEnv();
+    delete process.env.WEBHOOK_SECRET;
+    delete process.env.ADMIN_API_TOKEN;
+
+    const { configPromise } = await import("../backend/config");
+    await configPromise;
+
+    expect(exitSpy).not.toHaveBeenCalled();
+    const warnings = stderrSpy.mock.calls.filter(([msg]: [string]) =>
+      String(msg).includes("ADMIN_API_TOKEN is not set")
+    );
+    expect(warnings).toHaveLength(1);
+  });
+
+  // ── Dedicated API token (#737) ──────────────────────────────────────────────
+  it("warns that WEBHOOK_SECRET as the API token is deprecated", async () => {
+    setMinimalValidEnv();
+    process.env.WEBHOOK_SECRET = "legacy-secret";
+    delete process.env.ADMIN_API_TOKEN;
+
+    const { configPromise } = await import("../backend/config");
+    await configPromise;
+
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining("Using WEBHOOK_SECRET as the HTTP API token is deprecated")
+    );
+  });
+
+  it("accepts ADMIN_API_TOKEN on mainnet without a deprecation warning", async () => {
+    setMinimalValidEnv();
+    process.env.STELLAR_NETWORK = "mainnet";
+    process.env.HORIZON_URL = "https://horizon.stellar.org";
+    process.env.SOROBAN_RPC_URL = "https://soroban-rpc.mainnet.stellar.org";
+    process.env.AGENT_SPENDING_LIMIT = "100";
+    process.env.ADMIN_API_TOKEN = "admin-token";
+    delete process.env.WEBHOOK_SECRET;
+
+    const { configPromise } = await import("../backend/config");
+    const cfg = await configPromise;
+
+    expect(cfg.ADMIN_API_TOKEN).toBe("admin-token");
+    expect(exitSpy).not.toHaveBeenCalled();
+    expect(stderrSpy).not.toHaveBeenCalledWith(expect.stringContaining("deprecated"));
+  });
+
+  // ── Payment destination policy (#735) ───────────────────────────────────────
+  it("merges PAYMENT_DESTINATIONS and PAYMENT_DESTINATIONS_FILE", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "nodal-dest-"));
+    const file = join(dir, "destinations.txt");
+    writeFileSync(file, `# merchants\nmerchant*example.com\n\n${VALID_ISSUER} # issuer\n`);
+    setMinimalValidEnv();
+    process.env.PAYMENT_DESTINATION_POLICY = "allowlist";
+    process.env.PAYMENT_DESTINATIONS = "shop*example.org";
+    process.env.PAYMENT_DESTINATIONS_FILE = file;
+
+    const { configPromise } = await import("../backend/config");
+    const cfg = await configPromise;
+
+    expect(cfg.PAYMENT_DESTINATION_POLICY).toBe("allowlist");
+    expect(cfg.PAYMENT_DESTINATIONS).toEqual([
+      "shop*example.org",
+      "merchant*example.com",
+      VALID_ISSUER,
+    ]);
+  });
+
+  it("fails when a payment destination is neither a G-address nor a federation name", async () => {
+    setMinimalValidEnv();
+    process.env.PAYMENT_DESTINATION_POLICY = "denylist";
+    process.env.PAYMENT_DESTINATIONS = "not-an-address";
+    delete process.env.PAYMENT_DESTINATIONS_FILE;
+
+    await expect(async () => {
+      const { configPromise } = await import("../backend/config");
+      await configPromise;
+    }).rejects.toThrow(/process\.exit: 1/);
+
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining("not-an-address"));
+  });
+});
+
+describe('X402_ASSET_CONTRACT (#776)', () => {
+  let originalEnv: NodeJS.ProcessEnv;
+  let stderrSpy: any;
+
+  beforeEach(() => {
+    vi.resetModules();
+    vi.doMock('@aws-sdk/client-secrets-manager', () => ({
+      SecretsManagerClient: vi.fn().mockImplementation(() => ({ send: mockSend })),
+      GetSecretValueCommand: vi.fn().mockImplementation((args: any) => args),
+    }));
+    originalEnv = { ...process.env };
+    vi.spyOn(process, 'exit').mockImplementation((code?: string | number | null | undefined) => {
+      throw new Error(`process.exit: ${code}`);
+    });
+    stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
+    vi.spyOn(process.stdout, 'write').mockImplementation(() => true);
+
+    process.env.STELLAR_NETWORK = 'testnet';
+    process.env.HORIZON_URL = 'https://horizon-testnet.stellar.org';
+    process.env.SOROBAN_RPC_URL = 'https://soroban-testnet.stellar.org';
+    process.env.X402_ASSET_CODE = 'USDC';
+    process.env.X402_ASSET_ISSUER = VALID_ISSUER;
+    process.env.AGENT_SECRET_KEY = VALID_SECRET;
+    delete process.env.AGENT_SECRET_KEY_ARN;
+    delete process.env.X402_ASSET_CONTRACT;
+  });
+
+  afterEach(() => {
+    process.env = originalEnv;
+    vi.restoreAllMocks();
+  });
+
+  const usdcSac = () => new Asset('USDC', VALID_ISSUER).contractId(Networks.TESTNET);
+
+  async function load() {
+    const { configPromise } = await import('../backend/config');
+    return configPromise;
+  }
+
+  it('derives the SAC contract from code + issuer when unset', async () => {
+    const config = await load();
+    expect(config.X402_ASSET_CONTRACT).toBe(usdcSac());
+    expect(config.X402_ASSET_CONTRACT).toMatch(/^C/);
+    expect(config.X402_ASSET_ISSUER).toBe(VALID_ISSUER);
+  });
+
+  it('derives the native XLM SAC when the asset is XLM', async () => {
+    process.env.X402_ASSET_CODE = 'XLM';
+    const config = await load();
+    expect(config.X402_ASSET_CONTRACT).toBe(Asset.native().contractId(Networks.TESTNET));
+  });
+
+  it('derives a different contract per network', async () => {
+    process.env.STELLAR_NETWORK = 'futurenet';
+    const config = await load();
+    expect(config.X402_ASSET_CONTRACT).toBe(
+      new Asset('USDC', VALID_ISSUER).contractId(Networks.FUTURENET)
+    );
+  });
+
+  it('accepts an explicit contract that matches the derivation', async () => {
+    process.env.X402_ASSET_CONTRACT = usdcSac();
+    const config = await load();
+    expect(config.X402_ASSET_CONTRACT).toBe(usdcSac());
+  });
+
+  it('rejects a G-address given as the contract', async () => {
+    process.env.X402_ASSET_CONTRACT = VALID_ISSUER;
+    await expect(load()).rejects.toThrow('process.exit: 1');
+    expect(stderrSpy).toHaveBeenCalledWith(expect.stringContaining('X402_ASSET_CONTRACT'));
+  });
+
+  it('rejects a contract that is not the SAC for the configured asset and network', async () => {
+    process.env.X402_ASSET_CONTRACT = new Asset('USDC', VALID_ISSUER).contractId(Networks.PUBLIC);
+    await expect(load()).rejects.toThrow('process.exit: 1');
+    expect(stderrSpy).toHaveBeenCalledWith(
+      expect.stringContaining('X402_ASSET_CONTRACT is not the Stellar Asset Contract')
+    );
   });
 });

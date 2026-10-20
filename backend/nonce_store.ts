@@ -11,8 +11,9 @@
  *     SQLite database (same DB_PATH used by persistence.ts)
  *   • InMemoryNonceStore — lightweight in-process store for unit tests
  *
- * For multi-instance deployments, inject a custom INonceStore backed by a
- * shared store (e.g., Redis, DynamoDB) via the X402PaymentTool constructor.
+ * For multi-instance deployments, set STORAGE_BACKEND=postgres to use
+ * PostgresNonceStore (backend/db/postgres.ts), or inject any other INonceStore
+ * backed by a shared store via the X402PaymentTool constructor.
  *
  * Nonce TTL
  * ---------
@@ -29,6 +30,7 @@
 import Database from 'better-sqlite3';
 
 import { config } from './config';
+import { migrateSqlite } from './db/migrate';
 
 // Maximum age (ms) after which a stored nonce may be pruned.
 // Set to 24 hours to cover the widest plausible challenge expiry window.
@@ -38,7 +40,7 @@ export const MAX_NONCE_TTL_MS = 24 * 60 * 60 * 1_000;
  * Configured nonce lifetime, falling back to MAX_NONCE_TTL_MS when config has
  * not been loaded (unit tests frequently mock the config module wholesale).
  */
-function configuredTtlMs(): number {
+export function configuredTtlMs(): number {
   const fromConfig = (config as { X402_NONCE_TTL_MS?: number } | undefined)?.X402_NONCE_TTL_MS;
   return typeof fromConfig === 'number' && fromConfig > 0 ? fromConfig : MAX_NONCE_TTL_MS;
 }
@@ -82,11 +84,9 @@ export interface INonceStore {
  * (DB_PATH env var, default "./agent.db") so no extra infrastructure is
  * required.
  *
- * Schema (created lazily on first use):
- *   CREATE TABLE IF NOT EXISTS x402_used_nonces (
- *     nonce      TEXT PRIMARY KEY,
- *     used_at_ms INTEGER NOT NULL
- *   );
+ * Schema: `x402_used_nonces (nonce TEXT PRIMARY KEY, used_at_ms INTEGER)`,
+ * created by `backend/db/migrations/001_initial_schema.sql`. Pending
+ * migrations are applied on first use, so an injected connection works too.
  *
  * All operations are synchronous at the SQLite level (better-sqlite3 API),
  * wrapped in Promise.resolve() to satisfy the async INonceStore interface
@@ -102,17 +102,7 @@ export class SqliteNonceStore implements INonceStore {
 
   private ensureTable(): void {
     if (this.ready) return;
-    this.db.exec(`
-      CREATE TABLE IF NOT EXISTS x402_used_nonces (
-        nonce      TEXT    PRIMARY KEY,
-        used_at_ms INTEGER NOT NULL
-      )
-    `);
-    // Index for efficient TTL pruning by timestamp.
-    this.db.exec(`
-      CREATE INDEX IF NOT EXISTS idx_x402_nonces_used_at
-        ON x402_used_nonces (used_at_ms)
-    `);
+    migrateSqlite(this.db);
     this.ready = true;
   }
 

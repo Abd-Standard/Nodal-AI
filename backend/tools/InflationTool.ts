@@ -2,6 +2,12 @@
  * backend/tools/InflationTool.ts
  * Configure and query the account inflation destination via SET_OPTIONS.
  *
+ * @deprecated Since this release; the `inflation` task type will be removed in
+ * the next minor release (#782; removal tracked in #874). Inflation has been disabled on Stellar since
+ * protocol 12. To read an account's legacy inflation destination, use
+ * `account_info` (`inflationDestination`). Every execution logs a deprecation
+ * warning.
+ *
  * DEPRECATED ON-NETWORK: Stellar's inflation mechanism is deprecated and
  * inactive — no inflation pool payouts have been distributed for years.
  * `SET_OPTIONS`'s `inflationDest` field is still accepted by the protocol and
@@ -23,6 +29,14 @@ import { loadAccount, submitTransaction, resolveNetworkPassphrase } from '../rpc
 import { SubmitResultSchema } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
+import { createLogger } from '../utils/logger';
+
+const log = createLogger('inflation');
+
+export const INFLATION_DEPRECATION_WARNING =
+  'The inflation task type is deprecated and will be removed in the next minor release: ' +
+  'inflation has been disabled on Stellar since protocol 12, so it has no effect. ' +
+  'Use account_info to read an inflation destination.';
 
 export const InflationInputSchema = z.discriminatedUnion('action', [
   z.object({
@@ -68,6 +82,7 @@ export interface InflationGetResult {
 
 export type InflationResult = InflationSetResult | InflationGetResult;
 
+/** @deprecated Inflation is disabled on Stellar; removed in the next minor release (#782). */
 export class InflationTool {
   private signer: Signer;
   private networkPassphrase: string;
@@ -124,6 +139,7 @@ export class InflationTool {
   }
 
   async execute(rawInput: unknown): Promise<InflationResult> {
+    log.warn(INFLATION_DEPRECATION_WARNING);
     const input = InflationInputSchema.parse(rawInput);
 
     if (input.action === 'get') {

@@ -24,6 +24,11 @@ coverage/
 
 # Soroban test snapshots
 contracts/escrow/test_snapshots/
+contracts/agent_policy/test_snapshots/
+
+# Generated Stellar CLI TypeScript bindings (scripts/generate_escrow_bindings.sh,
+# built in CI — the hand-checked typed client lives in backend/contracts/escrow/)
+contracts/escrow/bindings/
 
 # Environment secrets — never commit real .env files
 .env

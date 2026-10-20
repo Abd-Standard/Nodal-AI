@@ -18,10 +18,11 @@
  */
 
 import { z } from 'zod';
+import { readFileSync } from 'fs';
 import * as dotenv from 'dotenv';
-import { Keypair } from '@stellar/stellar-sdk';
+import { Asset, Keypair, Networks } from '@stellar/stellar-sdk';
 import { SecretsManagerClient, GetSecretValueCommand } from '@aws-sdk/client-secrets-manager';
-import { isValidStellarPublicKey } from './utils/stellarSchemas';
+import { isValidStellarContractId, isValidStellarPublicKey } from './utils/stellarSchemas';
 
 export const MAINNET_SPENDING_CAP = 10_000;
 
@@ -125,6 +126,14 @@ const EnvSchema = z.object({
     .refine((val) => isValidStellarPublicKey(val), {
       message: 'X402_ASSET_ISSUER is not a valid Ed25519 public key',
     }),
+  // SEP-41 contract (C…) of the x402 asset — its Stellar Asset Contract (SAC).
+  // Derived from X402_ASSET_CODE + X402_ASSET_ISSUER when unset (#776).
+  X402_ASSET_CONTRACT: z
+    .string()
+    .refine((val) => isValidStellarContractId(val), {
+      message: 'X402_ASSET_CONTRACT must be a valid contract address (C…)',
+    })
+    .optional(),
   ALLOWED_X402_ORIGINS: z.string().optional(),
   // Maximum amount a single x402 challenge may request. Unset = no per-challenge cap.
   X402_MAX_PRICE: z
@@ -161,8 +170,38 @@ const EnvSchema = z.object({
   // Spending cap
   AGENT_SPENDING_LIMIT: SpendingLimitSchema,
 
+  // Human-in-the-loop approval: value-moving tasks above this amount are held
+  // as pending_approval until approved or denied via POST /approvals/:id.
+  // Unset = no approval step.
+  APPROVAL_THRESHOLD: z
+    .string()
+    .regex(
+      /^(?!0+(\.0+)?$)\d+(\.\d{1,7})?$/,
+      "APPROVAL_THRESHOLD must be a positive decimal (e.g. '500' or '50.0000000')"
+    )
+    .optional(),
+  // How long a pending approval waits for a decision before it expires.
+  APPROVAL_TTL_MS: z.coerce.number().int().min(1_000).default(3_600_000),
+
+  // Counterparty policy for value-moving tasks: `allowlist` permits only the
+  // listed destinations, `denylist` blocks them, `open` (default) permits any.
+  PAYMENT_DESTINATION_POLICY: z
+    .enum(['allowlist', 'denylist', 'open'], {
+      errorMap: () => ({
+        message: 'PAYMENT_DESTINATION_POLICY must be one of: allowlist | denylist | open',
+      }),
+    })
+    .default('open'),
+  // Comma-separated G-addresses and/or federation names (name*domain).
+  PAYMENT_DESTINATIONS: z.string().optional(),
+  // File with one G-address or federation name per line; # starts a comment.
+  PAYMENT_DESTINATIONS_FILE: z.string().min(1).optional(),
+
   // Persistence
   DB_PATH: z.string().default('./agent.db'),
+  // Shared Postgres store for multi-instance deployments (#822).
+  STORAGE_BACKEND: z.enum(['sqlite', 'postgres']).default('sqlite'),
+  DATABASE_URL: z.string().min(1).optional(),
 
   // Logging
   LOG_LEVEL: z.enum(['debug', 'info', 'warn', 'error']).default('info'),
@@ -216,8 +255,13 @@ const EnvSchema = z.object({
 
   MAX_SOROBAN_FEE_STROOPS: z.coerce.number().int().min(100).default(1_000_000),
 
-  // Health check HTTP server
-  HEALTH_PORT: z.coerce.number().int().min(1).max(65535).default(3000),
+  // MCP server
+  MCP_ALLOW_PAYMENTS: z
+    .enum(['true', 'false'])
+    .default('false')
+    .transform((v) => v === 'true'),
+  MCP_TRANSPORT: z.enum(['stdio', 'http']).default('stdio'),
+  MCP_PORT: z.coerce.number().int().min(1).max(65535).default(3001),
 
   // Contract event listener polling interval in milliseconds.
   CONTRACT_EVENT_POLL_MS: z.coerce.number().int().min(100).optional(),
@@ -225,6 +269,9 @@ const EnvSchema = z.object({
   // Webhook notifications
   WEBHOOK_URL: z.string().url().optional(),
   WEBHOOK_SECRET: z.string().min(1).optional(),
+  // Bearer token for the HTTP API (/status, /spending, /metrics, /approvals,
+  // /admin/*). Falls back to WEBHOOK_SECRET when unset — deprecated.
+  ADMIN_API_TOKEN: z.string().min(1).optional(),
   // Kill switch: start with value-moving tasks halted (see backend/kill_switch.ts).
   PAUSED: z
     .enum(['true', 'false'])
@@ -236,6 +283,33 @@ const EnvSchema = z.object({
     .enum(['true', 'false'])
     .default('false')
     .transform((v) => v === 'true'),
+
+  // ─── LLM Provider Configuration ─────────────────────────────────────────
+  // AI layer: LLM provider for the planner (optional - disabled if not set)
+
+  // LLM provider: openai, anthropic, or mock (for testing)
+  LLM_PROVIDER: z
+    .enum(['openai', 'anthropic', 'mock'])
+    .default('mock')
+    .optional(),
+
+  // Model identifier (e.g., gpt-4o, claude-3-sonnet-20240229)
+  LLM_MODEL: z.string().min(1).optional(),
+
+  // API key for the LLM provider (secret - never logged)
+  LLM_API_KEY: z.string().min(1).optional(),
+
+  // Base URL for OpenAI-compatible APIs (useful for local models, OpenAI proxies)
+  LLM_BASE_URL: z.string().url().optional(),
+
+  // Timeout for LLM requests in milliseconds
+  LLM_TIMEOUT_MS: z.coerce.number().int().min(1000).max(300000).default(60000),
+
+  // Maximum tokens per request
+  LLM_MAX_TOKENS: z.coerce.number().int().min(1).max(128000).default(4096),
+
+  // Temperature for LLM sampling (0-2)
+  LLM_TEMPERATURE: z.coerce.number().min(0).max(2).default(0.7),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -271,6 +345,19 @@ export interface AgentConfig {
   readonly DB_PATH: string;
 
   /**
+   * Where persistent state lives. "sqlite" (default) uses DB_PATH and suits a
+   * single instance; "postgres" uses DATABASE_URL and is shared by every
+   * instance of a horizontally scaled deployment.
+   */
+  readonly STORAGE_BACKEND: 'sqlite' | 'postgres';
+
+  /**
+   * Postgres connection string. Required when STORAGE_BACKEND is "postgres".
+   * Contains credentials — never logged.
+   */
+  readonly DATABASE_URL?: string | undefined;
+
+  /**
    * The asset code for the x402 / PayFi asset.
    * Validated by EnvSchema to be a string between 1 and 12 characters.
    * Defaults to "USDC".
@@ -285,11 +372,45 @@ export interface AgentConfig {
   readonly X402_ASSET_ISSUER: string;
 
   /**
+   * The SEP-41 contract address (C…) of the x402 asset's Stellar Asset Contract.
+   * Classic operations (trustlines, payments) use X402_ASSET_ISSUER (G…); Soroban
+   * and x402 payment requirements use this contract address. Derived from
+   * X402_ASSET_CODE + X402_ASSET_ISSUER and the network passphrase when unset; an
+   * explicit value must match that derivation.
+   */
+  readonly X402_ASSET_CONTRACT: string;
+
+  /**
    * The spending limit for the agent.
    * Validated by EnvSchema to be a positive decimal with up to 7 decimal places.
    * "0" is not permitted. Defaults to "100".
    */
   readonly AGENT_SPENDING_LIMIT: string;
+
+  /**
+   * Amount above which a value-moving task is held as `pending_approval` until
+   * an operator approves or denies it. Optional — when unset no task is held.
+   */
+  readonly APPROVAL_THRESHOLD?: string | undefined;
+
+  /**
+   * How long (ms) a pending approval waits for a decision before it expires and
+   * its spending reservation is released. Defaults to 3,600,000 (1 hour).
+   */
+  readonly APPROVAL_TTL_MS: number;
+
+  /**
+   * Counterparty policy enforced for every value-moving task.
+   * "allowlist" permits only PAYMENT_DESTINATIONS, "denylist" rejects them and
+   * "open" (default) permits any destination.
+   */
+  readonly PAYMENT_DESTINATION_POLICY: 'allowlist' | 'denylist' | 'open';
+
+  /**
+   * G-addresses and federation names the destination policy applies to, merged
+   * from PAYMENT_DESTINATIONS and PAYMENT_DESTINATIONS_FILE.
+   */
+  readonly PAYMENT_DESTINATIONS: readonly string[];
 
   /**
    * The maximum number of retry attempts for transient network/RPC calls.
@@ -412,6 +533,12 @@ export interface AgentConfig {
   readonly MAX_SOROBAN_FEE_STROOPS: number;
 
   /**
+   * Maximum per-operation inclusion fee in stroops that estimateFee() will
+   * bid, including on a fee-bump surge retry. Defaults to 100_000 (0.01 XLM).
+   */
+  readonly MAX_FEE_STROOPS: number;
+
+  /**
    * Maximum number of tasks allowed to execute concurrently in agent.run().
    * Additional tasks submitted while this many are in flight are rejected.
    * Defaults to 10.
@@ -423,6 +550,18 @@ export interface AgentConfig {
    */
   readonly QUEUE_CAPACITY: number;
   /**
+   * When true, value-moving tools are exposed via MCP. Defaults to false.
+   */
+  readonly MCP_ALLOW_PAYMENTS: boolean;
+  /**
+   * MCP transport: "stdio" or "http". Defaults to "stdio".
+   */
+  readonly MCP_TRANSPORT: 'stdio' | 'http';
+  /**
+   * Port for MCP HTTP server. Defaults to 3001.
+   */
+  readonly MCP_PORT: number;
+  /**
    * Port for the health-check HTTP server.
    * Validated by EnvSchema to be an integer between 1 and 65535.
    * Defaults to 3000.
@@ -431,6 +570,12 @@ export interface AgentConfig {
   readonly CONTRACT_EVENT_POLL_MS?: number | undefined;
   readonly WEBHOOK_URL?: string | undefined;
   readonly WEBHOOK_SECRET?: string | undefined;
+  /**
+   * Bearer token required by the HTTP API. Separate from WEBHOOK_SECRET so
+   * leaking one does not compromise the other. When unset WEBHOOK_SECRET is
+   * accepted in its place (deprecated).
+   */
+  readonly ADMIN_API_TOKEN?: string | undefined;
   /**
    * When true, X-Nodal-Signature is HMAC(body) instead of HMAC(`${timestamp}.${body}`).
    * Backward-compatibility flag for one release. Defaults to false.
@@ -441,6 +586,48 @@ export interface AgentConfig {
    * errorType AGENT_PAUSED until resumed via POST /admin/resume. Defaults to false.
    */
   readonly PAUSED: boolean;
+
+  // ─── LLM Provider Configuration ─────────────────────────────────────────
+
+  /**
+   * LLM provider to use for the AI planner.
+   * Optional - when not set, the AI layer is disabled.
+   * Values: "openai", "anthropic", "mock"
+   */
+  readonly LLM_PROVIDER?: 'openai' | 'anthropic' | 'mock';
+
+  /**
+   * Model identifier for the LLM provider.
+   * Examples: "gpt-4o", "claude-3-sonnet-20240229"
+   * Optional - each provider has its own default if not specified.
+   */
+  readonly LLM_MODEL?: string;
+
+  /**
+   * Base URL for OpenAI-compatible APIs.
+   * Useful for local models (Ollama, LM Studio) or proxy services.
+   * Only applies when LLM_PROVIDER is "openai".
+   */
+  readonly LLM_BASE_URL?: string;
+
+  /**
+   * Timeout for LLM requests in milliseconds.
+   * Defaults to 60,000 (1 minute).
+   */
+  readonly LLM_TIMEOUT_MS: number;
+
+  /**
+   * Maximum tokens to request from the LLM per response.
+   * Defaults to 4,096.
+   */
+  readonly LLM_MAX_TOKENS: number;
+
+  /**
+   * Temperature for LLM sampling (0-2).
+   * Higher values produce more creative outputs, lower values are more deterministic.
+   * Defaults to 0.7.
+   */
+  readonly LLM_TEMPERATURE: number;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -515,6 +702,12 @@ function parseConfigAndDerive(): AgentConfig {
     }
   }
 
+  // ── Postgres storage needs a connection string ─────────────────────────────
+  if (raw.STORAGE_BACKEND === 'postgres' && !raw.DATABASE_URL) {
+    process.stderr.write('❌ [Config] DATABASE_URL is required when STORAGE_BACKEND=postgres.\n');
+    process.exit(1);
+  }
+
   // ── Derive public key from secret ──────────────────────────────────────────
   let keypair: Keypair;
   try {
@@ -548,6 +741,85 @@ function parseConfigAndDerive(): AgentConfig {
     }
   }
 
+  // ── HTTP API auth guard ────────────────────────────────────────────────────
+  // /status and /spending expose payment history and spending data. Without a
+  // token the server would serve them to anyone, so mainnet refuses to start;
+  // testnet and futurenet keep open mode but warn once at startup.
+  if (!raw.ADMIN_API_TOKEN && !raw.WEBHOOK_SECRET) {
+    if (raw.STELLAR_NETWORK === 'mainnet') {
+      process.stderr.write(
+        `❌ [Config] ADMIN_API_TOKEN is required on mainnet — the HTTP API would otherwise ` +
+          `serve payment history and spending data without authentication.\n`
+      );
+      process.exit(1);
+    }
+    process.stderr.write(
+      `⚠️  [Config] ADMIN_API_TOKEN is not set — /status, /spending and /metrics are ` +
+        `unauthenticated (allowed on ${raw.STELLAR_NETWORK} only).\n`
+    );
+  } else if (!raw.ADMIN_API_TOKEN) {
+    process.stderr.write(
+      `⚠️  [Config] Using WEBHOOK_SECRET as the HTTP API token is deprecated — set a ` +
+        `separate ADMIN_API_TOKEN so the webhook signing secret is not also an API password.\n`
+    );
+  }
+
+  // ── Payment destination policy ─────────────────────────────────────────────
+  const paymentDestinations = (raw.PAYMENT_DESTINATIONS ?? '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  if (raw.PAYMENT_DESTINATIONS_FILE) {
+    let contents: string;
+    try {
+      contents = readFileSync(raw.PAYMENT_DESTINATIONS_FILE, 'utf8');
+    } catch {
+      process.stderr.write(
+        `❌ [Config] Could not read PAYMENT_DESTINATIONS_FILE (${raw.PAYMENT_DESTINATIONS_FILE}).\n`
+      );
+      process.exit(1);
+    }
+    for (const line of contents.split(/\r?\n/)) {
+      const entry = line.replace(/#.*/, '').trim();
+      if (entry) paymentDestinations.push(entry);
+    }
+  }
+  const invalidDestinations = paymentDestinations.filter(
+    (entry) => !isValidStellarPublicKey(entry) && !/^[^*\s]+\*[^*\s]+\.[^*\s]+$/.test(entry)
+  );
+  if (invalidDestinations.length > 0) {
+    process.stderr.write(
+      `❌ [Config] Payment destinations must be G-addresses or federation names (name*domain):\n` +
+        invalidDestinations.map((entry) => `  • ${entry}`).join('\n') +
+        `\n`
+    );
+    process.exit(1);
+  }
+
+  // ── x402 asset contract (C…) vs classic issuer (G…) (#776) ─────────────────
+  const networkPassphrase = {
+    testnet: Networks.TESTNET,
+    mainnet: Networks.PUBLIC,
+    futurenet: Networks.FUTURENET,
+  }[raw.STELLAR_NETWORK];
+  const x402AssetContract = (
+    raw.X402_ASSET_CODE === 'XLM'
+      ? Asset.native()
+      : new Asset(raw.X402_ASSET_CODE, raw.X402_ASSET_ISSUER)
+  ).contractId(networkPassphrase);
+  if (raw.X402_ASSET_CONTRACT && raw.X402_ASSET_CONTRACT !== x402AssetContract) {
+    process.stderr.write(
+      `❌ [Config] X402_ASSET_CONTRACT is not the Stellar Asset Contract for ` +
+        `${raw.X402_ASSET_CODE}${raw.X402_ASSET_CODE === 'XLM' ? '' : `:${raw.X402_ASSET_ISSUER}`} ` +
+        `on ${raw.STELLAR_NETWORK}.\n` +
+        `   Provided : ${raw.X402_ASSET_CONTRACT}\n` +
+        `   Derived  : ${x402AssetContract}\n` +
+        `   X402_ASSET_ISSUER is the classic issuer (G…); X402_ASSET_CONTRACT is the SAC (C…). ` +
+        `Unset X402_ASSET_CONTRACT to derive it.\n`
+    );
+    process.exit(1);
+  }
+
   // ── Build the config object — secret key stays in closure only ────────────
   const {
     AGENT_SECRET_KEY: _secret,
@@ -556,6 +828,7 @@ function parseConfigAndDerive(): AgentConfig {
     OTLP_ENDPOINT,
     WEBHOOK_URL,
     WEBHOOK_SECRET,
+    DATABASE_URL,
     ...rest
   } = raw;
 
@@ -572,14 +845,24 @@ function parseConfigAndDerive(): AgentConfig {
     MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,
     X402_NONCE_TTL_MS: raw.X402_NONCE_TTL_MS,
     MAX_SOROBAN_FEE_STROOPS: raw.MAX_SOROBAN_FEE_STROOPS,
+    PAYMENT_DESTINATIONS: paymentDestinations,
+    X402_ASSET_CONTRACT: x402AssetContract,
     ...(ALLOWED_X402_ORIGINS ? { ALLOWED_X402_ORIGINS } : {}),
     ...(AGENT_SECRET_KEY_ARN ? { AGENT_SECRET_KEY_ARN } : {}),
     ...(OTLP_ENDPOINT ? { OTLP_ENDPOINT } : {}),
     ...(WEBHOOK_URL ? { WEBHOOK_URL } : {}),
     ...(WEBHOOK_SECRET ? { WEBHOOK_SECRET } : {}),
+    ...(DATABASE_URL ? { DATABASE_URL } : {}),
     ...(raw.CONTRACT_EVENT_POLL_MS !== undefined
       ? { CONTRACT_EVENT_POLL_MS: raw.CONTRACT_EVENT_POLL_MS }
       : {}),
+    // LLM configuration - all have defaults
+    LLM_TIMEOUT_MS: raw.LLM_TIMEOUT_MS ?? 60_000,
+    LLM_MAX_TOKENS: raw.LLM_MAX_TOKENS ?? 4096,
+    LLM_TEMPERATURE: raw.LLM_TEMPERATURE ?? 0.7,
+    ...(raw.LLM_PROVIDER ? { LLM_PROVIDER: raw.LLM_PROVIDER } : {}),
+    ...(raw.LLM_MODEL ? { LLM_MODEL: raw.LLM_MODEL } : {}),
+    ...(raw.LLM_BASE_URL ? { LLM_BASE_URL: raw.LLM_BASE_URL } : {}),
     // Secret is captured in closure; never on the object
     agentKeypair: () => _keypair,
   };
@@ -594,6 +877,13 @@ function parseConfigAndDerive(): AgentConfig {
       `   Spending limit : ${cfg.AGENT_SPENDING_LIMIT} ${cfg.X402_ASSET_CODE}\n` +
       `   Max retries    : ${cfg.MAX_RETRIES}\n`
   );
+
+  // Add LLM info to banner if configured
+  if (cfg.LLM_PROVIDER) {
+    process.stdout.write(
+      `   LLM provider   : ${cfg.LLM_PROVIDER}${cfg.LLM_MODEL ? ` (${cfg.LLM_MODEL})` : ''}\n`
+    );
+  }
 
   return cfg;
 }
@@ -701,6 +991,48 @@ export const configPromise = {
   ) => ensureConfigPromise().catch(onrejected),
   finally: (onfinally?: (() => void) | null) => ensureConfigPromise().finally(onfinally),
 } as PromiseLike<AgentConfig>;
+
+// ─── LLM Provider Helper ───────────────────────────────────────────────────
+
+/**
+ * Gets the LLM API key from the environment.
+ * The key is NEVER exposed on the config object - call this function directly.
+ * @returns The LLM API key or undefined if not configured
+ */
+export function getLLMApiKey(): string | undefined {
+  return process.env.LLM_API_KEY;
+}
+
+/**
+ * Creates an LLM provider from the current configuration.
+ * Returns undefined if LLM_PROVIDER is not set.
+ *
+ * Usage:
+ *   const provider = createLLMProvider();
+ *   if (provider) {
+ *     const response = await provider.generate(messages, options);
+ *   }
+ */
+export function createLLMProvider(): ReturnType<typeof import('./ai/providers').createLLMProvider> | undefined {
+  const providerType = process.env.LLM_PROVIDER as 'openai' | 'anthropic' | 'mock' | undefined;
+  const apiKey = process.env.LLM_API_KEY;
+
+  if (!providerType) {
+    return undefined;
+  }
+
+  // Dynamically import to avoid circular dependencies
+  const { createLLMProvider: createProvider } = require('./ai/providers');
+
+  return createProvider({
+    provider: providerType,
+    model: process.env.LLM_MODEL,
+    apiKey: apiKey || '',
+    baseUrl: process.env.LLM_BASE_URL,
+    timeoutMs: parseInt(process.env.LLM_TIMEOUT_MS || '60000', 10),
+    maxRetries: 3,
+  });
+}
 
 export const config = new Proxy({} as AgentConfig, {
   get(target, prop, receiver) {

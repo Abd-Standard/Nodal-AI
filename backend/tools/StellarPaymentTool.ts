@@ -6,14 +6,7 @@
  * Never broadcasts without a prior simulation pass.
  */
 
-import {
-  Horizon,
-  TransactionBuilder,
-  Operation,
-  Asset,
-  BASE_FEE,
-  Memo,
-  } from '@stellar/stellar-sdk';
+import { Horizon, TransactionBuilder, Operation, Asset, Memo } from '@stellar/stellar-sdk';
 import { z } from 'zod';
 import { config } from '../config';
 import { createAgentSigner, Signer } from '../signer';
@@ -22,6 +15,7 @@ import { loadAccount, resolveNetworkPassphrase, submitTransaction } from '../rpc
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 import { createLogger } from '../utils/logger';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
+import { assertDestinationReady } from '../utils/destinationPreflight';
 
 const log = createLogger('stellar-payment');
 
@@ -38,7 +32,9 @@ export type SubmitResult = z.infer<typeof SubmitResultSchema>;
 /**
  * Zod schema for payment input validation.
  *
- * @property destination - 56-character Stellar public key (G...) of the recipient
+ * @property destination - Recipient: a Stellar public key (G...), a muxed account (M...),
+ *   or a federation address (name*domain.com). A memo required by the federation
+ *   server is attached automatically.
  * @property amount - Positive decimal string with up to 7 decimal places (Stellar network limit)
  * @property assetCode - Asset code (default: "XLM")
  * @property assetIssuer - Asset issuer public key (required for non-XLM assets)
@@ -47,7 +43,7 @@ export type SubmitResult = z.infer<typeof SubmitResultSchema>;
  */
 export const PaymentInputSchema = z
   .object({
-    destination: stellarPublicKeySchema('Destination'),
+    destination: paymentDestinationSchema('Destination'),
     amount: z
       .string()
       // Negative-lookahead rejects "0" and all zero-value decimals ("0.0", "0.0000000")
@@ -172,7 +168,8 @@ export class StellarPaymentTool {
    *
    * Steps:
    * 1. Validate input with Zod schema
-   * 2. Resolve asset (native XLM or custom asset)
+   * 2. Resolve asset (native XLM or custom asset) and pre-flight the destination
+   *    (exists, trustline present, SEP-29 memo supplied when required)
    * 3. Load source account to get latest sequence number
    * 4. Build transaction with payment operation and optional memo
    * 5. Validate transaction envelope
@@ -182,14 +179,26 @@ export class StellarPaymentTool {
    * @param rawInput - Raw payment input (will be validated)
    * @returns Object containing transaction hash and ledger number
    * @throws {z.ZodError} If input fails validation
+   * @throws {DestinationNotFoundError | MissingTrustlineError | MemoRequiredError}
+   *   If the destination cannot receive this payment
    * @throws {Error} If source account not found or transaction submission fails
    */
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     // 1. Validate input
     const input = PaymentInputSchema.parse(rawInput);
 
+    // Resolve federation addresses to an account and the memo the receiver requires
+    const { accountId: destination, memo: federationMemo } = await resolveDestination(
+      input.destination
+    );
+    if (federationMemo && input.memo !== undefined) {
+      throw new ValidationError(
+        `${input.destination} requires a federation memo; do not also supply a memo`
+      );
+    }
+
     // Self-payment guard
-    if (input.destination === this.signer.publicKey()) {
+    if (baseAccountId(destination) === this.signer.publicKey()) {
       throw new Error("Payment destination cannot be the agent's own address");
     }
 
@@ -200,23 +209,34 @@ export class StellarPaymentTool {
     const asset =
       input.assetCode === 'XLM' ? Asset.native() : new Asset(input.assetCode, input.assetIssuer);
 
+    // Pre-flight: destination exists, trusts the asset, and gets any SEP-29 required memo
+    await assertDestinationReady({
+      destination: input.destination,
+      asset,
+      hasMemo: input.memo !== undefined,
+      amount: input.amount,
+    });
+
     // 3. Load source account (latest sequence number)
     let sourceAccount = await loadAccount(this.signer.publicKey());
+    const fee = await estimateFee();
 
     // 4. Build transaction
     const buildTx = () => {
       const builder = new TransactionBuilder(sourceAccount, {
-        fee: BASE_FEE, // BASE_FEE (100 stroops) is the actual fee for classic Stellar payments — not overwritten
+        fee,
         networkPassphrase: this.networkPassphrase,
       }).addOperation(
         Operation.payment({
-          destination: input.destination,
+          destination,
           asset,
           amount: input.amount,
         })
       );
 
-      if (input.memo !== undefined) {
+      if (federationMemo) {
+        builder.addMemo(federationMemo);
+      } else if (input.memo !== undefined) {
         const memo = buildMemo(input.memoType, input.memo);
         if (memo) {
           builder.addMemo(memo);
@@ -231,25 +251,37 @@ export class StellarPaymentTool {
     // 5. Fee estimation / simulation via Horizon dry-run
     //    (Horizon doesn't expose simulation like Soroban, so we validate
     //     the transaction envelope locally before submission)
-    logger.info('Validating payment envelope', {
-      source: this.signer.publicKey(),
-      destination: input.destination,
-      amount: input.amount,
-      assetCode: input.assetCode,
-    });
+    logger.info(
+      {
+        source: this.signer.publicKey(),
+        destination: input.destination,
+        amount: input.amount,
+        assetCode: input.assetCode,
+      },
+      'Validating payment envelope'
+    );
 
     // 6. Sign
     this.signer.signTransaction(tx);
 
-    // 7. Submit (with auto-retry on tx_bad_seq)
+    // 7. Submit (with auto-retry on tx_bad_seq, fee-bump retry on tx_insufficient_fee)
     try {
       const result = SubmitResultSchema.parse(await submitTransaction(tx));
       return { txHash: result.hash, ledger: result.ledger };
     } catch (err: unknown) {
+      if (isInsufficientFeeError(err)) {
+        const result = SubmitResultSchema.parse(
+          await submitFeeBumped(tx, this.signer, this.networkPassphrase)
+        );
+        return { txHash: result.hash, ledger: result.ledger };
+      }
       if (err instanceof Error && err.message.includes('tx_bad_seq')) {
-        logger.warn('tx_bad_seq detected, reloading account and retrying once', {
-          source: this.signer.publicKey(),
-        });
+        logger.warn(
+          {
+            source: this.signer.publicKey(),
+          },
+          'tx_bad_seq detected, reloading account and retrying once'
+        );
         // Bypass the account cache: the whole point of this retry is that the
         // sequence we used was wrong, so a cached record must not be reused.
         sourceAccount = await loadAccount(this.signer.publicKey(), { forceRefresh: true });

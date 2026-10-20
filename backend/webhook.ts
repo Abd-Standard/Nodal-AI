@@ -15,6 +15,7 @@ import { config } from './config';
 import { AgentResult } from './agent';
 import { createLogger } from './utils/logger';
 import { handleRateLimitResponse } from './network';
+import { webhookFailuresTotal } from './metrics';
 
 const log = createLogger('webhook');
 
@@ -167,6 +168,7 @@ export async function dispatchWebhook(
           },
           'Webhook delivery failed (non-retryable)'
         );
+        webhookFailuresTotal.inc();
         return;
       }
 
@@ -196,4 +198,5 @@ export async function dispatchWebhook(
     },
     'Webhook delivery failed after max retries'
   );
+  webhookFailuresTotal.inc();
 }
