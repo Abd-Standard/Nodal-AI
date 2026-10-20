@@ -5,7 +5,7 @@
 
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { FriendBotTool } from '../backend/tools/FriendBotTool';
-import { ConfigError } from '../backend/errors';
+import { ConfigError, ValidationError } from '../backend/errors';
 
 const { getNetwork, setNetwork } = vi.hoisted(() => {
   let network = 'testnet';
@@ -167,9 +167,9 @@ describe('FriendBotTool', () => {
   });
 
   it('rejects invalid public key input', async () => {
-    await expect(tool.execute({ publicKey: 'invalid_key' })).rejects.toThrow();
+    await expect(tool.execute({ publicKey: 'invalid_key' })).rejects.toThrow(ValidationError);
     await expect(
       tool.execute({ publicKey: 'SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73' })
-    ).rejects.toThrow(/must start with G/i);
+    ).rejects.toThrow(ValidationError);
   });
 });

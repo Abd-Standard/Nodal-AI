@@ -5,7 +5,7 @@
 
 import { z } from 'zod';
 import { config } from '../config';
-import { ConfigError } from '../errors';
+import { ConfigError, ValidationError } from '../errors';
 import { createLogger } from '../utils/logger';
 import { withRetry, withBackoffGuard } from '../rpc_client';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
@@ -45,7 +45,12 @@ export class FriendBotTool {
    * Throws ConfigError if invoked on mainnet.
    */
   async execute(rawInput: unknown): Promise<FriendBotResult> {
-    const input = FriendBotInputSchema.parse(rawInput);
+    const parsed = FriendBotInputSchema.safeParse(rawInput);
+    if (!parsed.success) {
+      const issue = parsed.error.issues[0];
+      throw new ValidationError(issue ? issue.message : parsed.error.message);
+    }
+    const input = parsed.data;
 
     if (config.STELLAR_NETWORK === 'mainnet') {
       throw new ConfigError('Friendbot funding is not available on mainnet');
