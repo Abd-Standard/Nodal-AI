@@ -269,6 +269,54 @@ describe('ContractEventListener', () => {
     expect(rpcClient.sorobanServer.getEvents).toHaveBeenCalledTimes(2);
   });
 
+  it('emits connectionError event on returned EventEmitter when reconnect retries are exhausted', async () => {
+    const rpcError = new Error('RPC permanent drop');
+    vi.mocked(rpcClient.sorobanServer.getEvents).mockRejectedValue(rpcError);
+
+    const onEvent = vi.fn();
+    const onConnectionError = vi.fn();
+    const handle = listen(VALID_CONTRACT, [], onEvent, { maxReconnectAttempts: 1 });
+    handle.on('connectionError', onConnectionError);
+    stopListening = handle;
+
+    // Attempt 1 fails -> exhaustion
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(onConnectionError).toHaveBeenCalledOnce();
+    expect(onConnectionError).toHaveBeenCalledWith(rpcError);
+  });
+
+  it('invokes options.onError callback when reconnect retries are exhausted', async () => {
+    const rpcError = new Error('RPC permanent drop');
+    vi.mocked(rpcClient.sorobanServer.getEvents).mockRejectedValue(rpcError);
+
+    const onEvent = vi.fn();
+    const onErrorCallback = vi.fn();
+    const handle = listen(VALID_CONTRACT, [], onEvent, {
+      maxReconnectAttempts: 1,
+      onError: onErrorCallback,
+    });
+    stopListening = handle;
+
+    // Attempt 1 fails -> exhaustion
+    await vi.advanceTimersByTimeAsync(100);
+
+    expect(onErrorCallback).toHaveBeenCalledOnce();
+    expect(onErrorCallback).toHaveBeenCalledWith(rpcError);
+  });
+
+  it('does not throw when retries are exhausted and no error listener is attached (e.g. agent.ts usage)', async () => {
+    const rpcError = new Error('RPC permanent drop');
+    vi.mocked(rpcClient.sorobanServer.getEvents).mockRejectedValue(rpcError);
+
+    const onEvent = vi.fn();
+    // No error listener attached — callers like agent.ts just hold the stop function
+    const handle = listen(VALID_CONTRACT, [], onEvent, { maxReconnectAttempts: 1 });
+    stopListening = handle;
+
+    await expect(vi.advanceTimersByTimeAsync(100)).resolves.not.toThrow();
+  });
+
   // ── Start / Stop lifecycle (#457) ──────────────────────────────────────────
 
   it('start → emit 2 events → stop → no further events arrive', async () => {

@@ -26,6 +26,7 @@ import { SubmitResultSchema, buildMemo } from './StellarPaymentTool';
 import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 import { assertDestinationReady } from '../utils/destinationPreflight';
+import { toStroops, fromStroops } from '../utils/amount';
 
 const log = createLogger('path-payment');
 
@@ -82,16 +83,6 @@ function toAsset(a: { code: string; issuer?: string | undefined }): Asset {
   return new Asset(a.code, a.issuer);
 }
 
-const STROOP_SCALE = 10_000_000n;
-
-function toStroops(decimal: string): bigint {
-  const [whole, fraction = ''] = decimal.split('.');
-  return BigInt(whole!) * STROOP_SCALE + BigInt(fraction.slice(0, 7).padEnd(7, '0'));
-}
-
-function fromStroops(stroops: bigint): string {
-  return `${stroops / STROOP_SCALE}.${(stroops % STROOP_SCALE).toString().padStart(7, '0')}`;
-}
 
 /**
  * The least a quoted `amount` may fall to under `bps` basis points of
