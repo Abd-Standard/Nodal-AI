@@ -112,3 +112,21 @@ When releasing a new version:
 ---
 
 For questions or feedback on this changelog, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+/
+├── backend/            # Pillar 1: Agent Orchestration (TypeScript/Node.js)
+│   ├── db/             # Local database layers / state tracking
+│   ├── middleware/     # HTTP middleware (centralised error handling in error_handler.ts)
+│   ├── tools/          # Individual agent tools (StellarPaymentTool, SorobanInvokeTool, X402PaymentTool)
+│   ├── types/          # Domain-specific type and schema validation definitions
+│   ├── utils/          # Shared helpers (logger.ts, stellarSchemas.ts)
+│   ├── agent.ts        # The main orchestrator class (PayFiAgent)
+│   ├── config.ts       # Secure configuration layer and environment schema validations
+│   └── rpc_client.ts   # Central network gateway with observability, retries, and simulation gates
+├── contracts/          # Pillar 2: Soroban Smart Contracts (Rust)
+│   └── escrow/         # Production-grade Soroban escrow contract (src/lib.rs, src/test.rs)
+└── tests/              # Pillar 3: Integration & E2E Tests (Vitest & TypeScript)
+    ├── payment.test.ts # Stellar native/asset payment verification tests
+    ├── x402.test.ts    # E2E x402 protocol integration tests
+    └── soroban_invoke.test.ts # Smart contract invocation tests
+```
