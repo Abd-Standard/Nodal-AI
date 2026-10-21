@@ -29,7 +29,6 @@ import { DataEntryTool, DataEntryInputSchema } from './DataEntryTool';
 import { SequenceNumberTool, SequenceNumberInputSchema } from './SequenceNumberTool';
 import { SponsoredAccountTool, SponsoredAccountInputSchema } from './SponsoredAccountTool';
 import { AnchorQuoteTool, AnchorQuoteInputSchema } from './AnchorQuoteTool';
-import { InflationTool, InflationInputSchema } from './InflationTool';
 import { SorobanDeployTool, SorobanDeployInputSchema } from './SorobanDeployTool';
 import { SwapTool, SwapInputSchema } from './SwapTool';
 import { AccountHistoryTool, AccountHistoryInputSchema } from './AccountHistoryTool';
@@ -77,7 +76,6 @@ export function createBuiltinTools(): AgentTool<any, any>[] {
   const sequenceNumberTool = new SequenceNumberTool(config.agentKeypair().secret());
   const sponsoredAccountTool = new SponsoredAccountTool(config.agentKeypair().secret());
   const anchorQuoteTool = new AnchorQuoteTool();
-  const inflationTool = new InflationTool(config.agentKeypair().secret());
   const sorobanDeployTool = new SorobanDeployTool();
   const swapTool = new SwapTool(config.agentKeypair().secret());
   const accountHistoryTool = new AccountHistoryTool();
@@ -245,14 +243,6 @@ export function createBuiltinTools(): AgentTool<any, any>[] {
       inputSchema: AnchorQuoteInputSchema,
       valueMoving: false,
       execute: (input) => anchorQuoteTool.execute(input),
-    }),
-    defineTool({
-      name: 'inflation',
-      description:
-        "Deprecated (inflation is disabled on Stellar; removed next minor release): set or query the account's inflation destination.",
-      inputSchema: InflationInputSchema,
-      valueMoving: false,
-      execute: (input) => inflationTool.execute(input),
     }),
     defineTool({
       name: 'soroban_deploy',

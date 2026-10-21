@@ -52,7 +52,6 @@ import { LiquidityPoolTool } from './tools/LiquidityPoolTool';
 import { StellarTomlTool } from './tools/StellarTomlTool';
 import { DataEntryTool } from './tools/DataEntryTool';
 import { SequenceNumberTool } from './tools/SequenceNumberTool';
-import { InflationTool } from './tools/InflationTool';
 import { SponsoredAccountTool } from './tools/SponsoredAccountTool';
 import { AnchorQuoteTool } from './tools/AnchorQuoteTool';
 import { SorobanDeployTool } from './tools/SorobanDeployTool';
@@ -217,8 +216,6 @@ export type BuiltinTaskType =
   | 'sequence_number'
   | 'sponsored_account'
   | 'anchor_quote'
-  /** @deprecated Inflation is disabled on Stellar; removed in the next minor release (#782). */
-  | 'inflation'
   | 'soroban_deploy'
   | 'swap'
   | 'account_history'
@@ -281,7 +278,6 @@ export type TaskPayloadMap = {
   sequence_number: { accountId: string };
   sponsored_account: { sponsoredAccountId: string; sponsorSigner: string };
   anchor_quote: { sourceAsset: string; destAsset: string; amount: string };
-  inflation: { destination?: string };
   soroban_deploy: { wasmHash: string; salt?: string };
   swap: { sourceAsset: string; destAsset: string; amount: string };
   account_history: { accountId: string; limit?: number };
@@ -319,7 +315,6 @@ export type TaskResultMap = {
   sequence_number: { sequenceNumber: string };
   sponsored_account: { txHash: string; sponsoredAccountId: string };
   anchor_quote: { sourceAmount: string; destAmount: string; price: string };
-  inflation: { txHash: string; ledger: number };
   soroban_deploy: { contractId: string; txHash: string };
   swap: { txHash: string; sourceAmount: string; destAmount: string };
   account_history: { operations: unknown[] };
@@ -397,7 +392,6 @@ export const VALUE_MOVING_TASK_TYPES: ReadonlySet<TaskType> = new Set<TaskType>(
   'data_entry',
   'sequence_number',
   'sponsored_account',
-  'inflation',
   'soroban_deploy',
   'swap',
   'set_options',
@@ -538,7 +532,6 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
   private sequenceNumberTool: SequenceNumberTool;
   private sponsoredAccountTool: SponsoredAccountTool;
   private anchorQuoteTool: AnchorQuoteTool;
-  private inflationTool: InflationTool;
   private sorobanDeployTool: SorobanDeployTool;
   private swapTool: SwapTool;
   private accountHistoryTool: AccountHistoryTool;
@@ -595,7 +588,6 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
     this.sequenceNumberTool = new SequenceNumberTool(this.signer);
     this.sponsoredAccountTool = new SponsoredAccountTool(this.signer);
     this.anchorQuoteTool = new AnchorQuoteTool();
-    this.inflationTool = new InflationTool(this.signer);
     this.sorobanDeployTool = new SorobanDeployTool();
     this.swapTool = new SwapTool(this.signer);
     this.accountHistoryTool = new AccountHistoryTool();
@@ -1307,10 +1299,6 @@ export class PayFiAgent extends EventEmitter<AgentEvents> {
 
           case 'anchor_quote':
             data = await this.anchorQuoteTool.execute(task.payload);
-            break;
-
-          case 'inflation':
-            data = await this.inflationTool.execute(task.payload);
             break;
 
           case 'set_options':

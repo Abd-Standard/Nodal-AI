@@ -9,6 +9,7 @@
 #   postgres            — shared Postgres store (profile: postgres)
 #   agent-postgres      — agent with STORAGE_BACKEND=postgres (profile: postgres)
 #   test-runner-postgres — storage test suite against Postgres (profile: postgres)
+#   dashboard           — visual dashboard UI (profile: dashboard)
 #
 # Usage:
 #   docker compose up --build          # start everything
@@ -20,6 +21,7 @@
 #   docker compose --profile postgres up --build agent-postgres   # agent on Postgres (port 3001)
 #   docker compose --profile postgres run --rm test-runner-postgres
 #     # runs tests/storage.test.ts against both SQLite and Postgres
+#   docker compose --profile dashboard up --build dashboard   # start visual dashboard (port 5173)
 # =============================================================================
 
 version: "3.9"
@@ -231,6 +233,29 @@ services:
       - ./vitest.config.ts:/build/vitest.config.ts:ro
     command: npx vitest run tests/storage.test.ts tests/db_migrations.test.ts
     restart: "no"
+    networks:
+      - nodal-net
+
+  # ── Visual Dashboard ───────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node-builder
+    container_name: nodal-dashboard
+    profiles:
+      - dashboard               # only starts with: docker compose --profile dashboard up
+    depends_on:
+      agent:
+        condition: service_healthy
+    environment:
+      VITE_API_URL: http://agent:3000
+      VITE_API_TOKEN: ${ADMIN_API_TOKEN:-}
+    working_dir: /build
+    command: sh -c "cd apps/dashboard && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
     networks:
       - nodal-net
 

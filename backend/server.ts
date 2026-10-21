@@ -8,12 +8,13 @@
  *                  503 { status: "degraded", components: { ... } } when a dependency is down
  *   GET /status  → 200 { results: PersistedResult[] }   (paginated via ?limit=&offset=,
  *                  default last 10; Bearer auth when ADMIN_API_TOKEN is set)
- *   POST /admin/pause  → 200 { paused: true }   halt value-moving tasks (kill switch)
- *   POST /admin/resume → 200 { paused: false }  resume them
- *                  Both always require Bearer auth with ADMIN_API_TOKEN; 401 when it is unset.
- *   GET /approvals     → 200 { approvals: PendingApproval[] }  tasks awaiting a decision
- *   POST /approvals/:id { "decision": "approve" | "deny" } → 200 { approval, result? }
- *                  Always requires Bearer auth with ADMIN_API_TOKEN; 401 when it is unset.
+ *   GET /spending → 200 { total, limit, windowMs, percentUsed } (Bearer auth)
+ *   GET /metrics → Prometheus text exposition (Bearer auth)
+ *   GET /approvals → 200 { approvals: PendingApproval[] } (Bearer auth)
+ *   POST /approvals/:id { "decision": "approve" | "deny" } → 200 { approval, result? } (Bearer auth)
+ *   GET /stream → SSE stream for real-time dashboard updates (Bearer auth)
+ *   POST /admin/pause → 200 { paused: true } halt value-moving tasks (Bearer auth)
+ *   POST /admin/resume → 200 { paused: false } resume them (Bearer auth)
  *
  * ADMIN_API_TOKEN is the API bearer token. WEBHOOK_SECRET is still accepted in
  * its place when ADMIN_API_TOKEN is unset, but that fallback is deprecated.
@@ -33,6 +34,7 @@ import { createLogger } from './utils/logger';
 import { spendingTracker, type PayFiAgent } from './agent';
 import { llmUsage } from './ai/llm';
 import { metricsRegistry, renderMetrics, spendingWindowTotal } from './metrics';
+import { pauseAgent, resumeAgent, isPaused } from './kill_switch';
 
 const log = createLogger('health-server');
 
@@ -136,14 +138,36 @@ function tokensMatch(given: string, expected: string): boolean {
  * Returns true if the request passes Bearer-token authentication.
  * When no API token is configured, requests are allowed on testnet/futurenet
  * only; on mainnet they are always rejected.
+ * Also checks for token in URL query parameter (for SSE support).
  */
 function isAuthenticated(req: http.IncomingMessage): boolean {
   const secret = apiToken();
   if (!secret) return config.STELLAR_NETWORK !== 'mainnet';
+  
+  // Check Authorization header first
   const auth = req.headers['authorization'];
-  if (!auth) return false;
-  const [scheme, token] = auth.split(' ');
-  return scheme?.toLowerCase() === 'bearer' && token !== undefined && tokensMatch(token, secret);
+  if (auth) {
+    const [scheme, token] = auth.split(' ');
+    if (scheme?.toLowerCase() === 'bearer' && token !== undefined && tokensMatch(token, secret)) {
+      return true;
+    }
+  }
+  
+  // Check URL query parameter (for SSE, which doesn't support custom headers)
+  const url = req.url;
+  if (url) {
+    try {
+      const parsed = new URL(url, `http://${req.headers.host ?? 'localhost'}`);
+      const token = parsed.searchParams.get('token');
+      if (token && tokensMatch(token, secret)) {
+        return true;
+      }
+    } catch {
+      // Invalid URL, continue to return false
+    }
+  }
+  
+  return false;
 }
 
 const HEALTH_PATH = '/health';
@@ -151,6 +175,9 @@ const STATUS_PATH = '/status';
 const SPENDING_PATH = '/spending';
 const METRICS_PATH = '/metrics';
 const APPROVALS_PATH = '/approvals';
+const STREAM_PATH = '/stream';
+const ADMIN_PAUSE_PATH = '/admin/pause';
+const ADMIN_RESUME_PATH = '/admin/resume';
 
 /**
  * Creates and returns the health-check HTTP server.
@@ -273,6 +300,44 @@ export function createHealthServer(agent?: PayFiAgent): http.Server {
     if (req.method === 'POST' && req.url?.startsWith(`${APPROVALS_PATH}/`)) {
       const id = decodeURIComponent(req.url.slice(APPROVALS_PATH.length + 1));
       void handleApprovalDecision(req, res, agent, id);
+      return;
+    }
+
+    // ── GET /stream ────────────────────────────────────────────────────────
+    // SSE stream for real-time dashboard updates
+    if (req.method === 'GET' && req.url === STREAM_PATH) {
+      if (!isAuthenticated(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+      void handleStream(req, res, agent);
+      return;
+    }
+
+    // ── POST /admin/pause ──────────────────────────────────────────────────
+    if (req.method === 'POST' && req.url === ADMIN_PAUSE_PATH) {
+      if (!isAuthenticated(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+      pauseAgent('Paused via HTTP API');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ paused: true }));
+      return;
+    }
+
+    // ── POST /admin/resume ─────────────────────────────────────────────────
+    if (req.method === 'POST' && req.url === ADMIN_RESUME_PATH) {
+      if (!isAuthenticated(req)) {
+        res.writeHead(401, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Unauthorized' }));
+        return;
+      }
+      resumeAgent('Resumed via HTTP API');
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ paused: false }));
       return;
     }
 
@@ -506,4 +571,110 @@ async function handleApprovalDecision(
     });
     send(errorResponse.status, errorResponse);
   }
+}
+
+/**
+ * GET /stream — SSE stream for real-time dashboard updates.
+ * Emits events for: task results, spending changes, approval status, and agent pause/resume.
+ */
+function handleStream(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  agent: PayFiAgent | undefined
+): void {
+  // SSE headers
+  res.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    'Connection': 'keep-alive',
+    'Access-Control-Allow-Origin': '*',
+  });
+
+  // Helper to send SSE events
+  const sendEvent = (event: string, data: unknown): void => {
+    res.write(`event: ${event}\n`);
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  // Send initial state
+  try {
+    const spendingStatus = spendingTracker.getWindowStatus();
+    const approvals = agent?.listApprovals() ?? [];
+    const paused = isPaused();
+
+    sendEvent('initial', {
+      spending: {
+        ...spendingStatus,
+        limit: parseFloat(config.AGENT_SPENDING_LIMIT),
+        percentUsed:
+          spendingStatus.total > 0
+            ? (spendingStatus.total / parseFloat(config.AGENT_SPENDING_LIMIT)) * 100
+            : 0,
+      },
+      approvals,
+      paused,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    log.error({ msg: 'Failed to send initial SSE state', err: String(err) });
+  }
+
+  // Set up polling for updates (simple approach without event emitter changes)
+  const POLL_INTERVAL_MS = 2000;
+  let lastSpendingTotal = spendingTracker.total();
+  let lastApprovalCount = agent?.listApprovals().length ?? 0;
+  let lastPausedState = isPaused();
+
+  const interval = setInterval(() => {
+    try {
+      // Check for spending changes
+      const currentSpendingTotal = spendingTracker.total();
+      if (currentSpendingTotal !== lastSpendingTotal) {
+        lastSpendingTotal = currentSpendingTotal;
+        const spendingStatus = spendingTracker.getWindowStatus();
+        sendEvent('spending', {
+          ...spendingStatus,
+          limit: parseFloat(config.AGENT_SPENDING_LIMIT),
+          percentUsed:
+            spendingStatus.total > 0
+              ? (spendingStatus.total / parseFloat(config.AGENT_SPENDING_LIMIT)) * 100
+              : 0,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Check for approval changes
+      if (agent) {
+        const currentApprovals = agent.listApprovals();
+        if (currentApprovals.length !== lastApprovalCount) {
+          lastApprovalCount = currentApprovals.length;
+          sendEvent('approvals', {
+            approvals: currentApprovals,
+            timestamp: new Date().toISOString(),
+          });
+        }
+      }
+
+      // Check for pause/resume changes
+      const currentPaused = isPaused();
+      if (currentPaused !== lastPausedState) {
+        lastPausedState = currentPaused;
+        sendEvent('pause', {
+          paused: currentPaused,
+          timestamp: new Date().toISOString(),
+        });
+      }
+
+      // Send periodic heartbeat
+      sendEvent('heartbeat', { timestamp: new Date().toISOString() });
+    } catch (err) {
+      log.error({ msg: 'SSE polling error', err: String(err) });
+    }
+  }, POLL_INTERVAL_MS);
+
+  // Clean up on client disconnect
+  req.on('close', () => {
+    clearInterval(interval);
+    log.info('SSE client disconnected');
+  });
 }

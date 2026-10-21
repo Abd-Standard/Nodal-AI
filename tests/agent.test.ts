@@ -23,7 +23,6 @@ import { DataEntryTool } from '../backend/tools/DataEntryTool';
 import { SequenceNumberTool } from '../backend/tools/SequenceNumberTool';
 import { SponsoredAccountTool } from '../backend/tools/SponsoredAccountTool';
 import { AnchorQuoteTool } from '../backend/tools/AnchorQuoteTool';
-import { InflationTool } from '../backend/tools/InflationTool';
 import { SorobanInvokeTool } from '../backend/tools/SorobanInvokeTool';
 import { SorobanQueryTool } from '../backend/tools/SorobanQueryTool';
 import { X402PaymentTool } from '../backend/tools/X402PaymentTool';
@@ -171,13 +170,6 @@ vi.mock('../backend/tools/AnchorQuoteTool', () => ({
   AnchorQuoteInputSchema: passthroughSchema,
   AnchorQuoteTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ quoteId: 'quote_mock_id', price: '1.0' }),
-  })),
-}));
-
-vi.mock('../backend/tools/InflationTool', () => ({
-  InflationInputSchema: passthroughSchema,
-  InflationTool: vi.fn().mockImplementation(() => ({
-    execute: vi.fn().mockResolvedValue({ txHash: 'inflation_mock_hash', ledger: 1 }),
   })),
 }));
 
@@ -1277,15 +1269,15 @@ describe('PayFiAgent — mutation-killing: StellarPaymentTool data passthrough',
 
 // ─── Issue #450: Parameterized agent task dispatch matrix ────────────────────
 //
-// Covers all 14 registered TaskType values in the PayFiAgent.run() dispatch
+// Covers all registered TaskType values in the PayFiAgent.run() dispatch
 // switch. Each row verifies that:
 //   1. The correct tool method is invoked (via the existing vi.mock stubs).
 //   2. result.taskType echoes back the dispatched type.
 //   3. result.success is true when the tool stub resolves.
 //
-// Tool mocks for the 7 task types not exercised by earlier test suites
+// Tool mocks for the 6 task types not exercised by earlier test suites
 // (LiquidityPoolTool, StellarTomlTool, DataEntryTool, SequenceNumberTool,
-//  SponsoredAccountTool, AnchorQuoteTool, InflationTool) are declared in the
+//  SponsoredAccountTool, AnchorQuoteTool) are declared in the
 // vi.mock() section at the top of this file.
 
 type DispatchRow = [taskType: TaskType, payload: Record<string, unknown>, description: string];
@@ -1386,7 +1378,6 @@ const DISPATCH_MATRIX: DispatchRow[] = [
     },
     'routes liquidity_pool to LiquidityPoolTool',
   ],
-  ['inflation', { action: 'set', inflationDestination: DEST }, 'routes inflation to InflationTool'],
 ];
 
 describe('PayFiAgent — task dispatch matrix (#450)', () => {
@@ -1448,14 +1439,8 @@ describe('PayFiAgent — task dispatch matrix (#450)', () => {
           execute: vi.fn().mockResolvedValue({ quoteId: 'quote_dispatch_id', price: '1.0' }),
         }) as any
     );
-    vi.mocked(InflationTool).mockImplementation(
-      () =>
-        ({
-          execute: vi.fn().mockResolvedValue({ txHash: 'inflation_dispatch_hash', ledger: 1 }),
-        }) as any
-    );
 
-    // The remaining 7 dispatch types (soroban_invoke, soroban_query, x402_respond,
+    // The remaining 6 dispatch types (soroban_invoke, soroban_query, x402_respond,
     // account_info, change_trust, multisig_payment, batch_payment) are declared
     // in the top-level vi.mock() factories, but — unlike the tools mocked above —
     // their classes were never also `import`ed by name into this file. Without a

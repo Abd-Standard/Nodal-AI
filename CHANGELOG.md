@@ -37,7 +37,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Removed
 
-- None
+- `inflation` task type and `InflationTool` — inflation has been disabled on Stellar since protocol 12 and has no economic effect. The read-only `inflationDestination` field on `account_info` is retained for reading legacy values (#874).
 
 ### Fixed
 

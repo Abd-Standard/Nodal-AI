@@ -69,6 +69,17 @@ RUN npm ci --ignore-scripts
 # ── Full source copy + compile ────────────────────────────────────────────────
 COPY tsconfig.json ./
 COPY backend/ ./backend/
+COPY apps/dashboard/package.json ./apps/dashboard/package.json
+
+# Install dashboard dependencies (npm install instead of ci since lockfile may not exist)
+RUN cd apps/dashboard && npm install --ignore-scripts
+
+COPY apps/dashboard/src ./apps/dashboard/src
+COPY apps/dashboard/vite.config.ts ./apps/dashboard/vite.config.ts
+COPY apps/dashboard/index.html ./apps/dashboard/index.html
+COPY apps/dashboard/tsconfig.json ./apps/dashboard/tsconfig.json
+COPY apps/dashboard/tsconfig.app.json ./apps/dashboard/tsconfig.app.json
+COPY apps/dashboard/tsconfig.node.json ./apps/dashboard/tsconfig.node.json
 
 RUN npm run build
 

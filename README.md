@@ -132,6 +132,23 @@ docker compose --profile postgres run --rm test-runner-postgres
 
 Schema changes are numbered SQL files in [`backend/db/migrations/`](./backend/db/migrations/) (`postgres/` holds the Postgres equivalents). Pending files are applied at startup inside a transaction and recorded in `schema_version`. To change the schema, add the next `NNN_<name>.sql` for both backends. Never edit a migration that has already shipped.
 
+### Visual Dashboard
+
+A web-based dashboard provides real-time monitoring and control of your Nodal agent:
+
+```bash
+docker compose --profile dashboard up --build
+```
+
+The dashboard runs on port 5173 and includes:
+- **Live spending gauge** showing current spend against your limit
+- **Task history** with success/failure status
+- **Pending approvals** queue with approve/deny actions
+- **Pause/Resume button** to halt value-moving tasks during incidents
+- **Real-time updates** via SSE stream
+
+See [`apps/dashboard/README.md`](./apps/dashboard/README.md) for full documentation and screenshots.
+
 ---
 
 ## Development Environment (Devcontainer & Codespaces)
@@ -616,7 +633,6 @@ Input wrapper for task dispatch. The `payload` shape depends on `type`:
 - `path_payment`: `{ destination: string; sendAsset: Asset; sendAmount: string; destAsset: Asset; destMinAmount?: string; maxSlippageBps?: number; path?: Asset[]; ... }` (omit `path`/`destMinAmount` to discover the best path and derive `destMinAmount` from its quote less `maxSlippageBps`, 0–1000, default 50)
 - `fee_bump`: `{ innerTx: string; feeAccount: string; maxFee: string }`
 - `account_info`: `{ publicKey?: string }`
-- `inflation` (**deprecated**, removed in the next minor release — inflation is disabled on Stellar since protocol 12; read the value from `account_info`'s `inflationDestination`): `{ action: "set"; inflationDestination: string }` or `{ action: "get"; accountId?: string }` — set or query the account's inflation destination
 - `balance_check`: `{ assetCode: string; assetIssuer?: string; publicKey?: string }`
 - `soroban_query`: `{ contractId: string; method: string; args: SorobanValue[] }`
 - `ledger_info`: `{ forceRefresh?: boolean }`

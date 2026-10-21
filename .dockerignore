@@ -32,3 +32,6 @@ Thumbs.db
 # ─── Test artefacts ───────────────────────────────────────────────────────────
 tests
 *.test.ts
+
+# ─── Dashboard node_modules (but keep the source) ─────────────────────────────
+apps/dashboard/node_modules
