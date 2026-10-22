@@ -1,0 +1,138 @@
+---
+# Normal cases: payment operations (1–10)
+
+id: pay-001
+description: Simple XLM payment
+prompt: "Send 10 XLM to GBOB123456789012345678901234567890123456789012345678901234"
+expectedTaskTypes:
+  - stellar_payment
+expectedPayloadFields:
+  amount: "10"
+recordedOutput:
+  tasks:
+    - type: stellar_payment
+      payload:
+        destination: GBOB123456789012345678901234567890123456789012345678901234
+        amount: "10"
+        asset: XLM
+---
+id: pay-002
+description: USDC payment with memo
+prompt: "Pay 25 USDC to GALICE with memo 'invoice-42'"
+expectedTaskTypes:
+  - stellar_payment
+expectedPayloadFields:
+  amount: "25"
+recordedOutput:
+  tasks:
+    - type: stellar_payment
+      payload:
+        destination: GALICE
+        amount: "25"
+        asset: USDC
+        memo: invoice-42
+---
+id: pay-003
+description: Path payment cross-asset
+prompt: "Convert 5 XLM to USDC and send to GDAVE"
+expectedTaskTypes:
+  - path_payment
+recordedOutput:
+  tasks:
+    - type: path_payment
+      payload:
+        sendAsset: XLM
+        sendAmount: "5"
+        destAsset: USDC
+        destination: GDAVE
+---
+id: pay-004
+description: Batch payment to multiple recipients
+prompt: "Send 1 XLM each to GAAA, GBBB, and GCCC"
+expectedTaskTypes:
+  - batch_payment
+recordedOutput:
+  tasks:
+    - type: batch_payment
+      payload:
+        payments:
+          - destination: GAAA
+            amount: "1"
+          - destination: GBBB
+            amount: "1"
+          - destination: GCCC
+            amount: "1"
+---
+id: pay-005
+description: Multi-sig payment
+prompt: "Submit a multisig payment of 100 USDC requiring 2 signers"
+expectedTaskTypes:
+  - multisig_payment
+recordedOutput:
+  tasks:
+    - type: multisig_payment
+      payload:
+        amount: "100"
+        asset: USDC
+        requiredSigners: 2
+---
+id: pay-006
+description: Fee-bump transaction
+prompt: "Submit a fee-bump for tx hash abc123 with a fee of 1000 stroops"
+expectedTaskTypes:
+  - fee_bump
+recordedOutput:
+  tasks:
+    - type: fee_bump
+      payload:
+        innerTxHash: abc123
+        fee: "1000"
+---
+id: pay-007
+description: X402 payment response
+prompt: "Respond to the x402 challenge for resource /api/data with 0.5 USDC"
+expectedTaskTypes:
+  - x402_respond
+recordedOutput:
+  tasks:
+    - type: x402_respond
+      payload:
+        resourceUrl: /api/data
+        amount: "0.5"
+---
+id: pay-008
+description: Check balance before payment
+prompt: "What is the XLM balance of GAAA?"
+expectedTaskTypes:
+  - balance_check
+recordedOutput:
+  tasks:
+    - type: balance_check
+      payload:
+        accountId: GAAA
+        asset: XLM
+---
+id: pay-009
+description: Account history lookup
+prompt: "Show the last 10 transactions for account GAAA"
+expectedTaskTypes:
+  - account_history
+recordedOutput:
+  tasks:
+    - type: account_history
+      payload:
+        accountId: GAAA
+        limit: 10
+---
+id: pay-010
+description: Trustline change
+prompt: "Add a trustline to USDC issued by GBDUVJ"
+expectedTaskTypes:
+  - change_trust
+recordedOutput:
+  tasks:
+    - type: change_trust
+      payload:
+        asset: USDC
+        issuer: GBDUVJ
+        limit: "922337203685.4775807"

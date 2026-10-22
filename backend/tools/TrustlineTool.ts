@@ -3,40 +3,88 @@
  * Manage asset trustlines for the agent account.
  */
 
-import { Keypair, TransactionBuilder, Operation, Asset, BASE_FEE } from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { loadAccount, submitTransaction, horizonServer, resolveNetworkPassphrase } from "../rpc_client";
+import {
+  TransactionBuilder,
+  Operation,
+  Asset,
+  BASE_FEE,
+  } from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
+import {
+  loadAccount,
+  submitTransaction,
+  resolveNetworkPassphrase,
+} from '../rpc_client';
+import { SubmitResultSchema } from './StellarPaymentTool';
+import { getTypedBalances } from './balanceHelpers';
+import { ValidationError } from '../errors';
+import { BalanceCheckTool } from './BalanceCheckTool';
+import { SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
+import { stellarPublicKeySchema } from '../utils/stellarSchemas';
 
 export const TrustlineInputSchema = z.object({
   assetCode: z.string().min(1).max(12),
-  assetIssuer: z.string().length(56, "Invalid asset issuer address"),
-  action: z.enum(["add", "remove"]),
+  assetIssuer: stellarPublicKeySchema('Asset issuer'),
+  action: z.enum(['add', 'remove']),
   limit: z.string().optional(),
 });
 
 export type TrustlineInput = z.infer<typeof TrustlineInputSchema>;
 
 export class TrustlineTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
+  private balanceCheckTool: BalanceCheckTool;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
+    this.balanceCheckTool = new BalanceCheckTool();
   }
 
   async checkTrustline(assetCode: string, assetIssuer: string): Promise<boolean> {
-    const account = await loadAccount(this.keypair.publicKey());
-    return (account.balances as any[]).some(
-      (b) => b.asset_type !== "native" && b.asset_code === assetCode && b.asset_issuer === assetIssuer
+    const account = await loadAccount(this.signer.publicKey());
+    return getTypedBalances(account).some(
+      (b) => b.assetType !== 'native' && b.assetCode === assetCode && b.assetIssuer === assetIssuer
     );
   }
 
+  /**
+   * Add or remove a trustline for the agent account.
+   *
+   * For 'add' action: checks if the trustline already exists to avoid
+   * submitting a duplicate transaction and wasting fees.
+   * For 'remove' action: verifies the trustline has a zero balance.
+   */
   async execute(rawInput: unknown): Promise<{ txHash: string; ledger: number }> {
     const input = TrustlineInputSchema.parse(rawInput);
     const asset = new Asset(input.assetCode, input.assetIssuer);
-    const account = await loadAccount(this.keypair.publicKey());
+    const account = await loadAccount(this.signer.publicKey());
+
+    if (input.action === 'add') {
+      // Check if trustline already exists to avoid duplicate tx/fees
+      const trustlineExists = await this.checkTrustline(input.assetCode, input.assetIssuer);
+      if (trustlineExists) {
+        throw new ValidationError(
+          `Trustline for ${input.assetCode} already exists — no action needed`
+        );
+      }
+    }
+
+    if (input.action === 'remove') {
+      const balance = await this.balanceCheckTool.execute({
+        publicKey: this.signer.publicKey(),
+        assetCode: input.assetCode,
+        assetIssuer: input.assetIssuer,
+      });
+      if (Number(balance) > 0) {
+        throw new ValidationError(
+          `Cannot remove trustline: non-zero balance of ${input.assetCode}`
+        );
+      }
+    }
 
     const tx = new TransactionBuilder(account, {
       fee: BASE_FEE,
@@ -45,14 +93,18 @@ export class TrustlineTool {
       .addOperation(
         Operation.changeTrust({
           asset,
-          limit: input.action === "remove" ? "0" : input.limit,
+          ...(input.action === 'remove'
+            ? { limit: '0' }
+            : input.limit
+              ? { limit: input.limit }
+              : {}),
         })
       )
-      .setTimeout(30)
+      .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    tx.sign(this.keypair);
-    const result = (await submitTransaction(tx)) as { hash: string; ledger: number };
+    this.signer.signTransaction(tx);
+    const result = SubmitResultSchema.parse(await submitTransaction(tx));
     return { txHash: result.hash, ledger: result.ledger };
   }
 }

@@ -13,13 +13,21 @@
  *   Authorization   : wrong arbiter, wrong depositor
  *   Events          : "released", "refunded"
  *   Balance         : partial lock, full balance lock
+ *   Property tests  : conservation of funds — the sum of released/refunded
+ *                     tokens equals the initialised amount over many random
+ *                     amounts (proptest)
+ *   Stateful props  : random call sequences (release, release_partial,
+ *                     refund, cancel, arbiter rotation, impostor callers,
+ *                     time travel) checked against a reference model after
+ *                     every step — see "Invariants" in ../README.md
  */
 
 #[cfg(test)]
 mod tests {
     extern crate std;
 
-    use crate::{EscrowContract, EscrowContractClient, EscrowState};
+    use crate::{EscrowContract, EscrowContractClient, EscrowError, EscrowState, MIN_ROTATION_DELAY};
+    use proptest::prelude::*;
     use soroban_sdk::{
         testutils::{Address as _, Events, Ledger},
         token::{Client as TokenClient, StellarAssetClient},
@@ -61,7 +69,7 @@ mod tests {
         assert_eq!(token.balance(&recipient), 500);
         assert_eq!(token.balance(&contract_id), 0);
     }
-    
+
     // 3. initialize with max i128 amount should panic
     #[test]
     #[should_panic]
@@ -75,7 +83,14 @@ mod tests {
         let contract_id = env.register_contract(None, EscrowContract);
         let client = EscrowContractClient::new(&env, &contract_id);
         // Use max i128 amount; should panic due to overflow guard
-        client.initialize(&depositor, &recipient, &arbiter, &token_id, i128::MAX, &env.ledger().timestamp() + EXPIRY_OFFSET);
+        client.initialize(
+            &depositor,
+            &recipient,
+            &arbiter,
+            &token_id,
+            &i128::MAX,
+            &(env.ledger().timestamp() + EXPIRY_OFFSET),
+        );
     }
 
     // 2. initialize -> refund after expiry
@@ -291,6 +306,26 @@ mod tests {
                 expiry,
             );
         });
+    }
+
+    // ── Double-initialize guard (issue #309) ─────────────────────────────────
+
+    // 10b. calling initialize twice panics with AlreadyInitialized
+    #[test]
+    #[should_panic]
+    fn test_double_initialize_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let expiry = env.ledger().timestamp() + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
     }
 
     // 11. zero amount panics
@@ -574,7 +609,10 @@ mod tests {
 
     // 19. cancel seals state (subsequent release panics)
     #[test]
-    #[should_panic(expected = "state is sealed")]
+    // Soroban panics carry an opaque HostError/contract-error value, not a
+    // human-readable string, so (like every other panic test in this file)
+    // this only asserts that the second call panics at all.
+    #[should_panic]
     fn test_cancel_seals_state() {
         let env = Env::default();
         env.mock_all_auths();
@@ -593,7 +631,9 @@ mod tests {
 
     // 20. cancel requires both auths (only depositor auth should panic)
     #[test]
-    #[should_panic(expected = "authorization")]
+    // See test_cancel_seals_state — Soroban auth-failure panics aren't a
+    // matchable string either, consistent with test_cancel_requires_arbiter_auth.
+    #[should_panic]
     fn test_cancel_requires_both_auths() {
         let env = Env::default();
         let depositor = Address::generate(&env);
@@ -858,8 +898,725 @@ mod tests {
         env.ledger().with_mut(|li| li.timestamp = expiry + 1);
         // Call refund with depositor — funds must go to stored depositor, not impostor
         client.refund(&depositor);
-        assert_eq!(token.balance(&depositor), 1_000, "stored depositor should receive funds");
+        assert_eq!(
+            token.balance(&depositor),
+            1_000,
+            "stored depositor should receive funds"
+        );
         assert_eq!(token.balance(&impostor), 0, "impostor must receive nothing");
         assert_eq!(token.balance(&contract_id), 0);
+    }
+
+    // ── initialized_at field tests (issue #290) ──────────────────────────────
+
+    // 31. get_state returns initialized_at after initialize
+    #[test]
+    fn test_get_state_includes_initialized_at() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let now = env.ledger().timestamp();
+        let expiry = now + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        let state = client.get_state();
+        assert_eq!(
+            state.initialized_at, now,
+            "initialized_at should match ledger timestamp"
+        );
+    }
+
+    // 32. initialized_at reflects ledger timestamp at initialization time
+    #[test]
+    fn test_initialized_at_reflects_ledger_timestamp() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        env.ledger().with_mut(|li| li.timestamp = 500);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let expiry = 500 + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        let state = client.get_state();
+        assert_eq!(state.initialized_at, 500, "initialized_at should be 500");
+    }
+
+    // ── Arbiter rotation tests (issue #291) ──────────────────────────────────
+
+    // 33. propose_new_arbiter requires depositor auth
+    #[test]
+    fn test_propose_arbiter_requires_depositor_auth() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let new_arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let expiry = env.ledger().timestamp() + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        // Propose with correct depositor should succeed
+        client.propose_new_arbiter(&depositor, &new_arbiter);
+    }
+
+    // 34. accept_arbiter_rotation fails before time-lock expires
+    #[test]
+    #[should_panic]
+    fn test_accept_arbiter_rotation_locked_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let new_arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let expiry = env.ledger().timestamp() + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        client.propose_new_arbiter(&depositor, &new_arbiter);
+        // Try to accept before 24 hours have passed — should panic
+        client.accept_arbiter_rotation();
+    }
+
+    // 35. accept_arbiter_rotation succeeds after time-lock expires
+    #[test]
+    fn test_accept_arbiter_rotation_succeeds_after_delay() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let new_arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let now = env.ledger().timestamp();
+        let expiry = now + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        client.propose_new_arbiter(&depositor, &new_arbiter);
+        // Advance time by 24 hours + 1 second
+        env.ledger().with_mut(|li| li.timestamp = now + 86_401);
+        client.accept_arbiter_rotation();
+        // Verify the new arbiter is now active
+        let state = client.get_state();
+        assert_eq!(state.arbiter, new_arbiter);
+    }
+
+    // 35b. the minimum rotation delay is enforced exactly at its boundary, so
+    //      an accept just before `MIN_ROTATION_DELAY` stays locked while accept
+    //      exactly at or after it succeeds. This documents that the rotation
+    //      floor is a fixed contract constant a depositor cannot shorten.
+    #[test]
+    fn test_arbiter_rotation_min_delay_boundary() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let new_arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let now = env.ledger().timestamp();
+        let expiry = now + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        client.propose_new_arbiter(&depositor, &new_arbiter);
+
+        // 1 second before the minimum floor elapses, acceptance must still panic
+        // (proving no sub-24h/near-instant rotation window can be opened).
+        env.ledger()
+            .with_mut(|li| li.timestamp = now + MIN_ROTATION_DELAY - 1);
+        // `Env`/`EscrowContractClient` hold `Rc<RefCell<..>>` internals, so the
+        // closure isn't `UnwindSafe` by default; `AssertUnwindSafe` is sound here
+        // because we only inspect state (`get_state()`) after the panic, never
+        // mutate through a reference that might have been left inconsistent.
+        let locked = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            client.accept_arbiter_rotation()
+        }));
+        assert!(
+            locked.is_err(),
+            "rotation must remain locked until MIN_ROTATION_DELAY fully elapses"
+        );
+        // Any proposal keeps the full floor active — the arbiter cannot change yet.
+        let state = client.get_state();
+        assert_eq!(state.arbiter, arbiter);
+
+        // Exactly at the minimum floor the rotation is permitted.
+        env.ledger()
+            .with_mut(|li| li.timestamp = now + MIN_ROTATION_DELAY);
+        client.accept_arbiter_rotation();
+        let state = client.get_state();
+        assert_eq!(state.arbiter, new_arbiter);
+    }
+
+    // 36. accept_arbiter_rotation panics without pending rotation
+    #[test]
+    #[should_panic]
+    fn test_accept_arbiter_rotation_no_pending_panics() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let expiry = env.ledger().timestamp() + EXPIRY_OFFSET;
+        client.initialize(&depositor, &recipient, &arbiter, &token_id, &500, &expiry);
+        // Try to accept without proposing — should panic
+        client.accept_arbiter_rotation();
+    }
+
+    // 37. arbiter rotation enables recovery from compromised key
+    #[test]
+    fn test_arbiter_rotation_recovery_flow() {
+        let env = Env::default();
+        env.mock_all_auths();
+        let depositor = Address::generate(&env);
+        let recipient = Address::generate(&env);
+        let compromised_arbiter = Address::generate(&env);
+        let trusted_arbiter = Address::generate(&env);
+        let (token_id, _) = create_token(&env, &depositor);
+        StellarAssetClient::new(&env, &token_id).mint(&depositor, &1_000);
+        let contract_id = env.register_contract(None, EscrowContract);
+        let client = EscrowContractClient::new(&env, &contract_id);
+        let now = env.ledger().timestamp();
+        let expiry = now + EXPIRY_OFFSET;
+        client.initialize(
+            &depositor,
+            &recipient,
+            &compromised_arbiter,
+            &token_id,
+            &500,
+            &expiry,
+        );
+        // Propose rotation to trusted arbiter
+        client.propose_new_arbiter(&depositor, &trusted_arbiter);
+        // Wait for time-lock to expire
+        env.ledger().with_mut(|li| li.timestamp = now + 86_401);
+        // Accept rotation
+        client.accept_arbiter_rotation();
+        // Verify the trusted arbiter is now active
+        let state = client.get_state();
+        assert_eq!(
+            state.arbiter, trusted_arbiter,
+            "arbiter should be rotated to trusted address"
+        );
+    }
+
+    // ── Property tests: conservation of funds ──────────────────────────────
+    // Core escrow invariant: the sum of released/refunded tokens always equals
+    // the amount initialised, verified over many random amounts via proptest.
+
+    /// Strategy: positive amounts within the contract's overflow guard
+    /// (`initialize` panics with `InvalidAmount` when `amount > i128::MAX / 2`).
+    fn amount_strategy() -> impl Strategy<Value = i128> {
+        proptest::num::i128::ANY.prop_filter(
+            "amount must be positive and within the overflow guard",
+            |a| *a > 0 && *a <= i128::MAX / 2,
+        )
+    }
+
+    /// Strategy: `(amount, cut_points)` where cut points drawn from
+    /// `[1, amount - 1]` derive a random sequence of partial releases that sums
+    /// exactly to `amount` (between 1 and 8 parts; duplicates collapse).
+    fn partial_release_strategy() -> impl Strategy<Value = (i128, Vec<i128>)> {
+        amount_strategy().prop_flat_map(|amount| {
+            // Tiny amounts degrade gracefully: at most `amount` parts of size 1.
+            let max_parts = amount.min(8) as usize;
+            let cuts = proptest::collection::vec(1..amount.max(2), 0..=max_parts - 1);
+            (Just(amount), cuts)
+        })
+    }
+
+    // 38. property: a full release moves exactly the initialised amount
+    #[test]
+    fn prop_full_release_conserves_funds() {
+        proptest!(ProptestConfig::with_cases(128), |(amount in amount_strategy())| {
+            let env = Env::default();
+            env.mock_all_auths();
+            let depositor = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let arbiter = Address::generate(&env);
+            let (token_id, token) = create_token(&env, &depositor);
+            StellarAssetClient::new(&env, &token_id).mint(&depositor, &amount);
+            let contract_id = env.register_contract(None, EscrowContract);
+            let client = EscrowContractClient::new(&env, &contract_id);
+            client.initialize(
+                &depositor,
+                &recipient,
+                &arbiter,
+                &token_id,
+                &amount,
+                &(env.ledger().timestamp() + EXPIRY_OFFSET),
+            );
+            prop_assert_eq!(
+                token.balance(&contract_id),
+                amount,
+                "contract must hold the full initialised amount"
+            );
+
+            client.release(&arbiter);
+
+            // Released tokens == initialised amount, nothing left in escrow.
+            prop_assert_eq!(
+                token.balance(&recipient),
+                amount,
+                "recipient must receive exactly the initialised amount"
+            );
+            prop_assert_eq!(
+                token.balance(&contract_id),
+                0,
+                "no funds may remain stuck in the contract"
+            );
+            let state = client.get_state();
+            prop_assert!(state.released, "escrow must be sealed after release");
+        });
+    }
+
+    // 39. property: random partial releases sum to the initialised amount
+    #[test]
+    fn prop_partial_releases_sum_to_initial_amount() {
+        proptest!(ProptestConfig::with_cases(128), |(pair in partial_release_strategy())| {
+            let (amount, cuts) = pair;
+            let env = Env::default();
+            env.mock_all_auths();
+            let depositor = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let arbiter = Address::generate(&env);
+            let (token_id, token) = create_token(&env, &depositor);
+            StellarAssetClient::new(&env, &token_id).mint(&depositor, &amount);
+            let contract_id = env.register_contract(None, EscrowContract);
+            let client = EscrowContractClient::new(&env, &contract_id);
+            client.initialize(
+                &depositor,
+                &recipient,
+                &arbiter,
+                &token_id,
+                &amount,
+                &(env.ledger().timestamp() + EXPIRY_OFFSET),
+            );
+
+            // Derive the exact-splitting release sequence from the cut points.
+            let mut points = cuts;
+            points.sort_unstable();
+            points.dedup();
+            let mut boundaries = vec![0];
+            boundaries.extend(points);
+            boundaries.push(amount);
+            let parts: Vec<i128> = boundaries.windows(2).map(|w| w[1] - w[0]).collect();
+            prop_assert!(!parts.is_empty());
+            prop_assert!(parts.iter().all(|p| *p > 0), "parts must all be positive");
+
+            // After every release, the recipient's balance must equal the
+            // cumulative sum of the parts released so far.
+            let mut released_so_far: i128 = 0;
+            for part in parts {
+                client.release_partial(&arbiter, &part);
+                released_so_far += part;
+                prop_assert_eq!(
+                    token.balance(&recipient),
+                    released_so_far,
+                    "recipient must receive the cumulative released sum"
+                );
+                prop_assert_eq!(
+                    token.balance(&contract_id),
+                    amount - released_so_far,
+                    "contract must hold exactly the unreleased remainder"
+                );
+            }
+
+            // Invariant: sum of released tokens == initialised amount.
+            prop_assert_eq!(
+                released_so_far, amount,
+                "sum of released tokens must equal the initialised amount"
+            );
+            prop_assert_eq!(
+                token.balance(&contract_id),
+                0,
+                "no funds may remain stuck in the contract"
+            );
+            let state = client.get_state();
+            prop_assert_eq!(state.amount, 0, "stored amount must reach zero");
+            prop_assert!(state.released, "escrow must be sealed once fully released");
+        });
+    }
+
+    // 40. property: a post-expiry refund returns exactly the initialised amount
+    #[test]
+    fn prop_refund_conserves_funds() {
+        proptest!(ProptestConfig::with_cases(128), |(amount in amount_strategy())| {
+            let env = Env::default();
+            env.mock_all_auths();
+            let depositor = Address::generate(&env);
+            let recipient = Address::generate(&env);
+            let arbiter = Address::generate(&env);
+            let (token_id, token) = create_token(&env, &depositor);
+            StellarAssetClient::new(&env, &token_id).mint(&depositor, &amount);
+            let contract_id = env.register_contract(None, EscrowContract);
+            let client = EscrowContractClient::new(&env, &contract_id);
+            let expiry = env.ledger().timestamp() + 100;
+            client.initialize(&depositor, &recipient, &arbiter, &token_id, &amount, &expiry);
+
+            // Advance past expiry, then refund.
+            env.ledger().with_mut(|li| li.timestamp = expiry + 1);
+            client.refund(&depositor);
+
+            // Refunded tokens == initialised amount, nothing left in escrow.
+            prop_assert_eq!(
+                token.balance(&depositor),
+                amount,
+                "depositor must recover exactly the initialised amount"
+            );
+            prop_assert_eq!(
+                token.balance(&contract_id),
+                0,
+                "no funds may remain stuck in the contract"
+            );
+            let state = client.get_state();
+            prop_assert!(state.released, "escrow must be sealed after refund");
+        });
+    }
+
+    // ── Stateful property tests: invariants over random call sequences ─────
+    // Each case initialises one escrow, then applies a random sequence of
+    // entry-point calls (valid and invalid) while a reference model predicts
+    // the outcome of every call. After every step the invariants listed in
+    // contracts/escrow/README.md ("Invariants") are asserted against the real
+    // token balances and contract state.
+
+    /// Default number of random sequences per run. CI's scheduled deep run
+    /// raises it through `ESCROW_INVARIANT_CASES`.
+    const DEFAULT_INVARIANT_CASES: u32 = 128;
+
+    /// Maximum number of calls in one generated sequence.
+    const MAX_SEQUENCE_LEN: usize = 24;
+
+    /// Extra balance minted to the depositor beyond the escrowed amount, so a
+    /// refund that over- or under-pays is distinguishable from the remainder.
+    const DEPOSITOR_SURPLUS: i128 = 1_000;
+
+    fn invariant_cases() -> u32 {
+        std::env::var("ESCROW_INVARIANT_CASES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(DEFAULT_INVARIANT_CASES)
+    }
+
+    /// One entry-point call (or a ledger clock change) in a generated sequence.
+    /// `impostor` flags make the call with an address that is not the stored
+    /// party, which the contract must reject without moving funds.
+    #[derive(Clone, Debug)]
+    enum Op {
+        Release { impostor: bool },
+        /// `selector` picks the partial amount: 0 → zero (invalid),
+        /// 255 → remaining + 1 (invalid), otherwise a fraction of remaining.
+        ReleasePartial { impostor: bool, selector: u8 },
+        Refund { impostor: bool },
+        Cancel {
+            depositor_impostor: bool,
+            arbiter_impostor: bool,
+        },
+        /// Depositor proposes candidate arbiter `candidate` (index into a pool).
+        ProposeArbiter { candidate: usize },
+        AcceptRotation,
+        AdvanceTime { seconds: u64 },
+    }
+
+    const ARBITER_CANDIDATES: usize = 3;
+
+    fn op_strategy() -> impl Strategy<Value = Op> {
+        prop_oneof![
+            any::<bool>().prop_map(|impostor| Op::Release { impostor }),
+            3 => (any::<bool>(), any::<u8>())
+                .prop_map(|(impostor, selector)| Op::ReleasePartial { impostor, selector }),
+            any::<bool>().prop_map(|impostor| Op::Refund { impostor }),
+            (any::<bool>(), any::<bool>()).prop_map(|(depositor_impostor, arbiter_impostor)| {
+                Op::Cancel {
+                    depositor_impostor,
+                    arbiter_impostor,
+                }
+            }),
+            (0..ARBITER_CANDIDATES).prop_map(|candidate| Op::ProposeArbiter { candidate }),
+            Just(Op::AcceptRotation),
+            2 => (0..=2 * MIN_ROTATION_DELAY).prop_map(|seconds| Op::AdvanceTime { seconds }),
+        ]
+    }
+
+    fn sequence_strategy() -> impl Strategy<Value = (i128, Vec<Op>)> {
+        (
+            // Mix tiny amounts (edge cases for partial splits) with the full
+            // range accepted by the overflow guard.
+            prop_oneof![1i128..=10, 1i128..=1_000_000_000, amount_strategy()],
+            proptest::collection::vec(op_strategy(), 1..=MAX_SEQUENCE_LEN),
+        )
+    }
+
+    /// Collapse a generated `try_*` client result into the contract's own
+    /// error type. Anything other than a contract error (a host trap, a
+    /// conversion failure) is itself an invariant violation.
+    fn outcome<T, C: core::fmt::Debug, H: core::fmt::Debug>(
+        result: Result<Result<T, C>, Result<EscrowError, H>>,
+    ) -> Result<(), EscrowError> {
+        match result {
+            Ok(Ok(_)) => Ok(()),
+            Ok(Err(e)) => panic!("return value conversion failed: {:?}", e),
+            Err(Ok(e)) => Err(e),
+            Err(Err(e)) => panic!("contract trapped instead of returning an error: {:?}", e),
+        }
+    }
+
+    /// Reference model of the escrow, updated only by calls it predicts succeed.
+    struct Model {
+        deposited: i128,
+        remaining: i128,
+        released: i128,
+        refunded: i128,
+        sealed: bool,
+        expiry: u64,
+        now: u64,
+        arbiter: usize,
+        pending: Option<(usize, u64)>,
+    }
+
+    /// Assert every invariant from the README against real balances and state.
+    fn assert_invariants(
+        model: &Model,
+        client: &EscrowContractClient,
+        token: &TokenClient,
+        contract: &Address,
+        depositor: &Address,
+        recipient: &Address,
+        arbiters: &[Address],
+    ) -> Result<(), TestCaseError> {
+        let in_contract = token.balance(contract);
+        let to_recipient = token.balance(recipient);
+        let to_depositor = token.balance(depositor) - DEPOSITOR_SURPLUS;
+
+        // I1 — funds conservation: contract + released + refunded == deposited.
+        prop_assert_eq!(
+            in_contract + to_recipient + to_depositor,
+            model.deposited,
+            "funds conservation violated"
+        );
+        // I2 — balances match the model exactly (no over- or under-payment).
+        prop_assert_eq!(in_contract, model.remaining, "contract balance diverged");
+        prop_assert_eq!(to_recipient, model.released, "released total diverged");
+        prop_assert_eq!(to_depositor, model.refunded, "refunded total diverged");
+        // I3 — no balance is ever negative and nothing leaks to the arbiters.
+        prop_assert!(in_contract >= 0 && to_recipient >= 0 && to_depositor >= 0);
+        for arbiter in arbiters {
+            prop_assert_eq!(token.balance(arbiter), 0, "arbiter received funds");
+        }
+        // I4 — only one of release or refund/cancel can ever pay out.
+        prop_assert!(
+            model.released == 0 || model.refunded == 0,
+            "funds paid to both recipient and depositor"
+        );
+
+        let state = client.get_state();
+        // I5 — sealed flag matches the model; a sealed escrow holds nothing.
+        prop_assert_eq!(state.released, model.sealed, "released flag diverged");
+        if state.released {
+            prop_assert_eq!(in_contract, 0, "sealed escrow still holds funds");
+        } else {
+            // I6 — while active, stored amount equals the contract's balance.
+            prop_assert_eq!(state.amount, in_contract, "stored amount != balance");
+            prop_assert!(state.amount > 0, "active escrow with zero amount");
+        }
+        // I7 — immutable parties and expiry never change; arbiter only via rotation.
+        prop_assert_eq!(&state.depositor, depositor);
+        prop_assert_eq!(&state.recipient, recipient);
+        prop_assert_eq!(state.expiry, model.expiry);
+        prop_assert_eq!(&state.arbiter, &arbiters[model.arbiter]);
+        Ok(())
+    }
+
+    // 41. stateful property: invariants hold over random call sequences
+    #[test]
+    fn prop_random_call_sequences_preserve_invariants() {
+        proptest!(
+            ProptestConfig::with_cases(invariant_cases()),
+            |(case in sequence_strategy())| {
+                let (amount, ops) = case;
+                let env = Env::default();
+                env.mock_all_auths();
+                let depositor = Address::generate(&env);
+                let recipient = Address::generate(&env);
+                let impostor = Address::generate(&env);
+                // arbiters[0] is the initial arbiter; the rest are rotation
+                // candidates.
+                let arbiters: std::vec::Vec<Address> = (0..ARBITER_CANDIDATES)
+                    .map(|_| Address::generate(&env))
+                    .collect();
+                let (token_id, token) = create_token(&env, &depositor);
+                StellarAssetClient::new(&env, &token_id)
+                    .mint(&depositor, &(amount + DEPOSITOR_SURPLUS));
+                let contract_id = env.register_contract(None, EscrowContract);
+                let client = EscrowContractClient::new(&env, &contract_id);
+                let expiry = env.ledger().timestamp() + EXPIRY_OFFSET;
+                client.initialize(
+                    &depositor,
+                    &recipient,
+                    &arbiters[0],
+                    &token_id,
+                    &amount,
+                    &expiry,
+                );
+
+                let mut model = Model {
+                    deposited: amount,
+                    remaining: amount,
+                    released: 0,
+                    refunded: 0,
+                    sealed: false,
+                    expiry,
+                    now: env.ledger().timestamp(),
+                    arbiter: 0,
+                    pending: None,
+                };
+                assert_invariants(
+                    &model, &client, &token, &contract_id, &depositor, &recipient, &arbiters,
+                )?;
+
+                for op in ops {
+                    let arbiter = arbiters[model.arbiter].clone();
+                    match op {
+                        Op::Release { impostor: bad } => {
+                            let caller = if bad { &impostor } else { &arbiter };
+                            let expected = if bad {
+                                Err(EscrowError::NotArbiter)
+                            } else if model.sealed {
+                                Err(EscrowError::AlreadyReleased)
+                            } else {
+                                Ok(())
+                            };
+                            prop_assert_eq!(outcome(client.try_release(caller)), expected);
+                            if expected.is_ok() {
+                                model.released += model.remaining;
+                                model.remaining = 0;
+                                model.sealed = true;
+                            }
+                        }
+                        Op::ReleasePartial { impostor: bad, selector } => {
+                            let part = match selector {
+                                0 => 0,
+                                255 => model.remaining + 1,
+                                s => (model.remaining / 254 * i128::from(s)).max(1),
+                            };
+                            let caller = if bad { &impostor } else { &arbiter };
+                            let expected = if bad {
+                                Err(EscrowError::NotArbiter)
+                            } else if model.sealed {
+                                Err(EscrowError::AlreadyReleased)
+                            } else if part <= 0 || part > model.remaining {
+                                Err(EscrowError::InvalidAmount)
+                            } else {
+                                Ok(())
+                            };
+                            prop_assert_eq!(
+                                outcome(client.try_release_partial(caller, &part)),
+                                expected
+                            );
+                            if expected.is_ok() {
+                                model.released += part;
+                                model.remaining -= part;
+                                model.sealed = model.remaining == 0;
+                            }
+                        }
+                        Op::Refund { impostor: bad } => {
+                            let caller = if bad { &impostor } else { &depositor };
+                            let expected = if bad {
+                                Err(EscrowError::NotDepositor)
+                            } else if model.sealed {
+                                Err(EscrowError::AlreadyReleased)
+                            } else if model.now < model.expiry {
+                                Err(EscrowError::NotExpired)
+                            } else {
+                                Ok(())
+                            };
+                            prop_assert_eq!(outcome(client.try_refund(caller)), expected);
+                            if expected.is_ok() {
+                                model.refunded += model.remaining;
+                                model.remaining = 0;
+                                model.sealed = true;
+                            }
+                        }
+                        Op::Cancel { depositor_impostor, arbiter_impostor } => {
+                            let dep = if depositor_impostor { &impostor } else { &depositor };
+                            let arb = if arbiter_impostor { &impostor } else { &arbiter };
+                            let expected = if depositor_impostor {
+                                Err(EscrowError::NotDepositor)
+                            } else if arbiter_impostor {
+                                Err(EscrowError::NotArbiter)
+                            } else if model.sealed {
+                                Err(EscrowError::AlreadyReleased)
+                            } else {
+                                Ok(())
+                            };
+                            prop_assert_eq!(outcome(client.try_cancel(dep, arb)), expected);
+                            if expected.is_ok() {
+                                model.refunded += model.remaining;
+                                model.remaining = 0;
+                                model.sealed = true;
+                            }
+                        }
+                        Op::ProposeArbiter { candidate } => {
+                            prop_assert_eq!(
+                                outcome(
+                                    client.try_propose_new_arbiter(&depositor, &arbiters[candidate])
+                                ),
+                                Ok(())
+                            );
+                            model.pending = Some((candidate, model.now));
+                        }
+                        Op::AcceptRotation => {
+                            let expected = match model.pending {
+                                None => Err(EscrowError::NoPendingRotation),
+                                Some((_, proposed_at))
+                                    if model.now < proposed_at + MIN_ROTATION_DELAY =>
+                                {
+                                    Err(EscrowError::RotationLocked)
+                                }
+                                Some(_) => Ok(()),
+                            };
+                            prop_assert_eq!(
+                                outcome(client.try_accept_arbiter_rotation()),
+                                expected
+                            );
+                            if let (Ok(()), Some((candidate, _))) = (expected, model.pending) {
+                                model.arbiter = candidate;
+                                model.pending = None;
+                            }
+                        }
+                        Op::AdvanceTime { seconds } => {
+                            env.ledger().with_mut(|li| li.timestamp += seconds);
+                            model.now += seconds;
+                        }
+                    }
+
+                    assert_invariants(
+                        &model, &client, &token, &contract_id, &depositor, &recipient, &arbiters,
+                    )?;
+                }
+            }
+        );
     }
 }

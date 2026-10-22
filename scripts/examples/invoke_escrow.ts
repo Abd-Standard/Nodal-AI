@@ -11,21 +11,22 @@
  *   AGENT_SECRET_KEY, HORIZON_URL, SOROBAN_RPC_URL, X402_ASSET_ISSUER
  */
 
-import * as dotenv from "dotenv";
+import * as dotenv from 'dotenv';
 dotenv.config();
 
-import { PayFiAgent } from "../../backend/agent";
+import { PayFiAgent } from '../../backend/agent';
+import { escrowCall } from '../../backend/contracts/escrow';
 
-const CONTRACT_ID = process.env.CONTRACT_ID ?? "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM";
+const CONTRACT_ID =
+  process.env.CONTRACT_ID ?? 'CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM';
 
 const agent = new PayFiAgent();
 
 const result = await agent.run({
-  type: "soroban_invoke",
+  type: 'soroban_invoke',
   payload: {
     contractId: CONTRACT_ID,
-    method: "get_state",
-    args: [],
+    ...escrowCall.get_state(),
     simulateOnly: true,
   },
 });

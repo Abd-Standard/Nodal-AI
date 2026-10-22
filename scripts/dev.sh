@@ -3,13 +3,18 @@
 # scripts/dev.sh — Nodal AI unified stack runner
 #
 # Usage:
-#   ./scripts/dev.sh up          # build + start full stack
-#   ./scripts/dev.sh down        # stop and remove containers
-#   ./scripts/dev.sh test        # start stack + run integration tests
-#   ./scripts/dev.sh test:rust   # run Soroban contract tests locally
-#   ./scripts/dev.sh logs        # tail all service logs
-#   ./scripts/dev.sh clean       # remove containers, volumes, and images
-#   ./scripts/dev.sh --dry-run   # check environment variables and exit
+#   ./scripts/dev.sh up                     # build + start full stack
+#   ./scripts/dev.sh down                   # stop and remove containers
+#   ./scripts/dev.sh test                   # start stack + run integration tests
+#   ./scripts/dev.sh test:rust              # run Soroban contract tests locally
+#   ./scripts/dev.sh logs                   # tail all service logs
+#   ./scripts/dev.sh clean                  # remove containers, volumes, and images
+#   ./scripts/dev.sh --dry-run              # check environment variables and exit
+#
+# Flags (must appear before the command):
+#   --skip-validation   Skip required env var checks (for CI environments that
+#                       inject secrets at runtime rather than via .env files).
+#                       Example: ./scripts/dev.sh --skip-validation up
 # =============================================================================
 
 set -euo pipefail
@@ -19,37 +24,52 @@ PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 cd "$PROJECT_ROOT"
 
+# ── Flag parsing ──────────────────────────────────────────────────────────────
+
+SKIP_VALIDATION=false
+
+# Consume --skip-validation before the subcommand so the dispatch case block
+# only ever sees the bare command word.
+if [[ "${1:-}" == "--skip-validation" ]]; then
+  SKIP_VALIDATION=true
+  shift
+fi
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 log()  { echo "▶  $*"; }
 warn() { echo "⚠️  $*" >&2; }
 die()  { echo "❌ $*" >&2; exit 1; }
 
+# Required environment variables and a short hint for each.
+# Format: "VAR_NAME|hint message shown when the variable is missing"
+declare -a REQUIRED_VARS=(
+  "AGENT_SECRET_KEY|Stellar secret key for signing transactions (starts with S, 56 chars). See .env.example."
+  "HORIZON_URL|Horizon REST API endpoint (e.g. https://horizon-testnet.stellar.org). See .env.example."
+  "SOROBAN_RPC_URL|Soroban RPC endpoint (e.g. https://soroban-testnet.stellar.org). See .env.example."
+  "X402_ASSET_ISSUER|Issuing account for the x402 payment asset (56-char G-address). See .env.example."
+)
+
 check_env() {
-  local missing=()
+  local had_error=false
 
-  # Check each required variable
-  if [[ -z "${AGENT_SECRET_KEY:-}" ]]; then
-    missing+=("AGENT_SECRET_KEY")
-  fi
-  if [[ -z "${HORIZON_URL:-}" ]]; then
-    missing+=("HORIZON_URL")
-  fi
-  if [[ -z "${SOROBAN_RPC_URL:-}" ]]; then
-    missing+=("SOROBAN_RPC_URL")
-  fi
-  if [[ -z "${X402_ASSET_ISSUER:-}" ]]; then
-    missing+=("X402_ASSET_ISSUER")
-  fi
+  for entry in "${REQUIRED_VARS[@]}"; do
+    local var_name hint
+    var_name="${entry%%|*}"
+    hint="${entry##*|}"
 
-  # If any are missing, print error and exit 1
-  if [[ ${#missing[@]} -gt 0 ]]; then
-    echo "❌ ERROR: Missing required environment variables:"
-    for var in "${missing[@]}"; do
-      echo "  - $var"
-    done
-    echo ""
-    echo "Please set these variables in your .env file or environment."
+    if [[ -z "${!var_name:-}" ]]; then
+      echo "❌ Missing required environment variable: ${var_name}" >&2
+      echo "   Hint: ${hint}" >&2
+      echo "" >&2
+      had_error=true
+    fi
+  done
+
+  if [[ "$had_error" == "true" ]]; then
+    echo "Fix the above variables in your .env file (copy .env.example for a template) or" >&2
+    echo "export them in your shell before running this script." >&2
+    echo "To bypass validation in CI environments use: --skip-validation" >&2
     exit 1
   fi
 
@@ -57,7 +77,12 @@ check_env() {
 }
 
 require_env() {
-  [[ -f .env ]] || die ".env file not found. Copy .env.example and fill in your values."
+  if [[ "$SKIP_VALIDATION" == "true" ]]; then
+    warn "--skip-validation active: skipping environment variable checks."
+    return 0
+  fi
+
+  [[ -f .env ]] || die ".env file not found. Copy .env.example to .env and fill in your values."
   # shellcheck disable=SC1091
   set -a; source .env; set +a
   check_env
@@ -120,5 +145,5 @@ case "${1:-up}" in
   test:rust)  cmd_test_rust  ;;
   logs)       cmd_logs       ;;
   clean)      cmd_clean      ;;
-  *)          die "Unknown command: $1. Use: --dry-run | up | down | test | test:rust | logs | clean" ;;
+  *)          die "Unknown command: ${1}. Use: [--skip-validation] --dry-run | up | down | test | test:rust | logs | clean" ;;
 esac

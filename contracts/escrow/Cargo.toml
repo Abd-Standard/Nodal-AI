@@ -4,7 +4,22 @@ version = "0.1.0"
 edition = "2021"
 
 [lib]
-crate-type = ["lib"]
+# Soroban contracts must build as a cdylib to produce a loadable .wasm
+# artifact for the wasm32-unknown-unknown target. Without it, `cargo build
+# --target wasm32-unknown-unknown` only emits an .rlib — the contract could
+# never actually be deployed, and scripts/check_wasm_size.sh (and the CI
+# wasm-size-check job) would always fail with "WASM not found". `cargo test`
+# is unaffected: rustc builds its own test harness for this crate's inline
+# `#[cfg(test)]` module regardless of the declared crate-type.
+crate-type = ["cdylib"]
+# This crate is #![cfg_attr(not(test), no_std)], and rustdoc's doctest harness
+# doesn't compile under the same `cfg(test)` context as `cargo test`'s own
+# unit-test build — it tries to link the crate as a normal std rlib and fails
+# ("extern location for soroban_sdk does not exist"). There are no runnable
+# code-fence examples in the doc comments anyway (the `//@ requires/ensures`
+# blocks are formal-verification annotations, not doctests), so disable the
+# doctest pass entirely rather than leave `cargo test` failing on it in CI.
+doctest = false
 
 [dependencies]
 soroban-sdk = { version = "20.0.0", features = ["alloc"] }

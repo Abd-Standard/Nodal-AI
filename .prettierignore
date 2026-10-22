@@ -1,0 +1,28 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+build/
+
+# Test coverage & snapshots
+coverage/
+tests/__snapshots__/
+
+# Rust / Cargo
+target/
+contracts/**/target/
+
+# Generated API docs (TypeDoc)
+docs/api/
+
+# Lockfiles
+package-lock.json
+
+# Logs
+*.log
+
+# Environment secrets
+.env
+.env.*
+!.env.example

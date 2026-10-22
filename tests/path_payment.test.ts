@@ -4,34 +4,48 @@
  * input validation, self-payment guard, and tx_bad_seq retry.
  */
 
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { Keypair } from "@stellar/stellar-sdk";
-import { PathPaymentTool } from "../backend/tools/PathPaymentTool";
-import * as rpcClient from "../backend/rpc_client";
+import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { Keypair } from '@stellar/stellar-sdk';
+import { PathPaymentTool } from '../backend/tools/PathPaymentTool';
+import { KeypairSigner } from '../backend/signer';
+import * as rpcClient from '../backend/rpc_client';
+import { ValidationError } from '../backend/errors';
+import { PayFiAgent } from '../backend/agent';
 
 // ─── Mocks ────────────────────────────────────────────────────────────────────
 
-vi.mock("../backend/rpc_client", () => ({
+vi.mock('../backend/rpc_client', () => ({
   loadAccount: vi.fn(),
   submitTransaction: vi.fn(),
-  horizonServer: {},
+  horizonServer: {
+    strictSendPaths: vi.fn(() => ({
+      call: vi.fn().mockResolvedValue({
+        records: [
+          {
+            path: [],
+            destination_amount: '9',
+          },
+        ],
+      }),
+    })),
+  },
   sorobanServer: {},
   simulateSorobanTx: vi.fn(),
   prepareSorobanTx: vi.fn(),
-  resolveNetworkPassphrase: vi.fn(() => "Test SDF Network ; September 2015"),
+  resolveNetworkPassphrase: vi.fn(() => 'Test SDF Network ; September 2015'),
 }));
 
-vi.mock("../backend/config", () => {
+vi.mock('../backend/config', () => {
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const { Keypair } = require("@stellar/stellar-sdk"); // eslint-disable-line @typescript-eslint/no-var-requires
-  const secret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+  const { Keypair } = require('@stellar/stellar-sdk'); // eslint-disable-line @typescript-eslint/no-var-requires
+  const secret = 'SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X';
   return {
     config: {
-      STELLAR_NETWORK: "testnet",
-      HORIZON_URL: "https://horizon-testnet.stellar.org",
-      SOROBAN_RPC_URL: "https://soroban-testnet.stellar.org",
-      X402_ASSET_CODE: "USDC",
-      X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
+      STELLAR_NETWORK: 'testnet',
+      HORIZON_URL: 'https://horizon-testnet.stellar.org',
+      SOROBAN_RPC_URL: 'https://soroban-testnet.stellar.org',
+      X402_ASSET_CODE: 'USDC',
+      X402_ASSET_ISSUER: 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN',
       MAX_RETRIES: 3,
       RETRY_DELAY_MS: 100,
       AGENT_PUBLIC_KEY: Keypair.fromSecret(secret).publicKey(),
@@ -42,168 +56,349 @@ vi.mock("../backend/config", () => {
 
 // ─── Fixtures ─────────────────────────────────────────────────────────────────
 
-const TEST_SECRET = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
-const VALID_DEST = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
-const USDC_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+const TEST_SECRET = 'SADQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQOBYHA4DQP54X';
+const VALID_DEST = 'GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5';
+const USDC_ISSUER = 'GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN';
 
 function makeMockAccount(publicKey: string) {
   return {
     id: publicKey,
     accountId: () => publicKey,
-    sequenceNumber: () => "100",
+    sequenceNumber: () => '100',
     incrementSequenceNumber: vi.fn(),
-    sequence: "100",
-    incrementedSequenceNumber: () => "101",
+    sequence: '100',
+    incrementedSequenceNumber: () => '101',
     thresholds: { low_threshold: 0, med_threshold: 0, high_threshold: 0 },
     flags: { auth_required: false, auth_revocable: false, auth_immutable: false },
-    balances: [{ asset_type: "native", balance: "10000.0000000" }],
+    // USDC trustline so the destination pre-flight (#788) accepts USDC path payments
+    balances: [
+      { asset_type: 'native', balance: '10000.0000000' },
+      {
+        asset_type: 'credit_alphanum4',
+        asset_code: 'USDC',
+        asset_issuer: USDC_ISSUER,
+        balance: '0',
+      },
+    ],
     signers: [],
     data_attr: {},
     subentry_count: 0,
-    home_domain: "",
+    home_domain: '',
     inflation_dest: null,
   };
 }
 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
-describe("PathPaymentTool", () => {
+describe('PathPaymentTool', () => {
   let tool: PathPaymentTool;
 
   beforeEach(() => {
     vi.clearAllMocks();
-    tool = new PathPaymentTool(TEST_SECRET);
+    tool = new PathPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
     vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
     vi.mocked(rpcClient.submitTransaction).mockResolvedValue({
-      hash: "path_tx_hash",
+      hash: 'path_tx_hash',
       ledger: 100,
     } as any);
   });
 
   // ── Happy path ──────────────────────────────────────────────────────────────
 
-  it("executes XLM → USDC path payment and returns txHash + ledger", async () => {
+  it('executes XLM → USDC path payment and returns txHash + ledger', async () => {
     const result = await tool.execute({
       destination: VALID_DEST,
-      sendAsset: { code: "XLM" },
-      sendAmount: "10",
-      destAsset: { code: "USDC", issuer: USDC_ISSUER },
-      destMinAmount: "9",
+      sendAsset: { code: 'XLM' },
+      sendAmount: '10',
+      destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+      destMinAmount: '9',
     });
 
-    expect(result.txHash).toBe("path_tx_hash");
+    expect(result.txHash).toBe('path_tx_hash');
     expect(result.ledger).toBe(100);
     expect(rpcClient.loadAccount).toHaveBeenCalledWith(tool.publicKey);
     expect(rpcClient.submitTransaction).toHaveBeenCalledOnce();
   });
 
-  it("accepts an optional intermediate path asset", async () => {
+  it('accepts an optional intermediate path asset', async () => {
     const result = await tool.execute({
       destination: VALID_DEST,
-      sendAsset: { code: "XLM" },
-      sendAmount: "10",
-      destAsset: { code: "USDC", issuer: USDC_ISSUER },
-      destMinAmount: "9",
-      path: [{ code: "USD", issuer: USDC_ISSUER }],
+      sendAsset: { code: 'XLM' },
+      sendAmount: '10',
+      destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+      destMinAmount: '9',
+      path: [{ code: 'USD', issuer: USDC_ISSUER }],
     });
 
-    expect(result.txHash).toBe("path_tx_hash");
+    expect(result.txHash).toBe('path_tx_hash');
   });
 
-  it("accepts a memo when provided", async () => {
+  it('accepts a memo when provided', async () => {
     const result = await tool.execute({
       destination: VALID_DEST,
-      sendAsset: { code: "XLM" },
-      sendAmount: "5",
-      destAsset: { code: "USDC", issuer: USDC_ISSUER },
-      destMinAmount: "4",
-      memo: "swap-ref-123",
+      sendAsset: { code: 'XLM' },
+      sendAmount: '5',
+      destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+      destMinAmount: '4',
+      memo: 'swap-ref-123',
     });
 
-    expect(result.txHash).toBe("path_tx_hash");
+    expect(result.txHash).toBe('path_tx_hash');
+  });
+
+  it("accepts memo type 'id' with numeric value", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: 'XLM' },
+      sendAmount: '5',
+      destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+      destMinAmount: '4',
+      memoType: 'id',
+      memo: 987654321,
+    });
+
+    expect(result.txHash).toBe('path_tx_hash');
+  });
+
+  it("accepts memo type 'hash' with 32-byte hex string", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: 'XLM' },
+      sendAmount: '5',
+      destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+      destMinAmount: '4',
+      memoType: 'hash',
+      memo: 'b'.repeat(64),
+    });
+
+    expect(result.txHash).toBe('path_tx_hash');
+  });
+
+  it("accepts memo type 'return' with 32-byte hex string", async () => {
+    const result = await tool.execute({
+      destination: VALID_DEST,
+      sendAsset: { code: 'XLM' },
+      sendAmount: '5',
+      destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+      destMinAmount: '4',
+      memoType: 'return',
+      memo: 'c'.repeat(64),
+    });
+
+    expect(result.txHash).toBe('path_tx_hash');
   });
 
   // ── Input validation ────────────────────────────────────────────────────────
 
-  it("rejects missing destination", async () => {
+  it('rejects missing destination', async () => {
     await expect(
       tool.execute({
-        sendAsset: { code: "XLM" },
-        sendAmount: "10",
-        destAsset: { code: "USDC", issuer: USDC_ISSUER },
-        destMinAmount: "9",
+        sendAsset: { code: 'XLM' },
+        sendAmount: '10',
+        destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+        destMinAmount: '9',
       })
     ).rejects.toThrow();
   });
 
-  it("rejects non-XLM sendAsset without issuer", async () => {
+  it('rejects non-XLM sendAsset without issuer', async () => {
     await expect(
       tool.execute({
         destination: VALID_DEST,
-        sendAsset: { code: "USDC" }, // missing issuer
-        sendAmount: "10",
-        destAsset: { code: "XLM" },
-        destMinAmount: "9",
+        sendAsset: { code: 'USDC' }, // missing issuer
+        sendAmount: '10',
+        destAsset: { code: 'XLM' },
+        destMinAmount: '9',
       })
     ).rejects.toThrow(/Asset issuer is required/);
   });
 
-  it("rejects zero sendAmount", async () => {
+  it('rejects zero sendAmount', async () => {
     await expect(
       tool.execute({
         destination: VALID_DEST,
-        sendAsset: { code: "XLM" },
-        sendAmount: "0",
-        destAsset: { code: "USDC", issuer: USDC_ISSUER },
-        destMinAmount: "9",
+        sendAsset: { code: 'XLM' },
+        sendAmount: '0',
+        destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+        destMinAmount: '9',
       })
     ).rejects.toThrow(/sendAmount must be/);
   });
 
-  it("rejects self-payment", async () => {
+  it('rejects self-payment', async () => {
     await expect(
       tool.execute({
         destination: tool.publicKey,
-        sendAsset: { code: "XLM" },
-        sendAmount: "10",
-        destAsset: { code: "USDC", issuer: USDC_ISSUER },
-        destMinAmount: "9",
+        sendAsset: { code: 'XLM' },
+        sendAmount: '10',
+        destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+        destMinAmount: '9',
       })
     ).rejects.toThrow("Payment destination cannot be the agent's own address");
   });
 
   // ── Slippage / network errors ────────────────────────────────────────────────
 
-  it("propagates op_under_dest_min (slippage rejection) from Horizon", async () => {
+  it('propagates op_under_dest_min (slippage rejection) from Horizon', async () => {
     vi.mocked(rpcClient.submitTransaction).mockRejectedValue(
-      new Error("Horizon: op_under_dest_min — destination minimum not met")
+      new Error('Horizon: op_under_dest_min — destination minimum not met')
     );
 
     await expect(
       tool.execute({
         destination: VALID_DEST,
-        sendAsset: { code: "XLM" },
-        sendAmount: "1",
-        destAsset: { code: "USDC", issuer: USDC_ISSUER },
-        destMinAmount: "999",
+        sendAsset: { code: 'XLM' },
+        sendAmount: '1',
+        destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+        destMinAmount: '999',
       })
     ).rejects.toThrow(/op_under_dest_min/);
   });
 
-  it("recovers from tx_bad_seq on first retry", async () => {
+  it('recovers from tx_bad_seq on first retry', async () => {
     vi.mocked(rpcClient.submitTransaction)
-      .mockRejectedValueOnce(new Error("Horizon: tx_bad_seq — sequence number is not valid"))
-      .mockResolvedValueOnce({ hash: "retry_hash", ledger: 42 } as any);
+      .mockRejectedValueOnce(new Error('Horizon: tx_bad_seq — sequence number is not valid'))
+      .mockResolvedValueOnce({ hash: 'retry_hash', ledger: 42 } as any);
 
     const result = await tool.execute({
       destination: VALID_DEST,
-      sendAsset: { code: "XLM" },
-      sendAmount: "10",
-      destAsset: { code: "USDC", issuer: USDC_ISSUER },
-      destMinAmount: "9",
+      sendAsset: { code: 'XLM' },
+      sendAmount: '10',
+      destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+      destMinAmount: '9',
     });
 
-    expect(result.txHash).toBe("retry_hash");
+    expect(result.txHash).toBe('retry_hash');
     expect(rpcClient.submitTransaction).toHaveBeenCalledTimes(2);
+  });
+
+  // ── Empty path array (#377) ──────────────────────────────────────────────────
+
+  it('throws ValidationError when Horizon returns an empty paths array', async () => {
+    vi.mocked(rpcClient.horizonServer.strictSendPaths as any).mockReturnValueOnce({
+      call: vi.fn().mockResolvedValue({ records: [] }),
+    });
+
+    await expect(
+      tool.execute({
+        destination: VALID_DEST,
+        sendAsset: { code: 'XLM' },
+        sendAmount: '10',
+        destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+        destMinAmount: '9',
+      })
+    ).rejects.toThrow(ValidationError);
+
+    vi.mocked(rpcClient.horizonServer.strictSendPaths as any).mockReturnValueOnce({
+      call: vi.fn().mockResolvedValue({ records: [] }),
+    });
+
+    await expect(
+      tool.execute({
+        destination: VALID_DEST,
+        sendAsset: { code: 'XLM' },
+        sendAmount: '10',
+        destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+        destMinAmount: '9',
+      })
+    ).rejects.toThrow('No path found between assets');
+  });
+
+  it('ensures empty path ValidationError propagates to AgentResult.error as a string', async () => {
+    vi.mocked(rpcClient.horizonServer.strictSendPaths as any).mockReturnValueOnce({
+      call: vi.fn().mockResolvedValue({ records: [] }),
+    });
+
+    const agent = new PayFiAgent();
+    const result = await agent.run({
+      type: 'path_payment',
+      payload: {
+        destination: VALID_DEST,
+        sendAsset: { code: 'XLM' },
+        sendAmount: '10',
+        destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+        destMinAmount: '9',
+      },
+    });
+
+    expect(result.success).toBe(false);
+    expect(result.error).toContain('No path found between assets');
+    expect(typeof result.error).toBe('string');
+    agent.destroy();
+  });
+});
+
+// ─── Auto path discovery + slippage protection (#789) ────────────────────────
+
+describe('PathPaymentTool auto path and slippage', () => {
+  let tool: PathPaymentTool;
+
+  const pathRecords = [
+    { destination_amount: '9.0000000', path: [] },
+    {
+      destination_amount: '10.0000000',
+      path: [{ asset_type: 'credit_alphanum4', asset_code: 'USD', asset_issuer: USDC_ISSUER }],
+    },
+  ];
+
+  function submittedOp(): any {
+    return vi.mocked(rpcClient.submitTransaction).mock.calls[0]![0].operations[0];
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    tool = new PathPaymentTool(new KeypairSigner(Keypair.fromSecret(TEST_SECRET)));
+    vi.mocked(rpcClient.loadAccount).mockResolvedValue(makeMockAccount(tool.publicKey) as any);
+    vi.mocked(rpcClient.submitTransaction).mockResolvedValue({ hash: 'h', ledger: 1 } as any);
+    vi.mocked(rpcClient.horizonServer.strictSendPaths as any).mockReturnValue({
+      call: vi.fn().mockResolvedValue({ records: pathRecords }),
+    });
+  });
+
+  const baseInput = {
+    destination: VALID_DEST,
+    sendAsset: { code: 'XLM' },
+    sendAmount: '10',
+    destAsset: { code: 'USDC', issuer: USDC_ISSUER },
+  };
+
+  it('picks the best path and derives destMin with the default 50 bps', async () => {
+    await tool.execute(baseInput);
+
+    const op = submittedOp();
+    expect(op.type).toBe('pathPaymentStrictSend');
+    expect(op.destMin).toBe('9.9500000');
+    expect(op.path).toHaveLength(1);
+    expect(op.path[0].code).toBe('USD');
+  });
+
+  it('applies a caller-supplied maxSlippageBps', async () => {
+    await tool.execute({ ...baseInput, maxSlippageBps: 100 });
+    expect(submittedOp().destMin).toBe('9.9000000');
+  });
+
+  it('keeps an explicit destMinAmount and path without querying Horizon', async () => {
+    await tool.execute({
+      ...baseInput,
+      destMinAmount: '8',
+      path: [{ code: 'USD', issuer: USDC_ISSUER }],
+    });
+
+    expect(rpcClient.horizonServer.strictSendPaths).not.toHaveBeenCalled();
+    expect(submittedOp().destMin).toBe('8.0000000');
+  });
+
+  it.each([-1, 1001, 2.5])('rejects maxSlippageBps %s', async (maxSlippageBps) => {
+    await expect(tool.execute({ ...baseInput, maxSlippageBps })).rejects.toThrow(/maxSlippageBps/);
+    expect(rpcClient.submitTransaction).not.toHaveBeenCalled();
+  });
+
+  it('accepts the 0 and 1000 bps bounds', async () => {
+    await tool.execute({ ...baseInput, maxSlippageBps: 0 });
+    expect(submittedOp().destMin).toBe('10.0000000');
+
+    vi.mocked(rpcClient.submitTransaction).mockClear();
+    await tool.execute({ ...baseInput, maxSlippageBps: 1000 });
+    expect(submittedOp().destMin).toBe('9.0000000');
   });
 });

@@ -4,11 +4,24 @@
 # Services:
 #   stellar-quickstart  — local Stellar network (Horizon + Soroban RPC)
 #   agent               — Nodal AI backend (connects to quickstart)
+#   test-runner         — full-stack integration tests (profile: test)
+#   test-runner-only    — tests against quickstart only, no agent (profile: test-only)
+#   postgres            — shared Postgres store (profile: postgres)
+#   agent-postgres      — agent with STORAGE_BACKEND=postgres (profile: postgres)
+#   test-runner-postgres — storage test suite against Postgres (profile: postgres)
+#   dashboard           — visual dashboard UI (profile: dashboard)
 #
 # Usage:
 #   docker compose up --build          # start everything
 #   docker compose up stellar-quickstart  # local network only
 #   docker compose run --rm agent npm run test:ts  # run TS tests in container
+#   docker compose --profile test up --build         # full stack + tests (needs agent healthy)
+#   docker compose --profile test-only up --build --abort-on-container-exit --exit-code-from test-runner-only
+#     # tests only against stellar-quickstart, skips booting the agent HTTP server
+#   docker compose --profile postgres up --build agent-postgres   # agent on Postgres (port 3001)
+#   docker compose --profile postgres run --rm test-runner-postgres
+#     # runs tests/storage.test.ts against both SQLite and Postgres
+#   docker compose --profile dashboard up --build dashboard   # start visual dashboard (port 5173)
 # =============================================================================
 
 version: "3.9"
@@ -64,10 +77,11 @@ services:
     ports:
       - "3000:3000"
     healthcheck:
-      test: ["CMD-SHELL", "node -e \"require('./dist/backend/config')\" || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
+      test: ["CMD-SHELL", "curl -sf http://localhost:3000/health | grep -q '\"status\":\"ok\"' || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
     security_opt:
       - "no-new-privileges:true"
     cap_drop:
@@ -93,20 +107,161 @@ services:
     depends_on:
       stellar-quickstart:
         condition: service_healthy
+      agent:
+        condition: service_healthy
     environment:
       STELLAR_NETWORK:    local
       HORIZON_URL:        http://stellar-quickstart:8000
       SOROBAN_RPC_URL:    http://stellar-quickstart:8001
-      AGENT_SECRET_KEY:   ${AGENT_SECRET_KEY:-SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73}
+      AGENT_SECRET_KEY:   ${AGENT_SECRET_KEY:-process.env.AGENT_SECRET_KEY}
       X402_ASSET_CODE:    USDC
       X402_ASSET_ISSUER:  ${X402_ASSET_ISSUER:-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN}
       AGENT_SPENDING_LIMIT: "100"
       MAX_RETRIES:        "3"
       RETRY_DELAY_MS:     "100"
     command: npm run test:ts
+    restart: "no"
+    networks:
+      - nodal-net
+
+  # ── Test-only runner (no agent HTTP server) ─────────────────────────────────
+  # Starts just stellar-quickstart + this container — skips building/booting the
+  # full agent service for faster local runs and CI.
+  test-runner-only:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node-builder      # has devDeps + source
+    container_name: nodal-test-runner-only
+    profiles:
+      - test-only              # only starts with: docker compose --profile test-only up
+    depends_on:
+      stellar-quickstart:
+        condition: service_healthy
+    environment:
+      STELLAR_NETWORK:    local
+      HORIZON_URL:        http://stellar-quickstart:8000
+      SOROBAN_RPC_URL:    http://stellar-quickstart:8001
+      AGENT_SECRET_KEY:   ${AGENT_SECRET_KEY:-process.env.AGENT_SECRET_KEY}
+      X402_ASSET_CODE:    USDC
+      X402_ASSET_ISSUER:  ${X402_ASSET_ISSUER:-GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN}
+      AGENT_SPENDING_LIMIT: "100"
+      MAX_RETRIES:        "3"
+      RETRY_DELAY_MS:     "100"
+    command: npm run test:ts
+    restart: "no"
+    networks:
+      - nodal-net
+
+  # ── Shared Postgres store for multi-instance deployments (#822) ─────────────
+  postgres:
+    image: postgres:17-alpine
+    container_name: nodal-postgres
+    profiles:
+      - postgres               # only starts with: docker compose --profile postgres up
+    environment:
+      POSTGRES_USER:     ${POSTGRES_USER:-nodal}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-nodal}
+      POSTGRES_DB:       ${POSTGRES_DB:-nodal}
+    ports:
+      - "5432:5432"
+    volumes:
+      - nodal-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-nodal} -d ${POSTGRES_DB:-nodal}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    networks:
+      - nodal-net
+
+  # ── Agent backed by Postgres instead of the local SQLite file ───────────────
+  # Scale out with: docker compose --profile postgres up --scale agent-postgres=2
+  # (drop the host port mapping first, or the replicas will clash on it).
+  agent-postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+    profiles:
+      - postgres
+    depends_on:
+      stellar-quickstart:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    environment:
+      STELLAR_NETWORK:    local
+      HORIZON_URL:        http://stellar-quickstart:8000
+      SOROBAN_RPC_URL:    http://stellar-quickstart:8001
+      AGENT_SECRET_KEY:   ${AGENT_SECRET_KEY:?AGENT_SECRET_KEY is required}
+      X402_ASSET_CODE:    ${X402_ASSET_CODE:-USDC}
+      X402_ASSET_ISSUER:  ${X402_ASSET_ISSUER:?X402_ASSET_ISSUER is required}
+      AGENT_SPENDING_LIMIT: ${AGENT_SPENDING_LIMIT:-100}
+      MAX_RETRIES:        ${MAX_RETRIES:-3}
+      RETRY_DELAY_MS:     ${RETRY_DELAY_MS:-1500}
+      STORAGE_BACKEND:    postgres
+      DATABASE_URL:       postgres://${POSTGRES_USER:-nodal}:${POSTGRES_PASSWORD:-nodal}@postgres:5432/${POSTGRES_DB:-nodal}
+      NODE_ENV:           production
+    ports:
+      - "3001:3000"
+    security_opt:
+      - "no-new-privileges:true"
+    cap_drop:
+      - ALL
+    restart: unless-stopped
+    networks:
+      - nodal-net
+
+  # ── Storage test suite against Postgres (and SQLite) ────────────────────────
+  test-runner-postgres:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node-builder      # has devDeps + source
+    container_name: nodal-test-runner-postgres
+    profiles:
+      - postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      TEST_DATABASE_URL: postgres://${POSTGRES_USER:-nodal}:${POSTGRES_PASSWORD:-nodal}@postgres:5432/${POSTGRES_DB:-nodal}
+    # tests/ is excluded from the image by .dockerignore, so mount it in.
+    volumes:
+      - ./tests:/build/tests:ro
+      - ./vitest.config.ts:/build/vitest.config.ts:ro
+    command: npx vitest run tests/storage.test.ts tests/db_migrations.test.ts
+    restart: "no"
+    networks:
+      - nodal-net
+
+  # ── Visual Dashboard ───────────────────────────────────────────────────────
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: node-builder
+    container_name: nodal-dashboard
+    profiles:
+      - dashboard               # only starts with: docker compose --profile dashboard up
+    depends_on:
+      agent:
+        condition: service_healthy
+    environment:
+      VITE_API_URL: http://agent:3000
+      VITE_API_TOKEN: ${ADMIN_API_TOKEN:-}
+    working_dir: /build
+    command: sh -c "cd apps/dashboard && npm run dev -- --host 0.0.0.0 --port 5173"
+    ports:
+      - "5173:5173"
+    restart: unless-stopped
     networks:
       - nodal-net
 
 networks:
   nodal-net:
     driver: bridge
+
+volumes:
+  nodal-pgdata:

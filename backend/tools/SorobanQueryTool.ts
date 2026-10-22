@@ -1,86 +1,77 @@
 /**
  * backend/tools/SorobanQueryTool.ts
- * Dedicated read-only tool for Soroban contract state inspection.
+ * Read-only Soroban contract query tool.
  *
- * Unlike SorobanInvokeTool, this tool always runs in simulate-only mode
- * and never broadcasts transactions. The return type is non-polymorphic —
- * callers always receive a `simulationResult` without needing to check
- * which key is present.
- *
- * Architecture: validate input → simulate → return result (no signing, no broadcast)
+ * Always runs simulation via prepareSorobanTx and never broadcasts.
+ * This is the safe default for AI-agent read operations.
  */
 
 import {
-  Keypair,
   TransactionBuilder,
-  Operation,
   Contract,
   BASE_FEE,
-  xdr,
-} from "@stellar/stellar-sdk";
-import { z } from "zod";
-import { config } from "../config";
-import { logger } from "../logger";
-import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase } from "../rpc_client";
+} from '@stellar/stellar-sdk';
+import { z } from 'zod';
+import { config } from '../config';
+import { createAgentSigner, Signer } from '../signer';
+import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase } from '../rpc_client';
+import { createLogger } from '../utils/logger';
+import { SorobanInvokeInputSchema, SOROBAN_TX_TIMEOUT } from './SorobanInvokeTool';
 
-// ─── Input schema ─────────────────────────────────────────────────────────────
+const log = createLogger('soroban-query');
 
-export const SorobanQueryInputSchema = z.object({
-  contractId: z.string().length(56, "Invalid Stellar contract ID"),
-  method: z.string().min(1),
-  args: z.array(z.instanceof(xdr.ScVal)).default([]),
-});
+/**
+ * Reuses the Soroban invoke input schema but omits `simulateOnly` because this
+ * tool is always read-only.
+ */
+export const SorobanQueryInputSchema = SorobanInvokeInputSchema.omit({ simulateOnly: true });
 
 export type SorobanQueryInput = z.infer<typeof SorobanQueryInputSchema>;
-
-// ─── Output shape ─────────────────────────────────────────────────────────────
 
 export interface SorobanQueryResult {
   simulationResult: unknown;
 }
 
-// ─── Tool implementation ──────────────────────────────────────────────────────
-
 export class SorobanQueryTool {
-  private keypair: Keypair;
+  private signer: Signer;
   private networkPassphrase: string;
 
-  constructor(secretKey: string = config.agentKeypair().secret()) {
-    this.keypair = Keypair.fromSecret(secretKey);
+  constructor(signer: Signer = createAgentSigner()) {
+    this.signer = signer;
     this.networkPassphrase = resolveNetworkPassphrase(config.STELLAR_NETWORK);
   }
 
+  /**
+   * Simulate a Soroban contract call without broadcasting a transaction.
+   */
   async query(rawInput: unknown): Promise<SorobanQueryResult> {
     const input = SorobanQueryInputSchema.parse(rawInput);
 
-    let contract: any;
-    try {
-      contract = new Contract(input.contractId);
-    } catch {
-      contract = {
-        call: (method: string, ...args: any[]) =>
-          Operation.manageData({ name: `invoke:${method}`, value: "mock" }),
-      };
-    }
+    // Validate contractId format - reject invalid IDs early with a clear error
+    const contract = new Contract(input.contractId);
 
-    const sourceAccount = await loadAccount(this.keypair.publicKey());
+    const sourceAccount = await loadAccount(this.signer.publicKey());
+
+    log.info(
+      { method: input.method, contractId: input.contractId },
+      'Building Soroban query transaction'
+    );
 
     const tx = new TransactionBuilder(sourceAccount, {
       fee: BASE_FEE,
       networkPassphrase: this.networkPassphrase,
     })
       .addOperation(contract.call(input.method, ...input.args))
-      .setTimeout(0)
+      .setTimeout(SOROBAN_TX_TIMEOUT)
       .build();
 
-    logger.info("Simulating Soroban query", {
-      method: input.method,
-      contractId: input.contractId,
-    });
+    const simulationResult = await prepareSorobanTx(tx);
 
-    const preparedTx = await prepareSorobanTx(tx);
+    log.info(
+      { method: input.method, contractId: input.contractId },
+      'Soroban query simulation complete'
+    );
 
-    logger.info("Soroban query simulation passed (read-only, not broadcasting)");
-    return { simulationResult: preparedTx };
+    return { simulationResult };
   }
 }

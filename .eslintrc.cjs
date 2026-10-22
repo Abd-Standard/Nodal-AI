@@ -14,6 +14,31 @@ module.exports = {
 
   overrides: [
     {
+      // Enforce structured logger usage across all backend source files.
+      // console.* calls are forbidden here; use createLogger() from
+      // backend/utils/logger.ts instead.
+      files: ["backend/**/*.ts"],
+      excludedFiles: [
+        // backend/logger.ts is the logger implementation itself — it must be
+        // allowed to call console.log/console.error as the output transport.
+        "backend/logger.ts",
+      ],
+      rules: {
+        "no-console": "error",
+        // pino's signature is (mergingObject, message). A string-first call
+        // with a fields object silently drops the fields, so forbid it.
+        "no-restricted-syntax": [
+          "error",
+          {
+            selector:
+              "CallExpression[callee.type='MemberExpression'][callee.property.name=/^(trace|debug|info|warn|error|fatal)$/][callee.object.name=/^(logger|log|[a-z]+Log)$/][arguments.length>1][arguments.0.type=/^(Literal|TemplateLiteral)$/]",
+            message:
+              "pino expects logger.<level>({ ...fields }, 'message'). Put the fields object first and the message string second.",
+          },
+        ],
+      },
+    },
+    {
       files: [
         "backend/agent.ts",
         "backend/tools/**/*.ts",

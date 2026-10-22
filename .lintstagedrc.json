@@ -1,4 +1,5 @@
 {
   "backend/**/*.ts": ["eslint --fix"],
-  "tests/**/*.ts": ["eslint --fix"]
+  "tests/**/*.ts": ["eslint --fix"],
+  "scripts/**/*.ts": ["prettier --write"]
 }

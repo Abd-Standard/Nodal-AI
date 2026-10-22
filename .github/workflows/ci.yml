@@ -4,54 +4,74 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Backstop for the `mutation` job's path filter: a weakened test does not
+  # touch the mutated files, so nothing would re-run Stryker until the next
+  # change to them. Monday 03:00 UTC catches that within a week.
+  schedule:
+    - cron: '0 3 * * 1'
 
 jobs:
+  # Required status check (#704): branch protection on `main` should list the
+  # `build` check as required, so a PR that does not compile cannot merge.
+  # Keep this job's `name` stable — renaming it silently drops the requirement.
   build:
+    name: build
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout repo
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Type-check sources (tsc --noEmit)
+        run: npx tsc --noEmit
+
       - name: Build TypeScript
         run: npm run build
+
+      - name: Type-check test files
+        run: npx tsc --project tsconfig.test.json --noEmit
 
   lint:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
       - run: npm run lint
+      - run: npm run format:check
 
   test:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
+      # See test-rust's "Install Rust" step: dtolnay/rust-toolchain has no
+      # "file" mode, so `@stable` would ignore rust-toolchain.toml and run
+      # this job's `cargo test` under an uncontrolled Rust version. rustup's
+      # own override resolution reads ./rust-toolchain.toml (pinned 1.78.0).
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
+        run: rustup show
 
       - run: npm ci
       - run: npm run test:all
@@ -60,30 +80,55 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # dtolnay/rust-toolchain has no "file" toolchain mode (that value was
+      # passed straight through to `rustup toolchain install file`, which
+      # always failed). rustup's own override resolution already reads
+      # ./rust-toolchain.toml — installing it explicitly here just makes
+      # that install happen up front instead of lazily on first `cargo`.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: file
+        run: rustup show
 
+      # --locked: fail loudly if Cargo.lock is missing/out of date instead of
+      # silently re-resolving to whatever crates.io serves that day (see the
+      # comment above contracts/escrow/Cargo.lock's .gitignore exemption).
       - name: Run Rust tests
-        run: cargo test --manifest-path contracts/escrow/Cargo.toml
+        run: cargo test --locked --manifest-path contracts/escrow/Cargo.toml
+
+  # Deep run of the escrow's stateful invariant suite (#815). The regular
+  # test-rust job already runs it with 128 random call sequences per push;
+  # the weekly schedule explores far more sequences.
+  escrow-invariants-deep:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # See test-rust's "Install Rust" step for why this isn't the action.
+      - name: Install Rust
+        run: rustup show
+
+      - name: Run escrow invariant suite (deep)
+        env:
+          ESCROW_INVARIANT_CASES: '4096'
+        run: cargo test --locked --manifest-path contracts/escrow/Cargo.toml prop_
 
   lint-rust:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # See test-rust's "Install Rust" step: dtolnay/rust-toolchain has no
+      # "file" mode. rustfmt/clippy come from rust-toolchain.toml's
+      # `components` list, so no need to name them again here.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: file
-          components: clippy, rustfmt
+        run: rustup show
 
       - name: Run Clippy
-        run: cargo clippy --manifest-path contracts/escrow/Cargo.toml -- -D warnings
+        run: cargo clippy --locked --manifest-path contracts/escrow/Cargo.toml -- -D warnings
 
       - name: Run rustfmt Check
         run: cargo fmt --manifest-path contracts/escrow/Cargo.toml -- --check
@@ -92,59 +137,188 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
+      # See test-rust's "Install Rust" step for why this isn't the action.
       - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: file
+        run: rustup show
 
+      # Pinned: cargo-tarpaulin >=0.36 requires the edition2024 Cargo
+      # feature, which isn't stable until Cargo 1.85 — newer than this
+      # repo's pinned 1.78 toolchain — so `cargo install` without a version
+      # fails to even parse the crate's manifest. 0.31.5 is the newest
+      # release confirmed to install and run under 1.78.
       - name: Install cargo-tarpaulin
-        run: cargo install cargo-tarpaulin --locked
+        run: cargo install cargo-tarpaulin --locked --version 0.31.5
 
       - name: Run cargo-tarpaulin
-        run: cargo tarpaulin --manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust
+        run: cargo tarpaulin --locked --manifest-path contracts/escrow/Cargo.toml --out Html --output-dir coverage/rust
+
+  wasm-size-check:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # See test-rust's "Install Rust" step for why this isn't the action.
+      - name: Install Rust
+        run: rustup show
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Build contract WASM
+        run: cargo build --locked --manifest-path contracts/escrow/Cargo.toml --target wasm32-unknown-unknown --release
+
+      # Fails if the compiled WASM exceeds the size budget, detecting
+      # supply-chain bloat (e.g. injected data segments) before deployment.
+      # See contracts/escrow/WASM_SIZE_BUDGET.md for the rationale.
+      - name: Enforce WASM size budget
+        run: bash scripts/check_wasm_size.sh
+        env:
+          MAX_WASM_SIZE_BYTES: 120000
+
+  # Generates the official TypeScript bindings for the escrow contract with the
+  # Stellar CLI (#814) and fails if backend/contracts/escrow's typed client no
+  # longer matches the contract's method set. The generated client is uploaded
+  # as an artifact for consumers that want the full AssembledTransaction API.
+  escrow-bindings:
+    runs-on: ubuntu-latest
+    env:
+      STELLAR_CLI_VERSION: 22.8.1
+
+    steps:
+      - uses: actions/checkout@v7
+
+      # See test-rust's "Install Rust" step for why this isn't the action.
+      - name: Install Rust
+        run: rustup show
+
+      - name: Add wasm32 target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Build contract WASM
+        run: cargo build --locked --manifest-path contracts/escrow/Cargo.toml --target wasm32-unknown-unknown --release
+
+      # Prebuilt release binary: `cargo install stellar-cli` needs a newer Rust
+      # than the 1.78 toolchain pinned for the contract.
+      - name: Install Stellar CLI
+        run: |
+          curl -sSfL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin stellar
+          stellar --version
+
+      - name: Generate bindings and check typed client
+        run: bash scripts/generate_escrow_bindings.sh
+
+      - name: Upload escrow bindings
+        uses: actions/upload-artifact@v4
+        with:
+          name: escrow-ts-bindings
+          path: contracts/escrow/bindings
+          retention-days: 14
+
+  # Builds the production image and checks that native modules load inside
+  # it, so a missing better-sqlite3 binding can't silently ship again (#606).
+  docker-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Build production image
+        run: docker build --target production -t nodal-ai:smoke .
+
+      - name: Boot check — better-sqlite3 native binding loads
+        run: docker run --rm nodal-ai:smoke node -e "new (require('better-sqlite3'))(':memory:')"
 
   secret-scan:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Secret scanning with trufflehog
-        uses: trufflesecurity/trufflehog@v3.95.7
+        uses: trufflesecurity/trufflehog@v3.97.1
         with:
-          extra_args: --config .trufflehog.yml --results=verified,unknown
+          extra_args: >-
+            --config .trufflehog.yml
+            --results=verified,unknown
+            --exclude-paths=.trufflehog-exclude-paths.txt
+
+  # Mutation testing (Issue #574).
+  #
+  # stryker.config.mjs sets `break: 60`, so the run fails when the mutation
+  # score for the two targeted files drops below 60%. Until this job existed
+  # nothing invoked it, and that threshold was never actually enforced.
+  #
+  # Gated on the mutated files rather than run on every push: a Stryker run
+  # re-executes the suite once per mutant, so it is minutes of CI where the
+  # other jobs are seconds. A change that touches neither agent.ts nor
+  # StellarPaymentTool.ts cannot move their mutation score, so paying that cost
+  # on every unrelated PR buys nothing — and a slow job on every PR is the kind
+  # that gets marked non-blocking and then ignored.
+  #
+  # The tests themselves are not in the path filter on purpose: a PR that only
+  # weakens a test would not trigger this, but the next change to the mutated
+  # files will, and the score will have dropped. The weekly schedule below is
+  # the backstop for that gap.
+  mutation:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+
+      # Skipped on the scheduled run: there is no base ref to diff against
+      # there, and the schedule is meant to run Stryker unconditionally anyway.
+      - name: Check whether the mutated files changed
+        id: changed
+        if: github.event_name != 'schedule'
+        uses: dorny/paths-filter@v3
+        with:
+          filters: |
+            mutated:
+              - 'backend/agent.ts'
+              - 'backend/tools/StellarPaymentTool.ts'
+              - 'stryker.config.mjs'
+
+      - name: Install dependencies
+        if: steps.changed.outputs.mutated == 'true' || github.event_name == 'schedule'
+        run: npm ci
+
+      - name: Run Stryker
+        if: steps.changed.outputs.mutated == 'true' || github.event_name == 'schedule'
+        run: npm run test:mutation
+
+      # Kept even on a failing run — the HTML report names the surviving
+      # mutants, which is the only actionable output when the threshold trips.
+      - name: Upload mutation report
+        if: always() && (steps.changed.outputs.mutated == 'true' || github.event_name == 'schedule')
+        uses: actions/upload-artifact@v4
+        with:
+          name: mutation-report
+          path: reports/mutation
+          if-no-files-found: ignore
+          retention-days: 14
 
   audit-npm:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - run: npm ci
-      - run: npm run audit
-
-  audit-rust:
-    runs-on: ubuntu-latest
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        with:
-          toolchain: file
-
-      - name: Install cargo-audit
-        run: cargo install cargo-audit
-
-      - name: Run cargo audit
-        run: cargo audit --manifest-path contracts/escrow/Cargo.toml
+      - name: Audit npm dependencies
+        run: npm audit --audit-level=high

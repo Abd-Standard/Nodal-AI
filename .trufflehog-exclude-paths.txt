@@ -1,0 +1,14 @@
+# Paths excluded from the CI secret scan (see .github/workflows/ci.yml,
+# job "secret-scan"). One regex per line, matched against each scanned
+# file's path.
+#
+# Test fixtures under tests/ (and their tsc output under dist/tests/) are
+# full of synthetic Stellar secret keys used only to exercise signing code
+# paths — they are not real keypairs tied to any funded account. Enumerating
+# each one in an allowlist doesn't scale as fixtures are added; excluding
+# the directories keeps the custom StellarSecretKey detector (see
+# .trufflehog.yml) focused on the code that could actually leak a real key.
+# Accidental real-key commits into these files are still caught separately
+# by the pre-commit hook's own allowlist (.husky/scan-secrets.sh).
+^tests/
+^dist/tests/

@@ -9,13 +9,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Enhanced documentation for vitest configuration, including detailed explanation of `isolate: true` behavior and coverage thresholds
-- Inline comments in `tests/soroban_invoke.test.ts` explaining mock architecture and test isolation patterns
-- CHANGELOG.md following Keep a Changelog format for tracking releases and changes
+- **x402 v2 interoperability** with official @x402/* packages (@x402/stellar, @x402/fetch, @x402/express, @x402/core)
+  - V2 buyer path using SEP-41 token transfers and exact scheme
+  - V2 seller middleware using @x402/express for Express.js applications
+  - Optional facilitator support for verification/settlement via `/verify`, `/settle`, `/supported` endpoints
+  - CAIP-2 network ID support (`stellar:testnet`, `stellar:pubnet`)
+
+- **`X402_USE_LEGACY` env var** — when `true` (default: `0` = `false`), uses legacy SHA-256(nonce)[0:28] memo flow; when `false`, uses x402 v2 with SEP-41
+
+- **`X402_FACILITATOR_URL` env var** — optional facilitator URL for x402 v2 verification/settlement
+
+- `X402PaymentTool.respondV2()` — v2 buyer implementation with automatic dispatch based on `X402_USE_LEGACY` flag
+
+- `createX402Middleware()` in `backend/x402/server.ts` — Express middleware factory supporting both v2 (official @x402/express) and legacy JSON challenge formats
+
+- **x402 v2 interoperability test suite** (`tests/x402_interop.test.ts`) covering legacy path, v2 buyer, v2 seller middleware, flag isolation, and facilitator validation
+
+### Changed
+
+- **`X402_USE_LEGACY` flag default** — now defaults to `0` (false), enabling x402 v2 by default. Set to `1` to use legacy flow for backward compatibility.
+
+- `X402PaymentTool.respond()` now automatically dispatches to `respondV2()` when `X402_USE_LEGACY === false`, else uses legacy SHA-256 memo flow.
+
+### Deprecated
+
+- Legacy JSON challenge format with SHA-256(nonce)[0:28] memo — will be removed in next major release. Set `X402_USE_LEGACY=1` to continue using legacy flow during migration.
+
+### Removed
+
+- `inflation` task type and `InflationTool` — inflation has been disabled on Stellar since protocol 12 and has no economic effect. The read-only `inflationDestination` field on `account_info` is retained for reading legacy values (#874).
 
 ### Fixed
 
-- Quick Start code blocks in README.md — commands are now properly enclosed in fenced code blocks
+- None
+
+### Security
+
+- None
+
+### Migration Notes
+
+#### Upgrading to x402 v2
+
+**Default behavior change**: x402 v2 is now enabled by default (`X402_USE_LEGACY=0`). To continue using the legacy flow during migration, set:
+
+```bash
+X402_USE_LEGACY=1
+```
+
+**For x402 buyers (clients)**:
+- v2 challenges include `x402Version: '2.0'` or `accepts: [{ scheme: 'exact', ... }]`
+- Legacy challenges are plain JSON objects without these fields
+- The agent's `X402PaymentTool.respond()` automatically detects the version and routes appropriately
+
+**For x402 sellers (servers)**:
+- Use `createX402Middleware()` from `backend/x402/server.ts`
+- When `X402_USE_LEGACY=true`, returns JSON challenges (compatible with older clients)
+- When `X402_USE_LEGACY=false` (default), returns x402 v2 challenges with header-based protocol
+
+**Facilitator integration** (optional):
+- Set `X402_FACILITATOR_URL=https://facilitator.example.com` to enable facilitator-based verification/settlement
+- When unset, SEP-41 payments are still supported but facilitator calls are skipped
+
+**Testing migration**:
+1. Set `X402_USE_LEGACY=1` to test legacy flow
+2. Verify all existing clients/servers work correctly
+3. Set `X402_USE_LEGACY=0` and test v2 flow
+4. Gradually migrate clients/servers to v2
+5. Remove `X402_USE_LEGACY=1` once all integrations are on v2
 
 ---
 
@@ -42,8 +103,8 @@ When releasing a new version:
 ### Link Format (Bottom of File)
 
 ```markdown
-[Unreleased]: https://github.com/your-repo/compare/v[latest]...HEAD
-[X.Y.Z]: https://github.com/your-repo/releases/tag/v[X.Y.Z]
+[Unreleased]: https://github.com/Nodal-stellar/Nodal-AI/compare/v[latest]...HEAD
+[X.Y.Z]: https://github.com/Nodal-stellar/Nodal-AI/releases/tag/v[X.Y.Z]
 ```
 
 ---
@@ -85,3 +146,21 @@ When releasing a new version:
 ---
 
 For questions or feedback on this changelog, see [CONTRIBUTING.md](./CONTRIBUTING.md).
+
+/
+├── backend/            # Pillar 1: Agent Orchestration (TypeScript/Node.js)
+│   ├── db/             # Local database layers / state tracking
+│   ├── middleware/     # HTTP middleware (centralised error handling in error_handler.ts)
+│   ├── tools/          # Individual agent tools (StellarPaymentTool, SorobanInvokeTool, X402PaymentTool)
+│   ├── types/          # Domain-specific type and schema validation definitions
+│   ├── utils/          # Shared helpers (logger.ts, stellarSchemas.ts)
+│   ├── agent.ts        # The main orchestrator class (PayFiAgent)
+│   ├── config.ts       # Secure configuration layer and environment schema validations
+│   └── rpc_client.ts   # Central network gateway with observability, retries, and simulation gates
+├── contracts/          # Pillar 2: Soroban Smart Contracts (Rust)
+│   └── escrow/         # Production-grade Soroban escrow contract (src/lib.rs, src/test.rs)
+└── tests/              # Pillar 3: Integration & E2E Tests (Vitest & TypeScript)
+    ├── payment.test.ts # Stellar native/asset payment verification tests
+    ├── x402.test.ts    # E2E x402 protocol integration tests
+    └── soroban_invoke.test.ts # Smart contract invocation tests
+```
