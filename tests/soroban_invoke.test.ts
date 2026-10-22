@@ -70,7 +70,6 @@ vi.mock("../backend/utils/logger", () => ({
   createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
   generateCorrelationId: vi.fn(() => "mock-correlation-id"),
 }));
-}));
 
 /**
  * Mock the config module to provide a predictable environment.
