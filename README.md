@@ -119,14 +119,61 @@ To report a vulnerability privately, use [GitHub Security Advisories](https://gi
 
 ### Spending Limit Enforcement
 
-PayFiAgent enforces two layers of spending limits to prevent runaway payments:
+PayFiAgent enforces three layers of spending limits to prevent runaway payments:
 
-- **AGENT_SPENDING_LIMIT**: A configurable per-transaction ceiling (set via environment variable). Before every payment task (`stellar_payment` or `x402_respond`), the `assertWithinSpendingLimit()` function in `backend/agent.ts` checks the requested amount. If it exceeds `AGENT_SPENDING_LIMIT`, the task fails immediately with error: `"Payment amount X exceeds AGENT_SPENDING_LIMIT of Y"`.
-- **Mainnet Spending Cap**: A hardcoded safety ceiling of **10,000** on mainnet. Even if `AGENT_SPENDING_LIMIT` is misconfigured above this, mainnet transactions are blocked if they exceed 10,000, throwing: `"Payment amount X exceeds mainnet spending cap of 10,000"`.
+- **`AGENT_SPENDING_LIMIT`**: Global per-asset ceiling (used when no per-asset map is configured). Defaults to `"100"`.
+- **`SPENDING_LIMITS`** *(new)*: Per-asset limits in the format `ASSET_CODE:LIMIT` (native) or `ASSET_CODE:ISSUER:LIMIT` (credit assets), comma-separated. Example: `XLM:1000,USDC:GA5Z…:500`. When set, each asset is tracked and limited independently.
+- **Mainnet Spending Cap**: A hardcoded safety ceiling of **10,000** per single payment on mainnet.
 
-These limits apply to:
-- Direct `stellar_payment` tasks via `StellarPaymentTool`
-- `x402_respond` tasks that trigger automatic payment via `X402PaymentTool`
+#### Per-Asset Configuration
+
+```bash
+# Limit XLM to 1000, USDC to 500 per rolling 24-hour window
+SPENDING_LIMITS=XLM:1000,USDC:GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN:500
+
+# Deny any asset not in the list (default behaviour)
+SPENDING_LIMITS_ALLOW_UNKNOWN=false
+
+# Allow unlisted assets but still apply global limit
+SPENDING_LIMITS_ALLOW_UNKNOWN=true
+```
+
+#### Key behaviours
+
+| Scenario | Result |
+|---|---|
+| Asset in `SPENDING_LIMITS` | Per-asset limit enforced |
+| Asset not in map, `ALLOW_UNKNOWN=false` | Payment denied |
+| Asset not in map, `ALLOW_UNKNOWN=true` | Global `AGENT_SPENDING_LIMIT` applied |
+| Empty `SPENDING_LIMITS` (default) | Global `AGENT_SPENDING_LIMIT` applies to all assets |
+| Amount uses scientific notation or hex | Rejected by strict stroop parser |
+
+#### Rolling window
+
+All cumulative limits use a rolling window of `SPENDING_WINDOW_MS` (default `86_400_000` ms = 24 hours). The current window usage is available at `GET /spending`.
+
+#### `GET /spending` endpoint
+
+```json
+{
+  "windowMs": 86400000,
+  "usage": [
+    { "assetKey": "XLM",         "spent": "490.0000000", "limit": "1000" },
+    { "assetKey": "USDC:GA5Z…",  "spent": "200.0000000", "limit": "500"  }
+  ]
+}
+```
+
+#### Atomic reservation & rollback
+
+Spending is tracked with a **reserve → commit / rollback** pattern:
+- `reserve()` atomically checks the limit and persists the reservation to SQLite.
+- `commit()` confirms the payment completed.
+- `rollback()` removes the reservation from memory **and** deletes the persisted row so rolled-back spend is not counted after a process restart (fixes [#731](https://github.com/Nodal-stellar/Nodal-AI/issues/731)).
+
+#### BigInt stroop arithmetic
+
+All amount comparisons use integer stroop arithmetic (`BigInt`) — `parseFloat` is never used on monetary values. This prevents precision loss and rejects inputs like `1e3`, `0x10`, or ` 5 ` that Stellar would reject (fixes [#734](https://github.com/Nodal-stellar/Nodal-AI/issues/734)).
 
 ### Mainnet Checklist
 
