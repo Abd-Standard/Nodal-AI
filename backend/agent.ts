@@ -12,7 +12,7 @@
 
 // Updated imports
 import { EventEmitter } from "events";
-import { config, MAINNET_SPENDING_CAP } from "./config";
+import { config } from "./config";
 import { logger } from "./logger";
 import { saveResult } from "./persistence";
 import { StellarPaymentTool } from "./tools/StellarPaymentTool";
@@ -21,41 +21,23 @@ import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
 import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
-
 import { BatchPaymentTool } from "./tools/BatchPaymentTool";
-
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
-import { SpendingTracker } from "./spending_tracker";
+import { SpendingTracker, assetKey } from "./spending_tracker";
 
-// Instantiate a singleton tracker
+// ── Module-level singleton tracker shared across all agent instances ──────────
+// NOTE: For process-wide spending enforcement, the tracker is a module singleton.
+// Tests that need isolation should call _resetSpendingTrackerForTests().
 const spendingTracker = new SpendingTracker();
 
-// ─── Spending limit guard ─────────────────────────────────────────────────────
-
 /**
- * Check that a payment amount does not exceed the configured spending limit.
- * Also enforces cumulative spending within the sliding window.
+ * Reset the module-level SpendingTracker singleton.
+ * FOR TESTING ONLY — clears in-memory entries between tests.
+ * @internal
  */
-function assertWithinSpendingLimit(amount: unknown): void {
-  if (typeof amount !== "string") return; // let the tool's own schema catch this
-  // Record cumulative spending
-  spendingTracker.record(amount);
-
-  const parsed = parseFloat(amount);
-  const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
-  if (!isNaN(parsed) && parsed > limit) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-        `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
-    );
-  }
-  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-        `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
-    );
-  }
+export function _resetSpendingTrackerForTests(): void {
+  spendingTracker._resetForTests();
 }
 
 const log = createLogger("orchestrator");
@@ -69,7 +51,6 @@ export type TaskType =
   | "account_info"
   | "change_trust"
   | "multisig_payment"
-
   | "batch_payment";
 
 
@@ -120,25 +101,35 @@ function sanitizePayload(payload: unknown): unknown {
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
 /**
- * Check that a payment amount does not exceed the configured spending limit.
- * Called before delegating to StellarPaymentTool or X402PaymentTool.
+ * Atomically reserve a spending amount for the given asset.
+ *
+ * Uses BigInt stroop arithmetic (no parseFloat).
+ * Per-asset limits are resolved from config.SPENDING_LIMITS_MAP.
+ * Unknown assets are denied unless SPENDING_LIMITS_ALLOW_UNKNOWN is true.
+ *
+ * @param amount      - The amount string from the task payload.
+ * @param assetCode   - Asset code (e.g. "XLM", "USDC").
+ * @param assetIssuer - G-address issuer; absent / empty for native XLM.
+ * @returns           A reservation id — pass to commitSpend() or rollbackSpend().
+ * @throws            If the amount is malformed, asset is denied, or limit exceeded.
  */
-function assertWithinSpendingLimit(amount: unknown): void {
-  if (typeof amount !== "string") return; // let the tool's own schema catch this
-  const parsed = parseFloat(amount);
-  const limit  = parseFloat(config.AGENT_SPENDING_LIMIT);
-  if (!isNaN(parsed) && parsed > limit) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-      `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
-    );
+function reserveSpend(amount: unknown, assetCode?: unknown, assetIssuer?: unknown): string {
+  if (typeof amount !== "string") {
+    // Let the tool's own Zod schema surface a better error; do not block here.
+    return "";
   }
-  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-      `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
-    );
-  }
+  const code    = typeof assetCode   === "string" ? assetCode   : config.X402_ASSET_CODE;
+  const issuer  = typeof assetIssuer === "string" ? assetIssuer : config.X402_ASSET_ISSUER;
+  const key     = assetKey(code, issuer);
+  return spendingTracker.reserve(amount, key);
+}
+
+function commitSpend(reservationId: string): void {
+  if (reservationId) spendingTracker.commit(reservationId);
+}
+
+function rollbackSpend(reservationId: string): void {
+  if (reservationId) spendingTracker.rollback(reservationId);
 }
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
@@ -146,12 +137,10 @@ function assertWithinSpendingLimit(amount: unknown): void {
 export class PayFiAgent extends EventEmitter {
   private paymentTool: StellarPaymentTool;
   private sorobanTool: SorobanInvokeTool;
-  private sorobanQueryTool: SorobanQueryTool;
   private x402Tool: X402PaymentTool;
   private accountInfoTool: AccountInfoTool;
   private trustlineTool: TrustlineTool;
   private multiSigTool: MultiSigPaymentTool;
-
   private batchPaymentTool: BatchPaymentTool;
 
 
@@ -171,7 +160,6 @@ export class PayFiAgent extends EventEmitter {
     // type (Omit<RawEnv, "AGENT_SECRET_KEY">); using agentKeypair() makes the access explicit.
     this.paymentTool = new StellarPaymentTool(config.agentKeypair().secret());
     this.sorobanTool = new SorobanInvokeTool(config.agentKeypair().secret());
-    this.sorobanQueryTool = new SorobanQueryTool(config.agentKeypair().secret());
     this.x402Tool    = new X402PaymentTool(config.agentKeypair().secret());
     this.accountInfoTool = new AccountInfoTool();
     this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
@@ -326,14 +314,20 @@ export class PayFiAgent extends EventEmitter {
 
     this.activeTasks++;
     logger.info("Running task", { taskType: task.type });
+
+    // reservationId is non-empty only for payment tasks that were reserved
+    let reservationId = "";
+
     try {
-      let data: AgentResultData;
+      let data: AgentResultData | unknown;
 
       switch (task.type) {
         case "stellar_payment": {
           const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
+          // Atomically reserve spend — throws if limit exceeded or asset denied
+          reservationId = reserveSpend(p?.amount, p?.assetCode, p?.assetIssuer);
           data = await this.paymentTool.execute(task.payload);
+          commitSpend(reservationId);
           break;
         }
 
@@ -342,14 +336,12 @@ export class PayFiAgent extends EventEmitter {
           break;
         }
 
-        case "soroban_query":
-          data = await this.sorobanQueryTool.query(task.payload);
-          break;
-
         case "x402_respond": {
           const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
+          // Atomically reserve spend — throws if limit exceeded or asset denied
+          reservationId = reserveSpend(p?.amount, p?.assetCode, p?.assetIssuer);
           data = await this.x402Tool.respond(task.payload);
+          commitSpend(reservationId);
           break;
         }
 
@@ -365,32 +357,32 @@ export class PayFiAgent extends EventEmitter {
           data = await this.multiSigTool.execute(task.payload);
           break;
 
-
         case "batch_payment":
           data = await this.batchPaymentTool.execute(task.payload);
           break;
-
 
         default:
           throw new Error(`Unknown task type: ${(task as AgentTask).type}`);
       }
 
       logger.info("Task completed", { taskType: task.type });
-      const result: AgentResult = { success: true, taskType: task.type, data };
+      const _data = data as AgentResultData | undefined;
+      const result: AgentResult = _data !== undefined
+        ? { success: true, taskType: task.type, data: _data }
+        : { success: true, taskType: task.type };
       this.emit("task:complete", result);
-      
       saveResult({ ...result, timestamp: new Date().toISOString() });
-bhook(result);
-
       return result;
     } catch (err) {
+      // Roll back the reservation so the failed payment is not counted
+      rollbackSpend(reservationId);
+
       const message = err instanceof Error ? err.message : String(err);
       const safe = redactSecretString(message);
       const sanitized = sanitizePayload(task.payload);
       logger.error("Task failed", { taskType: task.type, error: safe, sanitizedPayload: sanitized });
       const result: AgentResult = { success: false, taskType: task.type, error: safe };
       this.emit("task:failed", result);
-      void dispatchWebhook(result);
       return result;
     } finally {
       this.activeTasks--;
