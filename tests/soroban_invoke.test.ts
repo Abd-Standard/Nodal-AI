@@ -70,7 +70,6 @@ vi.mock("../backend/utils/logger", () => ({
   createLogger: vi.fn(() => ({ info: vi.fn(), warn: vi.fn(), error: vi.fn(), debug: vi.fn() })),
   generateCorrelationId: vi.fn(() => "mock-correlation-id"),
 }));
-}));
 
 /**
  * Mock the config module to provide a predictable environment.
@@ -150,7 +149,11 @@ function makeMockAccount(publicKey: string) {
  * sign() mutates `signatures` in place (matching real Stellar SDK behaviour).
  */
 function makeMockPreparedTx(): any {
-  const obj: any = { signatures: [] };
+  const obj: any = {
+    signatures: [],
+    // The tool's broadcast safety guard requires positive time bounds.
+    timeBounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 300 },
+  };
   obj.sign = vi.fn().mockImplementation(() => {
     obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
   });
@@ -312,10 +315,9 @@ describe("SorobanInvokeTool", () => {
     });
 
     it("allows execution when Soroban fee is within MAX_SOROBAN_FEE_STROOPS", async () => {
-      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
-        sign: vi.fn(),
-        fee: 500_000,
-      } as any);
+      const preparedTx = makeMockPreparedTx();
+      preparedTx.fee = 500_000;
+      vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue(preparedTx);
       vi.mocked(
         rpcClient.sorobanServer.sendTransaction as any,
       ).mockResolvedValue({
@@ -575,6 +577,7 @@ describe("SorobanInvokeTool", () => {
       vi.mocked(rpcClient.prepareSorobanTx).mockResolvedValue({
         sign: vi.fn(), // no-op — does NOT push to signatures
         signatures: [], // empty signatures list — guard must catch this
+        timeBounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 300 },
       } as any);
 
       await expect(

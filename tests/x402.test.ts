@@ -183,10 +183,19 @@ describe("X402PaymentTool", () => {
 
   // ── Rate limiting ────────────────────────────────────────────────────────────
 
+  /** Build a challenge with a unique nonce (nonce replay must not interfere). */
+  function uniqueChallenge(i: number, overrides: Partial<typeof VALID_CHALLENGE> = {}) {
+    return {
+      ...VALID_CHALLENGE,
+      nonce: `550e8400-e29b-41d4-a716-4466554400${String(i).padStart(2, "0")}`,
+      ...overrides,
+    };
+  }
+
   describe("Rate limiting", () => {
     it("allows up to MAX_X402_PAYMENTS_PER_MINUTE calls within the window", async () => {
       for (let i = 0; i < 10; i++) {
-        const proof = await tool.respond(VALID_CHALLENGE);
+        const proof = await tool.respond(uniqueChallenge(i));
         expect(proof.txHash).toBe("x402_mock_tx_hash");
       }
       expect(mockPaymentTool.execute).toHaveBeenCalledTimes(10);
@@ -194,25 +203,26 @@ describe("X402PaymentTool", () => {
 
     it("throws on the 11th call within the same 60s window", async () => {
       for (let i = 0; i < 10; i++) {
-        await tool.respond(VALID_CHALLENGE);
+        await tool.respond(uniqueChallenge(i));
       }
-      await expect(tool.respond(VALID_CHALLENGE)).rejects.toThrow("x402: rate limit exceeded");
+      await expect(tool.respond(uniqueChallenge(99))).rejects.toThrow("x402: rate limit exceeded");
     });
 
     it("resets the counter after 60s window elapses", async () => {
       vi.useFakeTimers();
       const startTime = Date.now();
       const farFutureExpiry = new Date(startTime + 180_000).toISOString();
-      const challenge = { ...VALID_CHALLENGE, expiresAt: farFutureExpiry };
 
       for (let i = 0; i < 10; i++) {
-        await tool.respond(challenge);
+        await tool.respond(uniqueChallenge(i, { expiresAt: farFutureExpiry }));
       }
-      await expect(tool.respond(challenge)).rejects.toThrow("rate limit exceeded");
+      await expect(
+        tool.respond(uniqueChallenge(98, { expiresAt: farFutureExpiry }))
+      ).rejects.toThrow("rate limit exceeded");
 
       vi.setSystemTime(startTime + 60_001);
 
-      const proof = await tool.respond(challenge);
+      const proof = await tool.respond(uniqueChallenge(97, { expiresAt: farFutureExpiry }));
       expect(proof.txHash).toBe("x402_mock_tx_hash");
       vi.useRealTimers();
     });

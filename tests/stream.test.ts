@@ -5,6 +5,15 @@
 
 import { describe, it, expect, vi, beforeEach } from "vitest";
 
+// Use the shared persistence mock helper via vi.hoisted so the factory is
+// evaluated before vi.mock hoisting (issue #994).
+// See tests/helpers/persistenceMock.ts for the canonical export list.
+const persistenceMocks = vi.hoisted(() => ({
+  saveResult: vi.fn(),
+  getResults: vi.fn().mockReturnValue([]),
+  _setDb: vi.fn(),
+}));
+
 // ─── Hoist mocks so factory closures can reference them ──────────────────────
 const { mockStopStream, mockStream, mockForAccount, mockPayments } = vi.hoisted(() => {
   const mockStopStream = vi.fn();
@@ -58,13 +67,17 @@ vi.mock("../backend/config", () => ({
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 100,
     AGENT_SPENDING_LIMIT: "100",
+    SPENDING_WINDOW_MS: 86_400_000,
     agentKeypair: () => ({ secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73" }),
   },
   MAINNET_SPENDING_CAP: 10_000,
 }));
 
-vi.mock("../backend/persistence", () => ({
-  saveResult: vi.fn(),
+vi.mock("../backend/persistence", () => persistenceMocks);
+
+vi.mock("../backend/webhook", () => ({
+  dispatchWebhook: vi.fn().mockResolvedValue(undefined),
+  signPayload: vi.fn().mockReturnValue("mock-signature"),
 }));
 
 import { PayFiAgent } from "../backend/agent";

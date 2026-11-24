@@ -6,6 +6,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { BatchPaymentTool } from "../backend/tools/BatchPaymentTool";
 import * as rpcClient from "../backend/rpc_client";
 
+// Use the shared persistence mock helper via vi.hoisted so the factory is
+// evaluated before vi.mock hoisting (issue #994).
+// See tests/helpers/persistenceMock.ts for the canonical export list.
+const persistenceMocks = vi.hoisted(() => ({
+  saveResult: vi.fn(),
+  getResults: vi.fn().mockReturnValue([]),
+  _setDb: vi.fn(),
+}));
+
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn(),
   submitTransaction: vi.fn(),
@@ -38,7 +47,7 @@ vi.mock("../backend/config", () => {
   };
 });
 
-vi.mock("../backend/persistence", () => ({ saveResult: vi.fn() }));
+vi.mock("../backend/persistence", () => persistenceMocks);
 
 const DEST1 = "GBBD47IF6LWK7P7MDEVSCWR7DPUWV3NY3DTQEVFL4NAT4AQH3ZLLFLA5";
 const DEST2 = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";

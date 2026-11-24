@@ -8,6 +8,15 @@
 import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PayFiAgent } from "../backend/agent";
 
+// Use the shared persistence mock helper via vi.hoisted so the factory is
+// evaluated before vi.mock hoisting (issue #994).
+// See tests/helpers/persistenceMock.ts for the canonical export list.
+const persistenceMocks = vi.hoisted(() => ({
+  saveResult: vi.fn(),
+  getResults: vi.fn().mockReturnValue([]),
+  _setDb: vi.fn(),
+}));
+
 // Mock only the RPC layer to test the full tool chain
 vi.mock("../backend/rpc_client", () => ({
   loadAccount: vi.fn().mockResolvedValue({
@@ -35,15 +44,24 @@ vi.mock("../backend/rpc_client", () => ({
     hash: "test_tx_hash_123456789",
     ledger: 1000,
   }),
-  // prepareSorobanTx must return a tx-like object with sign() + signatures[]
+  // prepareSorobanTx must return a tx-like object with sign() + signatures[] + timeBounds
   prepareSorobanTx: vi.fn().mockImplementation(() => {
-    const obj: any = { signatures: [] };
+    const obj: any = {
+      signatures: [],
+      timeBounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 300 },
+    };
     obj.sign = () => {
       obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
     };
     return Promise.resolve(obj);
   }),
-  horizonServer: {},
+  horizonServer: {
+    ledgers: vi.fn().mockReturnValue({
+      ledger: vi.fn().mockReturnValue({
+        call: vi.fn().mockResolvedValue({ closed_at: "2026-11-23T00:00:00Z" }),
+      }),
+    }),
+  },
   sorobanServer: {
     sendTransaction: vi.fn().mockResolvedValue({
       hash: "soroban_tx_hash_123456789",
@@ -65,6 +83,7 @@ vi.mock("../backend/config", () => ({
     X402_ASSET_CODE: "USDC",
     X402_ASSET_ISSUER: "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN",
     AGENT_SPENDING_LIMIT: "1000",
+    SPENDING_WINDOW_MS: 86_400_000,
     MAX_RETRIES: 3,
     RETRY_DELAY_MS: 100,
     agentKeypair: () => ({
@@ -75,8 +94,11 @@ vi.mock("../backend/config", () => ({
   MAINNET_SPENDING_CAP: 10000,
 }));
 
-vi.mock("../backend/persistence", () => ({
-  saveResult: vi.fn(),
+vi.mock("../backend/persistence", () => persistenceMocks);
+
+vi.mock("../backend/webhook", () => ({
+  dispatchWebhook: vi.fn().mockResolvedValue(undefined),
+  signPayload: vi.fn().mockReturnValue("mock-signature"),
 }));
 
 describe("PayFiAgent integration", () => {
@@ -102,7 +124,10 @@ const MOCK_ACCOUNT = {
   };
 
   function makeMockPreparedTx() {
-    const obj: any = { signatures: [] };
+    const obj: any = {
+      signatures: [],
+      timeBounds: { minTime: 0, maxTime: Math.floor(Date.now() / 1000) + 300 },
+    };
     obj.sign = () => {
       obj.signatures.push({ hint: () => Buffer.alloc(4), signature: () => Buffer.alloc(64) });
     };

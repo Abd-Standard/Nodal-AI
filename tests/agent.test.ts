@@ -9,6 +9,15 @@ import { describe, it, expect, vi, beforeEach } from "vitest";
 import { PayFiAgent } from "../backend/agent";
 import { StellarPaymentTool } from "../backend/tools/StellarPaymentTool";
 
+// Use the shared persistence mock helper via vi.hoisted so the factory is
+// evaluated before vi.mock hoisting (issue #994).
+// See tests/helpers/persistenceMock.ts for the canonical export list.
+const persistenceMocks = vi.hoisted(() => ({
+  saveResult: vi.fn(),
+  getResults: vi.fn().mockReturnValue([]),
+  _setDb: vi.fn(),
+}));
+
 vi.mock("../backend/tools/StellarPaymentTool", () => ({
   StellarPaymentTool: vi.fn().mockImplementation(() => ({
     execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
@@ -52,8 +61,11 @@ vi.mock("../backend/tools/BatchPaymentTool", () => ({
   })),
 }));
 
-vi.mock("../backend/persistence", () => ({
-  saveResult: vi.fn(),
+vi.mock("../backend/persistence", () => persistenceMocks);
+
+vi.mock("../backend/webhook", () => ({
+  dispatchWebhook: vi.fn().mockResolvedValue(undefined),
+  signPayload: vi.fn().mockReturnValue("mock-signature"),
 }));
 
 vi.mock("../backend/rpc_client", () => ({
@@ -76,6 +88,7 @@ vi.mock("../backend/config", () => ({
     RETRY_DELAY_MS: 100,
     // Set above MAINNET_SPENDING_CAP to exercise the secondary runtime guard
     AGENT_SPENDING_LIMIT: "15000",
+    SPENDING_WINDOW_MS: 86_400_000,
     agentKeypair: () => ({
       secret: () => "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73",
     }),
@@ -292,11 +305,14 @@ describe("PayFiAgent — payload sanitisation", () => {
 
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(StellarPaymentTool).mockImplementation(() => ({
+      execute: vi.fn().mockResolvedValue({ txHash: "mock_hash", ledger: 1 }),
+    } as any));
     agent = new PayFiAgent();
   });
 
   it("scrubs secretKey from payload before logging on failure", async () => {
-    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0].value;
+    const mockInstance = vi.mocked(StellarPaymentTool).mock.results[0]!.value;
     mockInstance.execute.mockRejectedValueOnce(
       new Error("simulated payment failure")
     );

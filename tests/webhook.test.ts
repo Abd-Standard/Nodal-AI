@@ -77,7 +77,7 @@ describe("dispatchWebhook", () => {
     await dispatchWebhook(successResult);
 
     expect(axiosPost).toHaveBeenCalledOnce();
-    const [url, body] = axiosPost.mock.calls[0];
+    const [url, body] = axiosPost.mock.calls[0]!;
     expect(url).toBe("https://example.com/webhook");
     expect(JSON.parse(body)).toMatchObject({ success: true, taskType: "stellar_payment" });
   });
@@ -89,7 +89,7 @@ describe("dispatchWebhook", () => {
 
     await dispatchWebhook(successResult);
 
-    const [, body, opts] = axiosPost.mock.calls[0];
+    const [, body, opts] = axiosPost.mock.calls[0]!;
     const expectedSig = signPayload(body, "supersecret");
     expect(opts.headers["X-Nodal-Signature"]).toBe(expectedSig);
   });
@@ -100,7 +100,7 @@ describe("dispatchWebhook", () => {
 
     await dispatchWebhook(failureResult);
 
-    const [, body] = axiosPost.mock.calls[0];
+    const [, body] = axiosPost.mock.calls[0]!;
     expect(JSON.parse(body)).toMatchObject({ success: false, taskType: "x402_respond" });
   });
 
