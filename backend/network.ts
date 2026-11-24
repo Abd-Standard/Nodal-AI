@@ -112,7 +112,7 @@ function clearBackoff(): void {
     try {
       cb();
     } catch (err) {
-      log.error("[Network] Error executing queued callback", { error: (err as Error).message });
+      log.error({ error: (err as Error).message }, "[Network] Error executing queued callback");
     }
   }
 }

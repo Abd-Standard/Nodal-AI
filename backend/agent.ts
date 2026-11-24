@@ -21,41 +21,48 @@ import { X402PaymentTool, X402Challenge } from "./tools/X402PaymentTool";
 import { AccountInfoTool } from "./tools/AccountInfoTool";
 import { TrustlineTool } from "./tools/TrustlineTool";
 import { MultiSigPaymentTool } from "./tools/MultiSigPaymentTool";
+import { SorobanQueryTool } from "./tools/SorobanQueryTool";
 
 import { BatchPaymentTool } from "./tools/BatchPaymentTool";
+import { dispatchWebhook } from "./webhook";
 
 import { horizonServer } from "./rpc_client";
 import { createLogger, generateCorrelationId } from "./utils/logger";
 import { SpendingTracker } from "./spending_tracker";
 
-// Instantiate a singleton tracker
-const spendingTracker = new SpendingTracker();
+// Instantiate a singleton tracker — moved to PayFiAgent instance in class body
+// to ensure each agent instance has its own tracker (see constructor below).
 
 // ─── Spending limit guard ─────────────────────────────────────────────────────
 
 /**
  * Check that a payment amount does not exceed the configured spending limit.
  * Also enforces cumulative spending within the sliding window.
+ * @param amount - The payment amount string.
+ * @param tracker - The SpendingTracker instance to record against.
  */
-function assertWithinSpendingLimit(amount: unknown): void {
+function assertWithinSpendingLimit(amount: unknown, tracker: SpendingTracker): void {
   if (typeof amount !== "string") return; // let the tool's own schema catch this
-  // Record cumulative spending
-  spendingTracker.record(amount);
-
   const parsed = parseFloat(amount);
   const limit = parseFloat(config.AGENT_SPENDING_LIMIT);
-  if (!isNaN(parsed) && parsed > limit) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-        `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
-    );
-  }
+
+  // Check the per-call limits BEFORE recording so rejected payments
+  // don't pollute the cumulative window tracker.
   if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
     throw new Error(
       `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
         `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
     );
   }
+  if (!isNaN(parsed) && parsed > limit) {
+    throw new Error(
+      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
+        `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
+    );
+  }
+
+  // Record cumulative spending only after all single-call checks pass.
+  tracker.record(amount);
 }
 
 const log = createLogger("orchestrator");
@@ -65,13 +72,12 @@ const log = createLogger("orchestrator");
 export type TaskType =
   | "stellar_payment"
   | "soroban_invoke"
+  | "soroban_query"
   | "x402_respond"
   | "account_info"
   | "change_trust"
   | "multisig_payment"
-
   | "batch_payment";
-
 
 export interface AgentTask {
   type: TaskType;
@@ -87,6 +93,9 @@ export interface AgentResultData {
   nonce?: string;
   payer?: string;
   signedAt?: string;
+  /** Account details returned by AccountInfoTool. */
+  account?: unknown;
+  [key: string]: unknown;
 }
 
 export interface AgentResult {
@@ -117,30 +126,6 @@ function sanitizePayload(payload: unknown): unknown {
   return sanitized;
 }
 
-// ─── Spending limit guard ─────────────────────────────────────────────────────
-
-/**
- * Check that a payment amount does not exceed the configured spending limit.
- * Called before delegating to StellarPaymentTool or X402PaymentTool.
- */
-function assertWithinSpendingLimit(amount: unknown): void {
-  if (typeof amount !== "string") return; // let the tool's own schema catch this
-  const parsed = parseFloat(amount);
-  const limit  = parseFloat(config.AGENT_SPENDING_LIMIT);
-  if (!isNaN(parsed) && parsed > limit) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-      `AGENT_SPENDING_LIMIT of ${config.AGENT_SPENDING_LIMIT}`
-    );
-  }
-  if (!isNaN(parsed) && config.STELLAR_NETWORK === "mainnet" && parsed > MAINNET_SPENDING_CAP) {
-    throw new Error(
-      `Payment amount ${amount} ${config.X402_ASSET_CODE} exceeds ` +
-      `mainnet spending cap of ${MAINNET_SPENDING_CAP}`
-    );
-  }
-}
-
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
 export class PayFiAgent extends EventEmitter {
@@ -151,8 +136,8 @@ export class PayFiAgent extends EventEmitter {
   private accountInfoTool: AccountInfoTool;
   private trustlineTool: TrustlineTool;
   private multiSigTool: MultiSigPaymentTool;
-
   private batchPaymentTool: BatchPaymentTool;
+  private spendingTracker: SpendingTracker;
 
 
   private activeTasks = 0;
@@ -177,6 +162,7 @@ export class PayFiAgent extends EventEmitter {
     this.trustlineTool = new TrustlineTool(config.agentKeypair().secret());
     this.multiSigTool = new MultiSigPaymentTool(config.agentKeypair().secret());
     this.batchPaymentTool = new BatchPaymentTool(config.agentKeypair().secret());
+    this.spendingTracker = new SpendingTracker();
 
 
     // ── Register event listeners — every registration is mirrored in destroy() ──
@@ -332,7 +318,7 @@ export class PayFiAgent extends EventEmitter {
       switch (task.type) {
         case "stellar_payment": {
           const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
+          assertWithinSpendingLimit(p?.amount, this.spendingTracker);
           data = await this.paymentTool.execute(task.payload);
           break;
         }
@@ -343,18 +329,18 @@ export class PayFiAgent extends EventEmitter {
         }
 
         case "soroban_query":
-          data = await this.sorobanQueryTool.query(task.payload);
+          data = (await this.sorobanQueryTool.query(task.payload)) as AgentResultData;
           break;
 
         case "x402_respond": {
           const p = task.payload as Record<string, unknown>;
-          assertWithinSpendingLimit(p?.amount);
-          data = await this.x402Tool.respond(task.payload);
+          assertWithinSpendingLimit(p?.amount, this.spendingTracker);
+          data = (await this.x402Tool.respond(task.payload)) as unknown as AgentResultData;
           break;
         }
 
         case "account_info":
-          data = await this.accountInfoTool.fetch();
+          data = (await this.accountInfoTool.fetch()) as unknown as AgentResultData;
           break;
 
         case "change_trust":
@@ -362,7 +348,7 @@ export class PayFiAgent extends EventEmitter {
           break;
 
         case "multisig_payment":
-          data = await this.multiSigTool.execute(task.payload);
+          data = (await this.multiSigTool.execute(task.payload)) as unknown as AgentResultData;
           break;
 
 
@@ -380,7 +366,7 @@ export class PayFiAgent extends EventEmitter {
       this.emit("task:complete", result);
       
       saveResult({ ...result, timestamp: new Date().toISOString() });
-bhook(result);
+      void dispatchWebhook(result);
 
       return result;
     } catch (err) {

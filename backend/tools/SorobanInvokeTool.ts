@@ -26,6 +26,12 @@ import { loadAccount, prepareSorobanTx, resolveNetworkPassphrase, sorobanServer 
 // without time bounds that can be replayed indefinitely on the network.
 export const SOROBAN_TX_TIMEOUT = 30;
 
+/**
+ * Backwards-compatible alias — some consumers import the constant under the
+ * `_SECONDS` suffix. Both names refer to the same value.
+ */
+export const SOROBAN_TX_TIMEOUT_SECONDS: number = SOROBAN_TX_TIMEOUT;
+
 // ─── Input schema ─────────────────────────────────────────────────────────────
 
 /**
@@ -117,9 +123,9 @@ export class SorobanInvokeTool {
   private networkPassphrase: string;
 
   constructor(secretKey: string = config.agentKeypair().secret()) {
-    if (SOROBAN_TX_TIMEOUT_SECONDS <= 0 || SOROBAN_TX_TIMEOUT_SECONDS > 300) {
+    if (SOROBAN_TX_TIMEOUT <= 0 || SOROBAN_TX_TIMEOUT > 300) {
       throw new Error(
-        `SOROBAN_TX_TIMEOUT_SECONDS must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT_SECONDS}`
+        `SOROBAN_TX_TIMEOUT must be between 1 and 300, got ${SOROBAN_TX_TIMEOUT}`
       );
     }
     this.keypair = Keypair.fromSecret(secretKey);
@@ -206,7 +212,9 @@ export class SorobanInvokeTool {
     // 4. MANDATORY simulate step — throws on simulation failure
     const preparedTx = await prepareSorobanTx(tx);
 
-    if (preparedTx.fee > config.MAX_SOROBAN_FEE_STROOPS) {
+    // preparedTx.fee is a stroop-denominated string — parse before comparing.
+    const preparedFee = parseInt(preparedTx.fee, 10);
+    if (preparedFee > config.MAX_SOROBAN_FEE_STROOPS) {
       throw new Error(
         `Soroban fee ${preparedTx.fee} exceeds MAX_SOROBAN_FEE_STROOPS ${config.MAX_SOROBAN_FEE_STROOPS}`
       );

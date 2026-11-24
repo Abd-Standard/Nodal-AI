@@ -33,11 +33,14 @@ export async function dispatchWebhook(result: AgentResult): Promise<void> {
       3,
       200
     );
-    log.info("Webhook delivered", { taskType: result.taskType });
+    log.info({ taskType: result.taskType }, "Webhook delivered");
   } catch (err) {
-    log.warn("Webhook delivery failed", {
-      taskType: result.taskType,
-      error: err instanceof Error ? err.message : String(err),
-    });
+    log.warn(
+      {
+        taskType: result.taskType,
+        error: err instanceof Error ? err.message : String(err),
+      },
+      "Webhook delivery failed"
+    );
   }
 }

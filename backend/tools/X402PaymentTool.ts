@@ -104,6 +104,22 @@ export class X402PaymentTool {
 
     this.usedNonces.add(challenge.nonce);
 
+    // Determine signedAt: use the latest ledger close time (more precise than
+    // wall-clock) with a fallback to the current wall-clock time.
+    // NOTE: the SDK types `.ledger(seq).call()` as CollectionPage<LedgerRecord>,
+    // but requesting a specific ledger actually returns a single LedgerRecord
+    // with a `closed_at` field — hence the narrow cast.
+    let signedAt: string;
+    try {
+      const ledgerResponse = (await this.horizonServer
+        .ledgers()
+        .ledger("now")
+        .call()) as unknown as { closed_at?: string };
+      signedAt = ledgerResponse.closed_at ?? new Date().toISOString();
+    } catch {
+      signedAt = new Date().toISOString();
+    }
+
     return {
       protocol: "x402",
       network: config.STELLAR_NETWORK,

@@ -39,7 +39,9 @@ export class SpendingTracker {
 
   private pruneOld(now: number) {
     const cutoff = now - this.windowMs;
-    while (this.records.length && this.records[0].timestamp < cutoff) {
+    for (;;) {
+      const first = this.records[0];
+      if (first === undefined || first.timestamp >= cutoff) break;
       this.records.shift();
     }
   }

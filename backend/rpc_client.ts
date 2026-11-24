@@ -91,12 +91,12 @@ export function resolveNetworkPassphrase(network: string): string {
   if (network === "mainnet") return Networks.PUBLIC;
   if (network === "futurenet") return Networks.FUTURENET;
   if (network === "testnet") return Networks.TESTNET;
-  throw new Error("Unsupported network: ");
+  throw new Error(`Unsupported network: ${network}`);
 }
 
 export class TimeoutError extends Error {
   constructor(ms: number) {
-    super("Transaction Timeout: request did not complete within ms");
+    super(`Transaction Timeout: request did not complete within ${ms} ms`);
     this.name = "TimeoutError";
   }
 }
@@ -113,7 +113,7 @@ export class StellarRPCError extends Error {
 export class RateLimitError extends Error {
   readonly retryAfterSeconds: number;
   constructor(retryAfterSeconds: number) {
-    super("Rate limited. Retry after  seconds");
+    super(`Rate limited. Retry after ${retryAfterSeconds} seconds`);
     this.name = "RateLimitError";
     this.retryAfterSeconds = retryAfterSeconds;
   }
@@ -174,7 +174,7 @@ export async function withRetry<T>(
   const lastErrorMessage =
     lastErr instanceof Error ? lastErr.message : String(lastErr ?? "unknown error");
   throw new StellarRPCError(
-    "RPC call failed after  attempt: ",
+    `RPC call failed after ${retries} attempts: ${lastErrorMessage}`,
     lastErr
   );
 }
@@ -234,10 +234,57 @@ export async function simulateSorobanTx(tx: Transaction) {
   );
 }
 
+/**
+ * Extract the raw Ed25519 key from an ScAddress inside address credentials.
+ * Handles both the real XDR shape and the looser shapes produced by test mocks.
+ */
+function extractSignerRawKey(credentials: any): Buffer | undefined {
+  const scAddress = credentials?.address?.();
+  const addr = scAddress?.address ? scAddress.address() : scAddress;
+  const account = addr?.accountId?.();
+  if (account == null) return undefined;
+  if (Buffer.isBuffer(account) || account instanceof Uint8Array) {
+    return Buffer.from(account);
+  }
+  if (typeof account?.ed25519 === "function") {
+    const key = account.ed25519();
+    if (key != null) return Buffer.from(key);
+  }
+  return undefined;
+}
+
+/**
+ * Verify every Soroban authorization entry attached to the built transaction
+ * is either source-account credentials or signed by the agent's own address.
+ * A foreign signer means the simulation attached auth we did not produce.
+ */
+function validateAuthSigners(built: any): void {
+  const agentPublicKey = config.agentKeypair().publicKey();
+  const expectedRaw = StrKey.decodeEd25519PublicKey(agentPublicKey);
+
+  for (const op of built?.operations ?? []) {
+    for (const entry of op?.auth ?? []) {
+      const creds = entry?.credentials?.();
+      const type = creds?.switch?.();
+      // Source-account credentials are authorized by the tx source — OK.
+      if (type?.name === "sorobanCredentialsSourceAccount") continue;
+
+      const raw = extractSignerRawKey(creds);
+      if (raw && !raw.equals(expectedRaw)) {
+        throw new Error(
+          `Soroban auth contains an unexpected signer: ${StrKey.encodeEd25519PublicKey(raw)}`
+        );
+      }
+    }
+  }
+}
+
 export async function prepareSorobanTx(tx: Transaction): Promise<Transaction> {
   const simResult = await simulateSorobanTx(tx);
   if (rpc.Api.isSimulationError(simResult)) {
-    throw new Error("Soroban simulation failed: ");
+    throw new Error(`Soroban simulation failed: ${JSON.stringify(simResult)}`);
   }
-  return rpc.assembleTransaction(tx, simResult).build();
+  const built = rpc.assembleTransaction(tx, simResult).build() as Transaction;
+  validateAuthSigners(built as any);
+  return built;
 }

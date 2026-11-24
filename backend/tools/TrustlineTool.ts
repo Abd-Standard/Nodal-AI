@@ -45,7 +45,13 @@ export class TrustlineTool {
       .addOperation(
         Operation.changeTrust({
           asset,
-          limit: input.action === "remove" ? "0" : input.limit,
+          // ChangeTrust.limit is optional (string | undefined) under
+          // exactOptionalPropertyTypes — only set it when we have a value.
+          ...(input.action === "remove"
+            ? { limit: "0" as const }
+            : input.limit !== undefined
+              ? { limit: input.limit }
+              : {}),
         })
       )
       .setTimeout(30)

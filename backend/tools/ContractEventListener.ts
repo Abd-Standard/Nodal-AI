@@ -44,7 +44,8 @@ export function listen(
       }
 
       if (response.events.length > 0) {
-        cursor = response.events[response.events.length - 1].pagingToken;
+        const last = response.events[response.events.length - 1];
+        if (last) cursor = last.pagingToken;
       } else if ("cursor" in response && response.cursor) {
         cursor = response.cursor;
       }

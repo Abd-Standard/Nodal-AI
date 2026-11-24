@@ -62,13 +62,16 @@ export function getResults(limit = 100): PersistedResult[] {
       error:     string | null;
     }>;
 
-  return rows.map((r) => ({
-    timestamp: r.timestamp,
-    taskType:  r.taskType as AgentResult["taskType"],
-    success:   r.success === 1,
-    data:      r.data !== null ? JSON.parse(r.data) : undefined,
-    error:     r.error ?? undefined,
-  }));
+  return rows.map((r) => {
+    const out: PersistedResult = {
+      timestamp: r.timestamp,
+      taskType:  r.taskType as AgentResult["taskType"],
+      success:   r.success === 1,
+    };
+    if (r.data !== null) out.data = JSON.parse(r.data);
+    if (r.error != null) out.error = r.error;
+    return out;
+  });
 }
 
 /** Replace the underlying DB instance — used in tests to inject an in-memory DB. */
