@@ -22,8 +22,12 @@ import * as dotenv from "dotenv";
 import { Keypair } from "@stellar/stellar-sdk";
 import { execSync } from "child_process";
 
-// Load .env file (no-op when running in CI / production with real env vars)
-dotenv.config();
+// Load .env file only outside the test runner.
+// When NODE_ENV=test (set by vitest.config.ts), skip dotenv so a local .env
+// cannot bleed values into unit tests that manage their own env via vi.stubEnv.
+if (process.env.NODE_ENV !== "test") {
+  dotenv.config();
+}
 
 // ─── Custom Zod refinements ───────────────────────────────────────────────────
 
@@ -171,9 +175,6 @@ const EnvSchema = z.object({
   WEBHOOK_SECRET: z.string().min(1).optional(),
   SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
   OTLP_ENDPOINT: z.string().url().optional(),
-  SPENDING_WINDOW_MS: z.coerce.number().int().min(0).default(86_400_000),
-  OTLP_ENDPOINT: z.string().url().optional(),
-  WEBHOOK_SECRET: z.string().min(1).optional(),
 });
 
 type RawEnv = z.infer<typeof EnvSchema>;
@@ -272,8 +273,8 @@ export interface AgentConfig {
    * ```
    */
   readonly agentKeypair: () => Keypair;
-  readonly ALLOWED_X402_ORIGINS?: string;
-  readonly AGENT_SECRET_KEY_ARN?: string;
+  readonly ALLOWED_X402_ORIGINS?: string | undefined;
+  readonly AGENT_SECRET_KEY_ARN?: string | undefined;
   /**
    * Per-call RPC timeout in milliseconds.
    * Defaults to RETRY_DELAY_MS * MAX_RETRIES * 2 when RPC_TIMEOUT_MS env var is absent.
@@ -291,8 +292,11 @@ export interface AgentConfig {
    * Defaults to 1_000_000 (0.1 XLM). Prevents resource-inflated fee attacks.
    */
   readonly MAX_SOROBAN_FEE_STROOPS: number;
-  readonly WEBHOOK_URL?: string;
-  readonly WEBHOOK_SECRET?: string;
+  readonly WEBHOOK_URL?: string | undefined;
+  readonly WEBHOOK_SECRET?: string | undefined;
+  /** Sliding window (ms) over which cumulative spending is tracked. */
+  readonly SPENDING_WINDOW_MS: number;
+  readonly OTLP_ENDPOINT?: string | undefined;
 }
 
 // ─── Loader ───────────────────────────────────────────────────────────────────
@@ -437,6 +441,10 @@ function loadConfig(): AgentConfig {
 
   const cfg: AgentConfig = {
     ...rest,
+    ALLOWED_X402_ORIGINS,
+    AGENT_SECRET_KEY_ARN,
+    SPENDING_WINDOW_MS: raw.SPENDING_WINDOW_MS,
+    OTLP_ENDPOINT: raw.OTLP_ENDPOINT,
     AGENT_PUBLIC_KEY: derivedPublicKey,
     RPC_TIMEOUT_MS: rpcTimeoutMs,
     MAX_X402_PAYMENTS_PER_MINUTE: raw.MAX_X402_PAYMENTS_PER_MINUTE,

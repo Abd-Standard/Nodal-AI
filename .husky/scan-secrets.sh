@@ -10,6 +10,9 @@
 SELF=$(basename "$0")
 ALLOWED_KEYS="SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73 SDPFZL3WZFXHQVLZX3TUZ5VXYYNZGLHC5BKWBHXMB5E6D64B2YJJFHF5"
 
+# Strip carriage returns from ALLOWED_KEYS to handle Windows CRLF line endings
+ALLOWED_KEYS=$(printf '%s' "$ALLOWED_KEYS" | tr -d '\r')
+
 # Collect staged diff lines that contain a Stellar secret key pattern
 MATCHES=$(git diff --cached --diff-filter=ACM --no-color -U0 2>/dev/null | \
   grep -n '^+.*S[A-Z2-7]\{55\}' | \
@@ -29,14 +32,19 @@ IFS='
 for match in $MATCHES; do
   line_num=$(echo "$match" | cut -d: -f1)
   line=$(echo "$match" | cut -d: -f2-)
-  stripped=$(echo "$line" | sed 's/^+//')
+  stripped=$(echo "$line" | sed 's/^+//' | tr -d '\r')
 
   allowed=0
+  # NOTE: IFS is a newline here (for the match loop) — reset it to a space
+  # so $ALLOWED_KEYS actually splits into individual keys.
+  OLD_IFS="$IFS"
+  IFS=" "
   for key in $ALLOWED_KEYS; do
     case "$stripped" in
       *"$key"*) allowed=1; break ;;
     esac
   done
+  IFS="$OLD_IFS"
 
   if [ "$allowed" -eq 0 ]; then
     HAS_ERROR=1

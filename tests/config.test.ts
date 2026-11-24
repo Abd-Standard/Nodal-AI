@@ -17,23 +17,27 @@ vi.mock("child_process", async () => {
 type FormatFn = (err: z.ZodError) => string;
 let formatValidationErrors: FormatFn;
 
-vi.mock("child_process", async () => {
-  const original = await vi.importActual<any>("child_process");
-  return {
-    ...original,
-    execSync: vi.fn(),
-  };
-});
-
 describe("config.ts startup validation", () => {
-  let originalEnv: NodeJS.ProcessEnv;
   let exitSpy: any;
   let stderrSpy: any;
   let stdoutSpy: any;
 
   beforeEach(() => {
     vi.resetModules();
-    originalEnv = { ...process.env };
+
+    // Clear env keys that config.ts reads so the test starts from a clean slate.
+    // vi.stubEnv is used for values we want to set; vi.unstubAllEnvs restores everything.
+    vi.stubEnv("AGENT_SECRET_KEY", "");
+    vi.stubEnv("AGENT_SECRET_KEY_ARN", "");
+    vi.stubEnv("HORIZON_URL", "");
+    vi.stubEnv("SOROBAN_RPC_URL", "");
+    vi.stubEnv("X402_ASSET_ISSUER", "");
+    // Remove the stubs so the keys are actually absent (stubEnv sets them to a string)
+    delete process.env.AGENT_SECRET_KEY;
+    delete process.env.AGENT_SECRET_KEY_ARN;
+    delete process.env.HORIZON_URL;
+    delete process.env.SOROBAN_RPC_URL;
+    delete process.env.X402_ASSET_ISSUER;
 
     // Setup process spies
     exitSpy = vi.spyOn(process, "exit").mockImplementation((code?: string | number | null | undefined) => {
@@ -44,13 +48,13 @@ describe("config.ts startup validation", () => {
   });
 
   afterEach(() => {
-    process.env = originalEnv;
+    vi.unstubAllEnvs();
     vi.restoreAllMocks();
   });
 
   it("fails if both AGENT_SECRET_KEY and AGENT_SECRET_KEY_ARN are set", async () => {
-    process.env.AGENT_SECRET_KEY = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
-    process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
+    vi.stubEnv("AGENT_SECRET_KEY", "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73");
+    vi.stubEnv("AGENT_SECRET_KEY_ARN", "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret");
 
     await expect(async () => {
       await import("../backend/config");
@@ -66,11 +70,11 @@ describe("config.ts startup validation", () => {
     const validSecret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
 
     // Set minimal environment for EnvSchema to pass
-    process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
-    process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
-    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+    vi.stubEnv("HORIZON_URL", "https://horizon-testnet.stellar.org");
+    vi.stubEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
+    vi.stubEnv("X402_ASSET_ISSUER", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN");
+    vi.stubEnv("AGENT_SECRET_KEY_ARN", "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret");
     delete process.env.AGENT_SECRET_KEY;
-    process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
     // Mock execSync to return the secret key
     vi.mocked(execSync).mockReturnValue(Buffer.from(validSecret));
@@ -86,11 +90,11 @@ describe("config.ts startup validation", () => {
     const validSecret = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
     const jsonSecret = JSON.stringify({ AGENT_SECRET_KEY: validSecret });
 
-    process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
-    process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
-    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+    vi.stubEnv("HORIZON_URL", "https://horizon-testnet.stellar.org");
+    vi.stubEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
+    vi.stubEnv("X402_ASSET_ISSUER", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN");
+    vi.stubEnv("AGENT_SECRET_KEY_ARN", "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret");
     delete process.env.AGENT_SECRET_KEY;
-    process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
     vi.mocked(execSync).mockReturnValue(Buffer.from(jsonSecret));
 
@@ -100,11 +104,11 @@ describe("config.ts startup validation", () => {
   });
 
   it("fails validation if fetched secret is not a valid Stellar key", async () => {
-    process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
-    process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
-    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
+    vi.stubEnv("HORIZON_URL", "https://horizon-testnet.stellar.org");
+    vi.stubEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
+    vi.stubEnv("X402_ASSET_ISSUER", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN");
+    vi.stubEnv("AGENT_SECRET_KEY_ARN", "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret");
     delete process.env.AGENT_SECRET_KEY;
-    process.env.AGENT_SECRET_KEY_ARN = "arn:aws:secretsmanager:us-east-1:123456789012:secret:my-secret";
 
     vi.mocked(execSync).mockReturnValue(Buffer.from("invalid-secret"));
 
@@ -202,14 +206,20 @@ describe("formatValidationErrors", () => {
 describe("config.ts keypair caching", () => {
   it("agentKeypair returns the same Keypair instance on every call", async () => {
     vi.resetModules();
-    process.env.HORIZON_URL = "https://horizon-testnet.stellar.org";
-    process.env.SOROBAN_RPC_URL = "https://soroban-testnet.stellar.org";
-    process.env.X402_ASSET_ISSUER = "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN";
-    process.env.AGENT_SECRET_KEY = "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73";
+    vi.stubEnv("HORIZON_URL", "https://horizon-testnet.stellar.org");
+    vi.stubEnv("SOROBAN_RPC_URL", "https://soroban-testnet.stellar.org");
+    vi.stubEnv("X402_ASSET_ISSUER", "GA5ZSEJYB37JRC5AVCIA5MOP4RHTM335X2KGX3IHOJAPP5RE34K4KZVN");
+    vi.stubEnv("AGENT_SECRET_KEY", "SBZ7EYXHNB4WPPIWC5YAMH2U4L4QU6DKYXQWG4I55G6O4CLE4BBHCE73");
+
+    // Suppress the startup banner during this test
+    vi.spyOn(process.stdout, "write").mockImplementation(() => true);
 
     const { config } = await import("../backend/config");
     const first = config.agentKeypair();
     const second = config.agentKeypair();
     expect(first).toBe(second);
+
+    vi.unstubAllEnvs();
+    vi.restoreAllMocks();
   });
 });

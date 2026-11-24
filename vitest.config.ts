@@ -5,6 +5,13 @@
  *
  * ## Key Configuration Details:
  *
+ * ### env: { NODE_ENV: "test" }
+ * Setting NODE_ENV to "test" before any module is loaded prevents backend/config.ts
+ * (and any other module) from calling `dotenv.config()` during the test run.
+ * Without this guard, copying .env.example to .env (as the README instructs) causes
+ * 11 tests to fail because the real env values conflict with what the tests expect.
+ * Tests that need specific env values must use `vi.stubEnv` / `vi.unstubAllEnvs`.
+ *
  * ### isolate: true
  * Each test file runs in a completely isolated V8 context. This provides three benefits:
  * 1. **Mock isolation**: Mocks defined in one test file cannot leak into another test file.
@@ -47,6 +54,10 @@ import { defineConfig } from "vitest/config";
 
 export default defineConfig({
   test: {
+    // Prevent dotenv from loading .env during tests.
+    // Tests must be self-contained via vi.stubEnv / process.env manipulation.
+    // This ensures `npm run test:ts` passes whether or not a .env file is present.
+    env: { NODE_ENV: "test" },
     // Discover all test files under tests/ (excludes e2e — use npm run test:e2e)
     include: ["tests/**/*.test.ts"],
     exclude: ["tests/e2e/**"],

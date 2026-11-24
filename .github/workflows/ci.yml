@@ -54,6 +54,12 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - run: npm ci
+
+      # Copy .env.example → .env to verify tests pass with a local .env present
+      # (reproduces the new-contributor scenario described in issue #993).
+      - name: Copy .env.example to .env
+        run: cp .env.example .env
+
       - run: npm run test:all
 
   test-rust:
