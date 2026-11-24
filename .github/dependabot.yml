@@ -18,8 +18,39 @@ updates:
       - dependency-name: "*"
         update-types: ["version-update:semver-major"]
 
+  - package-ecosystem: "npm"
+    directory: "/apps/dashboard"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    assignees:
+      - "Dami24-hub"
+    reviewers:
+      - "Dami24-hub"
+    groups:
+      patch-and-minor:
+        update-types:
+          - "patch"
+          - "minor"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
   - package-ecosystem: "cargo"
     directory: "/contracts/escrow"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    assignees:
+      - "Dami24-hub"
+    reviewers:
+      - "Dami24-hub"
+    ignore:
+      - dependency-name: "*"
+        update-types: ["version-update:semver-major"]
+
+  - package-ecosystem: "cargo"
+    directory: "/contracts/agent_policy"
     schedule:
       interval: "weekly"
     open-pull-requests-limit: 5
